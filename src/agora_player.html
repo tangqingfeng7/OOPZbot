@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Agora Player</title></head>
+<body>
+<script>
+// 在 Agora SDK 加载前拦截 WebSocket，捕获 Agora 的 WS 连接
+const _wsInstances = [];
+const _OrigWS = window.WebSocket;
+window.WebSocket = function(url, protocols) {
+  const ws = protocols ? new _OrigWS(url, protocols) : new _OrigWS(url);
+  _wsInstances.push(ws);
+  return ws;
+};
+window.WebSocket.prototype = _OrigWS.prototype;
+window.WebSocket.CONNECTING = _OrigWS.CONNECTING;
+window.WebSocket.OPEN = _OrigWS.OPEN;
+window.WebSocket.CLOSING = _OrigWS.CLOSING;
+window.WebSocket.CLOSED = _OrigWS.CLOSED;
+</script>
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.22.0.js"></script>
+<script>
+let client = null;
+let audioTrack = null;
+let _state = "idle";
+
+window.agoraReady = () => typeof AgoraRTC !== "undefined";
+
+window.agoraJoin = async (appId, token, channelName, uid) => {
+  try {
+    if (client) await window.agoraLeave();
+    client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+    const assignedUid = await client.join(appId, channelName, token, uid || null);
+    _state = "joined";
+    return { ok: true, uid: assignedUid };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
+window.agoraPlayAudio = async (url) => {
+  try {
+    await window.agoraStopAudio();
+    audioTrack = await AgoraRTC.createBufferSourceAudioTrack({
+      source: url,
+      cacheOnlineFile: false,
+    });
+    audioTrack.on("source-state-change", (st) => {
+      _state = st === "playing" ? "playing" : st === "stopped" ? "finished" : st;
+    });
+    audioTrack.startProcessAudioBuffer({ loop: false });
+    await client.publish([audioTrack]);
+    _state = "playing";
+    return { ok: true, duration: audioTrack.duration };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
+window.agoraPlayLocal = async (base64Data, mimeType) => {
+  try {
+    await window.agoraStopAudio();
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mimeType || "audio/mpeg" });
+    const objectUrl = URL.createObjectURL(blob);
+    audioTrack = await AgoraRTC.createBufferSourceAudioTrack({
+      source: objectUrl,
+      cacheOnlineFile: false,
+    });
+    audioTrack.on("source-state-change", (st) => {
+      _state = st === "playing" ? "playing" : st === "stopped" ? "finished" : st;
+    });
+    audioTrack.startProcessAudioBuffer({ loop: false });
+    await client.publish([audioTrack]);
+    _state = "playing";
+    return { ok: true, duration: audioTrack.duration };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
+window.agoraSendIdentity = (oopzUid, agoraUid) => {
+  const ws = _wsInstances.find(w => w.readyState === 1);
+  if (!ws) return { ok: false, error: "no open ws" };
+  try {
+    const payload = btoa(JSON.stringify({ m: 1, uid: oopzUid, cid: agoraUid, hm: 1 }));
+    const sendTs = Math.floor(performance.now());
+    for (let i = 0; i < 3; i++) {
+      ws.send(JSON.stringify({
+        _type: "data_stream",
+        _message: { payload, syncWithAudio: false, sendTs: sendTs + i }
+      }));
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
+window.agoraStopAudio = async () => {
+  if (!audioTrack) return;
+  try {
+    audioTrack.stopProcessAudioBuffer();
+    if (client) await client.unpublish([audioTrack]);
+    audioTrack.close();
+  } catch (_) {}
+  audioTrack = null;
+  _state = "joined";
+};
+
+window.agoraLeave = async () => {
+  await window.agoraStopAudio();
+  if (client) {
+    try { await client.leave(); } catch (_) {}
+    client = null;
+  }
+  _state = "idle";
+};
+
+window.agoraState = () => _state;
+</script>
+</body>
+</html>

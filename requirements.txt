@@ -1,0 +1,11 @@
+requests
+cryptography
+websocket-client
+pillow
+redis
+fastapi
+uvicorn[standard]
+aiohttp
+python-multipart
+psutil
+playwright

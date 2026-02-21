@@ -1,0 +1,43 @@
+# === 敏感文件（包含密钥、Token、Cookie）===
+config.py
+private_key.py
+data/credentials.txt
+.oopz_capture_credentials
+capture_recall_result.json
+capture_trace.zip
+
+# === 运行时生成的数据 ===
+data/names.json
+data/oopz_cache.db
+data/dump.rdb
+data/_events_debug.jsonl
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# === 日志 ===
+logs/
+*.log
+
+# === IDE ===
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# === 外部依赖 ===
+NeteaseAPI_tmp/
+NeteaseAPI_tmp.zip
+NeteaseCloudMusicApi/
+
+# === 系统文件 ===
+Thumbs.db
+.DS_Store

@@ -1,0 +1,463 @@
+"""
+英雄联盟战绩查询 (FA8)
+通过 fa.3ui.cc API 自动登录并查询召唤师战绩
+"""
+
+import hashlib
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from html import unescape
+
+import requests
+from config import FA8_CONFIG
+from logger_config import get_logger
+
+logger = get_logger("FA8")
+
+BASE_URL = "https://fa.3ui.cc"
+
+SERVERS = {
+    "1": "艾欧尼亚", "2": "比尔吉沃特", "3": "祖安", "4": "诺克萨斯",
+    "5": "班德尔城", "6": "德玛西亚", "7": "皮尔特沃夫", "8": "战争学院",
+    "9": "弗雷尔卓德", "10": "巨神峰", "11": "雷瑟守备", "12": "无畏先锋",
+    "13": "裁决之地", "14": "黑色玫瑰", "15": "暗影岛", "16": "恕瑞玛",
+    "17": "钢铁烈阳", "18": "水晶之痕", "19": "均衡教派", "20": "扭曲丛林",
+    "21": "教育网专区", "22": "影流", "23": "守望之海", "24": "征服之海",
+    "25": "卡拉曼达", "26": "巨龙之巢", "27": "皮城警备", "30": "男爵领域",
+    "31": "峡谷之巅",
+}
+
+SERVER_NAME_TO_ID = {v: k for k, v in SERVERS.items()}
+
+SERVER_GROUPS: dict[str, list[str]] = {
+    "一区": ["3", "7", "10", "19", "21", "22", "23", "30"],
+    "二区": ["4", "8", "11", "15", "24", "25"],
+    "三区": ["5", "13", "17", "18", "27"],
+    "四区": ["2", "9", "20"],
+    "五区": ["6", "12", "16", "26"],
+}
+
+GROUP_ALIASES: dict[str, str] = {}
+_NUM_MAP = {"一区": "1", "二区": "2", "三区": "3", "四区": "4", "五区": "5"}
+for _g in SERVER_GROUPS:
+    GROUP_ALIASES[_g] = _g
+    GROUP_ALIASES[f"联盟{_g}"] = _g
+    if _g in _NUM_MAP:
+        GROUP_ALIASES[_NUM_MAP[_g]] = _g
+
+
+def _md5(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _ts() -> int:
+    return int(time.time() * 1000)
+
+
+def _strip_html(html: str) -> str:
+    """从 HTML 片段中提取纯文本"""
+    text = re.sub(r"<[^>]+>", " ", unescape(html))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_RE_MASTERY = re.compile(
+    r'alt="([^"]+)".*?'
+    r'class="font-medium text-white mr-2">([^<]+)</span>.*?'
+    r'text-gray-400">(\d+级英雄成就)</span>.*?'
+    r'熟练度：(\d+)',
+    re.DOTALL,
+)
+_RE_CARD_SPLIT = re.compile(r'class="match-card\s+')
+_RE_CHAMP = re.compile(r'champion/(\w+)\.png')
+_RE_KDA = re.compile(r'font-bold text-white">(\d+/\d+/\d+)<')
+_RE_SCORE = re.compile(r'评分\s*([\d.]+)')
+_RE_CS = re.compile(r'font-bold text-white">([\d.]+K?)</div>\s*<div[^>]*>补刀')
+_RE_DMG = re.compile(r'font-bold text-white">([\d.]+K?)</div>\s*<div[^>]*>伤害')
+_RE_MODE = re.compile(r'text-xs">([\w\u4e00-\u9fff]+)</span>\s*<span[^>]*>时长([\d:]+)')
+_RE_DATE = re.compile(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})')
+_RE_HERO = re.compile(r"英雄:\s*(\d+)\s*个")
+_RE_SKIN = re.compile(r"皮肤:\s*(\d+)\s*个")
+
+
+def _parse_mastery(html: str) -> list[dict]:
+    """从 mastery HTML 中解析英雄熟练度列表"""
+    results = []
+    for m in _RE_MASTERY.finditer(html):
+        results.append({
+            "name": m.group(2),
+            "level": m.group(3),
+            "points": int(m.group(4)),
+        })
+    return results
+
+
+def _parse_match_cards(html: str) -> list[dict]:
+    """从战绩 HTML 中解析对局列表（分段解析避免回溯）"""
+    results = []
+    cards = _RE_CARD_SPLIT.split(html)
+    for card in cards[1:]:
+        try:
+            win_lose = "胜利" if card.startswith("win") else "失败"
+            champ_m = _RE_CHAMP.search(card)
+            kda_m = _RE_KDA.search(card)
+            if not (champ_m and kda_m):
+                continue
+            score_m = _RE_SCORE.search(card)
+            mode_m = _RE_MODE.search(card)
+            date_m = _RE_DATE.search(card)
+            results.append({
+                "result": win_lose,
+                "champion": champ_m.group(1),
+                "kda": kda_m.group(1),
+                "score": score_m.group(1) if score_m else "?",
+                "mode": mode_m.group(1) if mode_m else "?",
+                "duration": mode_m.group(2) if mode_m else "?",
+                "date": date_m.group(1) if date_m else "?",
+            })
+        except Exception:
+            continue
+    return results
+
+
+class FA8Client:
+    """FA8 API 客户端，自动管理登录态，后台线程每 5 秒检查并保活"""
+
+    _KEEPALIVE_INTERVAL = 5  # 秒
+
+    def __init__(self):
+        self._user = FA8_CONFIG.get("username", "")
+        self._pwd = FA8_CONFIG.get("password", "")
+        self._default_area = FA8_CONFIG.get("default_area", "1")
+        self._session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10, pool_maxsize=10,
+        )
+        self._session.mount("https://", adapter)
+        self._session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/140.0.0.0 Safari/537.36"
+            ),
+            "Origin": BASE_URL,
+            "Referer": f"{BASE_URL}/",
+            "Connection": "keep-alive",
+        })
+        self._pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="FA8")
+        self._logged_in = False
+        self._lock = threading.Lock()
+        self._keepalive_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._start_keepalive()
+
+    # ------------------------------------------------------------------
+    # 登录保活
+    # ------------------------------------------------------------------
+
+    def _start_keepalive(self):
+        """启动后台保活线程"""
+        if not self._user or not self._pwd:
+            return
+        if self._keepalive_thread and self._keepalive_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop, daemon=True, name="FA8-keepalive",
+        )
+        self._keepalive_thread.start()
+        logger.info("FA8 保活线程已启动 (间隔 %ds)", self._KEEPALIVE_INTERVAL)
+
+    def _keepalive_loop(self):
+        """后台循环：检查登录状态，失效则自动重新登录"""
+        while not self._stop_event.is_set():
+            try:
+                self._check_and_login()
+            except Exception as e:
+                logger.debug(f"FA8 保活检查异常: {e}")
+            self._stop_event.wait(self._KEEPALIVE_INTERVAL)
+
+    def _check_and_login(self):
+        """检查 Cookie 是否有效，无效则重新登录"""
+        with self._lock:
+            cookies = {c.name: c.value for c in self._session.cookies}
+            if cookies.get("name") and cookies.get("sign"):
+                self._logged_in = True
+                return
+            self._logged_in = False
+            self._do_login()
+
+    def _do_login(self) -> bool:
+        """执行登录请求（调用方需持有 _lock）"""
+        try:
+            ts = _ts()
+            resp = self._session.post(
+                f"{BASE_URL}/api/api.php?act=login",
+                data={"user": self._user, "pwd": self._pwd, "time": ts},
+                timeout=15,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                self._logged_in = True
+                logger.info("FA8 登录成功")
+                return True
+            logger.warning(f"FA8 登录失败: {data.get('msg', '未知错误')}")
+            return False
+        except Exception as e:
+            logger.error(f"FA8 登录异常: {e}")
+            return False
+
+    def _ensure_login(self) -> bool:
+        if self._logged_in:
+            return True
+        with self._lock:
+            if self._logged_in:
+                return True
+            if not self._user or not self._pwd:
+                logger.error("FA8 账号或密码未配置")
+                return False
+            return self._do_login()
+
+    def _post_api(self, endpoint: str, data: dict, retry: bool = True) -> dict:
+        """发送 API 请求，自动处理登录"""
+        if not self._ensure_login():
+            return {"code": -1, "msg": "登录失败，请检查 FA8 账号配置"}
+        try:
+            resp = self._session.post(
+                f"{BASE_URL}/api/{endpoint}",
+                data=data,
+                timeout=10,
+            )
+            result = resp.json()
+            msg = str(result.get("msg", ""))
+            is_auth_error = result.get("code") != 0 and "登录" in msg
+            if is_auth_error and retry:
+                self._logged_in = False
+                return self._post_api(endpoint, data, retry=False)
+            return result
+        except Exception as e:
+            logger.error(f"FA8 API 请求失败 [{endpoint}]: {e}")
+            return {"code": -1, "msg": f"请求异常: {e}"}
+
+    def query_summoner(self, name: str, area: str) -> dict:
+        """查询召唤师基本信息"""
+        ts = _ts()
+        sign = _md5(f"{name}{ts}{area}{ts}#6352")
+        return self._post_api("tyapi.php?act=cxinfo", {
+            "name": name, "area": area, "sign": sign, "time": ts,
+        })
+
+    def query_games(self, puuid: str, area: str, tag: str = "all", page: str = "0") -> dict:
+        """查询历史战绩"""
+        ts = _ts()
+        sign = _md5(f"{puuid}{ts}{area}{ts}{tag}{page}#6662")
+        return self._post_api("tyapi.php?act=cxgame", {
+            "puuid": puuid, "area": area, "page": page,
+            "sign": sign, "tag": tag, "time": ts,
+        })
+
+    def query_current_game(self, puuid: str, area: str) -> dict:
+        """查询当前对局"""
+        ts = _ts()
+        sign = _md5(f"{puuid}{ts}{area}{ts}#6362")
+        return self._post_api("tyapi.php?act=nowcx", {
+            "puuid": puuid, "area": area, "sign": sign, "time": ts,
+        })
+
+
+class FA8Handler:
+    """FA8 战绩查询命令处理器"""
+
+    def __init__(self):
+        self._client = FA8Client()
+
+    @staticmethod
+    def _resolve_area(text: str) -> tuple[str, list[str]]:
+        """
+        从输入文本中解析大区和召唤师名。
+        返回 (召唤师名, 大区ID列表)。
+        支持格式:
+          - "召唤师名#编号"              → 使用默认大区
+          - "大区名 召唤师名#编号"       → 指定大区
+          - "一区 召唤师名#编号"         → 搜索整个区组
+          - "联盟一区 召唤师名#编号"     → 搜索整个区组
+        """
+        text = text.strip()
+        default_area = FA8_CONFIG.get("default_area", "1")
+
+        parts = text.split(None, 1)
+        if len(parts) == 2:
+            prefix = parts[0]
+            if prefix in GROUP_ALIASES:
+                return parts[1], SERVER_GROUPS[GROUP_ALIASES[prefix]]
+            if prefix in SERVERS:
+                return parts[1], [prefix]
+            if prefix in SERVER_NAME_TO_ID:
+                return parts[1], [SERVER_NAME_TO_ID[prefix]]
+
+        for server_name, server_id in SERVER_NAME_TO_ID.items():
+            if text.startswith(server_name):
+                name = text[len(server_name):].strip()
+                if name:
+                    return name, [server_id]
+
+        return text, [default_area]
+
+    def _search_summoner(self, name: str, areas: list[str]) -> tuple[str, dict] | None:
+        """在多个大区中并行搜索召唤师，返回 (area_id, info) 或 None"""
+        if len(areas) == 1:
+            info = self._client.query_summoner(name, areas[0])
+            if info.get("code") == 0:
+                return areas[0], info
+            return None
+
+        pool = self._client._pool
+        futures = {
+            pool.submit(self._client.query_summoner, name, a): a
+            for a in areas
+        }
+        try:
+            for fut in as_completed(futures):
+                try:
+                    info = fut.result()
+                    if info.get("code") == 0:
+                        return futures[fut], info
+                except Exception:
+                    pass
+        finally:
+            for fut in futures:
+                fut.cancel()
+        return None
+
+    def query_and_format(self, raw_input: str) -> str:
+        """查询召唤师战绩并格式化为消息文本"""
+        if not FA8_CONFIG.get("enabled", False):
+            return "战绩查询功能未启用，请在 config.py 中配置 FA8_CONFIG"
+
+        name, areas = self._resolve_area(raw_input)
+        if not name:
+            return (
+                "请输入召唤师名称\n"
+                "格式: @bot 战绩 召唤师名#编号\n"
+                "示例: @bot 战绩 艺术就是充钱丶#72269\n"
+                "指定大区: @bot 战绩 班德尔城 召唤师名#编号\n"
+                "按区搜索: @bot 战绩 3 召唤师名#编号 (1-5对应联盟一~五区)"
+            )
+
+        is_group = len(areas) > 1
+        group_label = ""
+        if is_group:
+            for alias, g in GROUP_ALIASES.items():
+                if SERVER_GROUPS[g] == areas and not alias.startswith("联盟"):
+                    group_label = f"联盟{alias}"
+                    break
+
+        result = self._search_summoner(name, areas)
+        if result is None:
+            if is_group:
+                return f"[x] 在{group_label}所有服务器中均未找到该玩家"
+            msg_area = SERVERS.get(areas[0], f"大区{areas[0]}")
+            return f"[x] 在{msg_area}未找到该玩家"
+
+        area, info = result
+        msg = info.get("msg", "")
+        if "登录" in str(msg):
+            return f"[x] 查询失败: FA8 登录态异常，请联系管理员检查配置"
+
+        puuid = info.get("puuid", "")
+        server_name = SERVERS.get(area, f"大区{area}")
+
+        lines = [
+            f"LOL 战绩查询 - {server_name}",
+            "═══════════════════",
+            f"  召唤师: {name}",
+            f"  等级: {info.get('level', '?')}",
+            f"  最近游戏: {info.get('lastGameDate', '未知')}",
+        ]
+
+        hero_count = ""
+        skin_count = ""
+        skin_html = info.get("skin", "")
+        hero_m = _RE_HERO.search(skin_html)
+        skin_m = _RE_SKIN.search(skin_html)
+        if hero_m:
+            hero_count = hero_m.group(1)
+        if skin_m:
+            skin_count = skin_m.group(1)
+        if hero_count or skin_count:
+            lines.append(f"  英雄: {hero_count} 个 | 皮肤: {skin_count} 个")
+
+        lines.append("───────────────────")
+        lines.append("  段位信息:")
+
+        ds_dj = info.get("dsdj", "")
+        if ds_dj and ds_dj != "无":
+            lines.append(f"    单双排: {ds_dj} ({info.get('dssf', '')}) 胜点{info.get('dssd', 0)}")
+
+        lh_dj = info.get("lhdj", "")
+        if lh_dj and lh_dj != "无":
+            lines.append(f"    灵活排: {lh_dj} ({info.get('lhsf', '')}) 胜点{info.get('lhsd', 0)}")
+
+        rank = info.get("rank", {})
+        ds_best = rank.get("dszgdw", "")
+        if ds_best and ds_best != "无":
+            lines.append(f"    单双最高: {ds_best}")
+        lh_best = rank.get("lhzgdw", "")
+        if lh_best and lh_best != "无":
+            lines.append(f"    灵活最高: {lh_best}")
+
+        mastery_html = info.get("mastery", "")
+        champions = _parse_mastery(mastery_html)
+        if champions:
+            lines.append("───────────────────")
+            lines.append("  英雄熟练度 TOP5:")
+            for i, c in enumerate(champions[:5], 1):
+                lines.append(f"    {i}. {c['name']} - {c['level']} ({c['points']:,})")
+
+        if puuid:
+            pool = self._client._pool
+            games_fut = pool.submit(self._client.query_games, puuid, area)
+            current_fut = pool.submit(self._client.query_current_game, puuid, area)
+            games = games_fut.result()
+            current = current_fut.result()
+
+            if games.get("code") == 0:
+                win = games.get("win", 0)
+                lose = games.get("lose", 0)
+                sl = games.get("sl", 0)
+                lines.append("───────────────────")
+                lines.append(f"  近期战绩: {win}胜 {lose}负 (胜率{sl}%)")
+
+                zj_html = games.get("zj", "")
+                matches = _parse_match_cards(zj_html)
+                if matches:
+                    lines.append("  最近对局:")
+                    for m in matches[:5]:
+                        icon = "✓" if m["result"] == "胜利" else "✗"
+                        lines.append(
+                            f"    {icon} {m['mode']} {m['champion']} "
+                            f"{m['kda']} 评分{m['score']} "
+                            f"[{m['duration']}] {m['date']}"
+                        )
+
+            if current.get("code") == 0:
+                lines.append("───────────────────")
+                lines.append("  ★ 当前正在游戏中!")
+                if current.get("mode"):
+                    lines.append(f"    模式: {current['mode']}")
+
+        lines.append("═══════════════════")
+        return "\n".join(lines)
+
+    @staticmethod
+    def server_list() -> str:
+        """返回大区列表"""
+        lines = ["LOL 大区列表:"]
+        standalone = {"1": "艾欧尼亚", "14": "黑色玫瑰", "31": "峡谷之巅"}
+        for sid, sname in standalone.items():
+            lines.append(f"  {sname}")
+        for group_name, ids in SERVER_GROUPS.items():
+            names = [SERVERS[i] for i in ids if i in SERVERS]
+            lines.append(f"  联盟{group_name}: {' / '.join(names)}")
+        return "\n".join(lines)
