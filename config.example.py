@@ -196,6 +196,12 @@ PROFANITY_CONFIG = {
     ],
 }
 
+# Web 播放器配置
+WEB_PLAYER_CONFIG = {
+    "url": "",       # 留空则自动检测（公网 IP 优先，回退内网 IP）；也可手动填写域名/IP
+    "port": 8080,
+}
+
 # Bot 消息自动撤回配置
 AUTO_RECALL_CONFIG = {
     "enabled": False,

@@ -16,9 +16,68 @@ from queue_manager import QueueManager
 from database import ImageCache, SongCache, Statistics
 from name_resolver import NameResolver
 from voice_client import VoiceClient
+from config import WEB_PLAYER_CONFIG
 from logger_config import get_logger
 
 logger = get_logger("Music")
+
+_resolved_web_url: str | None = None
+
+
+def _get_web_player_url() -> str:
+    """获取 Web 播放器 URL，自动检测 IP（公网优先，回退内网）"""
+    global _resolved_web_url
+    if _resolved_web_url is not None:
+        return _resolved_web_url
+
+    url = WEB_PLAYER_CONFIG.get("url", "")
+    if url:
+        _resolved_web_url = url
+        return url
+
+    port = WEB_PLAYER_CONFIG.get("port", 8080)
+    ip = _detect_ip()
+    if ip:
+        _resolved_web_url = f"http://{ip}:{port}"
+        logger.info(f"Web 播放器地址自动检测: {_resolved_web_url}")
+    else:
+        _resolved_web_url = ""
+    return _resolved_web_url
+
+
+def _detect_ip() -> str:
+    """检测本机 IP：优先公网 IPv4，回退内网 IP"""
+    import socket
+    import urllib.request
+
+    # 尝试公网 IP
+    for svc in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
+        try:
+            req = urllib.request.Request(svc, headers={"User-Agent": "curl/7.0"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                ip = resp.read().decode().strip()
+                if ip and ":" not in ip:
+                    return ip
+        except Exception:
+            continue
+
+    # 回退内网 IP
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return ""
+
+
+def _web_player_link() -> str:
+    """生成 Markdown 格式的 Web 播放器跳转链接"""
+    url = _get_web_player_url()
+    if not url:
+        return ""
+    return f"[▶ 网页播放器]({url})"
 
 
 class MusicHandler:
@@ -298,11 +357,13 @@ class MusicHandler:
             f"时长: {data['durationText']}"
         )
 
+        link = _web_player_link()
+        if link:
+            text += f"\n{link}"
+
         if attachments:
             att = attachments[0]
             text = f"![IMAGEw{att['width']}h{att['height']}]({att['fileKey']})\n" + text
-            if cache_hit:
-                text += "\n(封面来自缓存)"
 
         # 判断立即播放还是排队
         is_playing = self._is_playing()
@@ -340,7 +401,6 @@ class MusicHandler:
                       str(data.get("id", "")), data.get("duration", 0)),
                 daemon=True,
             ).start()
-            text += f"\n▶ 开始播放: {data['name']}"
         else:
             pos = self.queue.add_to_queue(song_data)
             actual = pos + 1 + (1 if current_song or is_playing else 0)
@@ -446,9 +506,11 @@ class MusicHandler:
                         f"歌曲: {data['name']}\n"
                         f"歌手: {data['artists']}\n"
                         f"专辑: {data['album']}\n"
-                        f"时长: {data['durationText']}\n"
-                        f"▶ 开始播放: {data['name']}"
+                        f"时长: {data['durationText']}"
                     )
+                    link = _web_player_link()
+                    if link:
+                        text += f"\n{link}"
                     if attachments:
                         att = attachments[0]
                         text = f"![IMAGEw{att['width']}h{att['height']}]({att['fileKey']})\n" + text
@@ -496,6 +558,131 @@ class MusicHandler:
     # 自动播放监控（在 main.py 中作为后台线程启动）
     # ------------------------------------------------------------------
 
+    def _update_play_state_redis(self, **overrides):
+        """更新 Redis 中的 play_state，支持暂停/恢复/跳转时的状态同步"""
+        try:
+            ps = {"start_time": self._play_start_time, "duration": self._play_duration}
+            ps.update(overrides)
+            self.queue.redis.set("music:play_state", json.dumps(ps))
+        except Exception:
+            pass
+
+    def start_web_command_listener(self):
+        """启动独立线程，通过 BLPOP 实时监听 Web 控制命令（无延迟）"""
+        def _listener():
+            logger.info("Web 命令监听线程已启动 (BLPOP)")
+            while True:
+                try:
+                    result = self.queue.redis.blpop("music:web_commands", timeout=2)
+                    if result:
+                        _, cmd_raw = result
+                        cmd = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)
+                        self._execute_web_command(cmd)
+                except Exception as e:
+                    logger.warning(f"Web 命令监听异常: {e}")
+                    time.sleep(1)
+
+        t = threading.Thread(target=_listener, daemon=True)
+        t.start()
+
+    def _execute_web_command(self, cmd: str):
+        """执行单条 Web 控制命令"""
+        logger.info(f"Web 控制命令: {cmd}")
+        try:
+            if cmd == "next":
+                self._play_start_time = 0
+                self._play_duration = 0
+                if self.voice and self.voice.available:
+                    try:
+                        self.voice.stop_audio()
+                    except Exception:
+                        pass
+
+            elif cmd == "stop":
+                self._play_start_time = 0
+                self._play_duration = 0
+                self.queue.clear_current()
+                self.queue.clear_queue()
+                try:
+                    self.queue.redis.delete("music:play_state")
+                except Exception:
+                    pass
+                if self.voice and self.voice.available:
+                    try:
+                        self.voice.stop_audio()
+                    except Exception:
+                        pass
+                self._leave_current_voice_channel()
+
+            elif cmd == "pause":
+                if self.voice and self.voice.available:
+                    if self.voice.pause_audio():
+                        elapsed = time.time() - self._play_start_time
+                        self._update_play_state_redis(
+                            paused=True, pause_elapsed=elapsed
+                        )
+
+            elif cmd == "resume":
+                if self.voice and self.voice.available:
+                    if self.voice.resume_audio():
+                        try:
+                            ps_raw = self.queue.redis.get("music:play_state")
+                            if ps_raw:
+                                ps = json.loads(ps_raw)
+                                elapsed = ps.get("pause_elapsed", 0)
+                                self._play_start_time = time.time() - elapsed
+                                self._update_play_state_redis(
+                                    start_time=self._play_start_time,
+                                    paused=False, pause_elapsed=None
+                                )
+                        except Exception:
+                            pass
+
+            elif cmd.startswith("seek:"):
+                try:
+                    seek_time = float(cmd.split(":", 1)[1])
+                    if self.voice and self.voice.available:
+                        self.voice.seek_audio(seek_time)
+                        self._play_start_time = time.time() - seek_time
+                        self._update_play_state_redis(
+                            start_time=self._play_start_time,
+                            paused=False, pause_elapsed=None
+                        )
+                except (ValueError, IndexError):
+                    pass
+
+            elif cmd.startswith("volume:"):
+                try:
+                    vol = int(cmd.split(":", 1)[1])
+                    if self.voice and self.voice.available:
+                        self.voice.set_volume(vol)
+                        try:
+                            self.queue.redis.set("music:volume", str(vol))
+                        except Exception:
+                            pass
+                except (ValueError, IndexError):
+                    pass
+
+            elif cmd.startswith("notify:"):
+                try:
+                    info = json.loads(cmd.split(":", 1)[1])
+                    ch = self._voice_channel_id
+                    ar = self._voice_channel_area
+                    if ch:
+                        name = info.get("name", "未知")
+                        artists = info.get("artists", "未知")
+                        pos = info.get("position", "?")
+                        current = self.queue.get_current()
+                        is_playing = current is not None
+                        actual = int(pos) + (1 if is_playing else 0)
+                        text = f"[Web 点歌] {name} - {artists}\n已加入队列 (位置: {actual})"
+                        self.sender.send_message(text, channel=ch, area=ar)
+                except Exception as e:
+                    logger.warning(f"Web 通知消息发送失败: {e}")
+
+        except Exception as e:
+            logger.warning(f"执行 Web 命令异常: {e}")
+
     def auto_play_monitor(self):
         """定期检查播放状态，自动播放下一首（基于歌曲时长判断是否播完）"""
         while True:
@@ -531,9 +718,12 @@ class MusicHandler:
                             Statistics.update_today(next_song.get("platform", "netease"), cache_hit=False)
                             logger.info(f"自动播放: {next_song.get('name')}")
 
-                            # 上传音频到频道
-                            ch = next_song.get("channel")
-                            ar = next_song.get("area")
+                            ch = next_song.get("channel") or self._voice_channel_id
+                            ar = next_song.get("area") or self._voice_channel_area
+                            next_song["channel"] = ch
+                            next_song["area"] = ar
+                            self.queue.set_current(next_song)
+
                             if ch:
                                 threading.Thread(
                                     target=self._stream_to_voice_channel,
@@ -542,7 +732,6 @@ class MusicHandler:
                                     daemon=True,
                                 ).start()
 
-                            # 发送通知
                             if ch:
                                 text = self._build_now_playing_text("自动播放", next_song)
                                 self.sender.send_message(
@@ -637,11 +826,13 @@ class MusicHandler:
             f"时长: {data['durationText']}"
         )
 
+        link = _web_player_link()
+        if link:
+            text += f"\n{link}"
+
         if attachments:
             att = attachments[0]
             text = f"![IMAGEw{att['width']}h{att['height']}]({att['fileKey']})\n" + text
-            if cache_hit:
-                text += "\n(封面来自缓存)"
 
         # 决定立即播放还是排队
         is_playing = self._is_playing()
@@ -683,7 +874,6 @@ class MusicHandler:
                       str(data.get("id", "")), data.get("duration", 0)),
                 daemon=True,
             ).start()
-            text += f"\n▶ 开始播放: {data['name']}"
         else:
             pos = self.queue.add_to_queue(song_data)
             actual = pos + 1 + (1 if current_song or is_playing else 0)
@@ -704,9 +894,17 @@ class MusicHandler:
             logger.warning(f"写入 play_state 到 Redis 失败: {e}")
 
     def _is_playing(self) -> bool:
-        """根据时间判断当前歌曲是否还在播放"""
+        """根据时间判断当前歌曲是否还在播放（暂停状态也算播放中）"""
         if self._play_start_time <= 0:
             return False
+        try:
+            ps_raw = self.queue.redis.get("music:play_state")
+            if ps_raw:
+                ps = json.loads(ps_raw)
+                if ps.get("paused"):
+                    return True
+        except Exception:
+            pass
         elapsed = time.time() - self._play_start_time
         return elapsed < self._play_duration
 
@@ -726,7 +924,11 @@ class MusicHandler:
         if song_data.get("album"):
             text += f"专辑: {song_data['album']}\n"
         if song_data.get("duration"):
-            text += f"时长: {song_data['duration']}"
+            text += f"时长: {song_data['duration']}\n"
+
+        link = _web_player_link()
+        if link:
+            text += link
 
         attachments = song_data.get("attachments", [])
         if attachments:

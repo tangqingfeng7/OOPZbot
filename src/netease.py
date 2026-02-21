@@ -64,19 +64,21 @@ class NeteaseCloud:
             return None
 
         song = songs[0]
-        artists = " / ".join(a["name"] for a in song.get("ar", []))
-        album = song.get("al", {})
-        duration_ms = song.get("dt", 0)
+        return self._parse_song(song)
 
-        return {
-            "id": song["id"],
-            "name": song["name"],
-            "artists": artists,
-            "album": album.get("name", ""),
-            "duration": duration_ms,
-            "durationText": self._format_duration(duration_ms),
-            "cover": album.get("picUrl", ""),
-        }
+    def search_many(self, keyword: str, limit: int = 10) -> list[dict]:
+        """搜索歌曲，返回多条结果列表"""
+        data = self._get("/cloudsearch", params={"keywords": keyword, "limit": limit, "type": 1})
+        if not data or data.get("code") != 200:
+            return []
+
+        songs = data.get("result", {}).get("songs", [])
+        results = []
+        for song in songs:
+            parsed = self._parse_song(song)
+            if parsed:
+                results.append(parsed)
+        return results
 
     def get_song_url(self, song_id: int) -> Optional[str]:
         """获取歌曲播放 URL"""
@@ -114,20 +116,7 @@ class NeteaseCloud:
         if not songs:
             return None
 
-        song = songs[0]
-        artists = " / ".join(a["name"] for a in song.get("ar", []))
-        album = song.get("al", {})
-        duration_ms = song.get("dt", 0)
-
-        return {
-            "id": song["id"],
-            "name": song["name"],
-            "artists": artists,
-            "album": album.get("name", ""),
-            "duration": duration_ms,
-            "durationText": self._format_duration(duration_ms),
-            "cover": album.get("picUrl", ""),
-        }
+        return self._parse_song(songs[0])
 
     def get_song_details_batch(self, song_ids: list) -> list:
         """批量获取歌曲详细信息（一次最多传 50 个 ID）"""
@@ -140,18 +129,12 @@ class NeteaseCloud:
 
         results = []
         for song in data.get("songs", []):
-            artists = " / ".join(a["name"] for a in song.get("ar", []))
-            album = song.get("al", {})
-            duration_ms = song.get("dt", 0)
-            results.append({
-                "id": song["id"],
-                "name": song["name"],
-                "artists": artists,
-                "album": album.get("name", ""),
-                "duration": duration_ms,
-                "durationText": self._format_duration(duration_ms),
-                "cover": album.get("picUrl", ""),
-            })
+            try:
+                parsed = self._parse_song(song)
+                if parsed:
+                    results.append(parsed)
+            except Exception as e:
+                logger.warning(f"解析歌曲失败 (id={song.get('id')}): {e}")
         return results
 
     def summarize_by_id(self, song_id: int) -> dict:
@@ -199,7 +182,34 @@ class NeteaseCloud:
         lyric_text = lrc.get("lyric", "")
         return lyric_text if lyric_text and "[" in lyric_text else None
 
+    def get_tlyric(self, song_id: int) -> Optional[str]:
+        """获取歌曲翻译歌词，无翻译返回 None。"""
+        data = self._get("/lyric/new", params={"id": song_id})
+        if not data or data.get("code") != 200:
+            return None
+        tlyric = data.get("tlyric", {})
+        tlyric_text = tlyric.get("lyric", "")
+        return tlyric_text if tlyric_text and "[" in tlyric_text else None
+
+    def _parse_song(self, song: dict) -> Optional[dict]:
+        """从 API 返回的原始歌曲数据中提取标准化字段，防御所有 None 值"""
+        if not song or not song.get("id"):
+            return None
+        ar = song.get("ar") or []
+        artists = " / ".join(a.get("name") or "未知" for a in ar) or "未知"
+        album = song.get("al") or {}
+        duration_ms = song.get("dt") or 0
+        return {
+            "id": song["id"],
+            "name": song.get("name") or "未知歌曲",
+            "artists": artists,
+            "album": album.get("name") or "",
+            "duration": duration_ms,
+            "durationText": self._format_duration(duration_ms),
+            "cover": album.get("picUrl") or "",
+        }
+
     @staticmethod
     def _format_duration(ms: int) -> str:
-        s = ms // 1000
+        s = (ms or 0) // 1000
         return f"{s // 60}:{s % 60:02d}"

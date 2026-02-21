@@ -203,6 +203,50 @@ class VoiceClient:
                 pass
         self._playing = False
 
+    def pause_audio(self) -> bool:
+        if not self._available:
+            return False
+        try:
+            result = self._run_on_pw(lambda page: page.evaluate("window.agoraPause()"))
+            return bool(result and result.get("ok"))
+        except Exception as e:
+            logger.warning(f"暂停失败: {e}")
+            return False
+
+    def resume_audio(self) -> bool:
+        if not self._available:
+            return False
+        try:
+            result = self._run_on_pw(lambda page: page.evaluate("window.agoraResume()"))
+            return bool(result and result.get("ok"))
+        except Exception as e:
+            logger.warning(f"恢复播放失败: {e}")
+            return False
+
+    def seek_audio(self, time_sec: float) -> bool:
+        if not self._available:
+            return False
+        try:
+            result = self._run_on_pw(
+                lambda page: page.evaluate(f"window.agoraSeek({time_sec})")
+            )
+            return bool(result and result.get("ok"))
+        except Exception as e:
+            logger.warning(f"跳转失败: {e}")
+            return False
+
+    def set_volume(self, vol: int) -> bool:
+        if not self._available:
+            return False
+        try:
+            result = self._run_on_pw(
+                lambda page: page.evaluate(f"window.agoraSetVolume({vol})")
+            )
+            return bool(result and result.get("ok"))
+        except Exception as e:
+            logger.warning(f"设置音量失败: {e}")
+            return False
+
     def leave(self):
         """离开当前 Agora 房间。"""
         self._stop_identity_heartbeat()

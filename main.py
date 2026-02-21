@@ -109,6 +109,7 @@ def main():
     handler = CommandHandler(sender, voice_client=voice)
 
     threading.Thread(target=handler.music.auto_play_monitor, daemon=True).start()
+    handler.music.start_web_command_listener()
     logger.info("自动播放监控已启动")
 
     threading.Thread(target=run_web_player, kwargs={"host": "0.0.0.0", "port": 8080}, daemon=True).start()

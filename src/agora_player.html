@@ -98,6 +98,45 @@ window.agoraSendIdentity = (oopzUid, agoraUid) => {
   }
 };
 
+window.agoraPause = () => {
+  if (!audioTrack || _state !== "playing") return { ok: false, error: "not playing" };
+  try {
+    audioTrack.pauseProcessAudioBuffer();
+    _state = "paused";
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+};
+
+window.agoraResume = () => {
+  if (!audioTrack || _state !== "paused") return { ok: false, error: "not paused" };
+  try {
+    audioTrack.resumeProcessAudioBuffer();
+    _state = "playing";
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+};
+
+window.agoraSeek = (time) => {
+  if (!audioTrack) return { ok: false, error: "no track" };
+  try {
+    audioTrack.seekAudioBuffer(time);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+};
+
+window.agoraSetVolume = (vol) => {
+  if (!audioTrack) return { ok: false, error: "no track" };
+  try {
+    audioTrack.setVolume(Math.max(0, Math.min(100, vol)));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+};
+
+window.agoraGetCurrentTime = () => {
+  if (!audioTrack) return 0;
+  try { return audioTrack.getCurrentTime(); } catch (_) { return 0; }
+};
+
 window.agoraStopAudio = async () => {
   if (!audioTrack) return;
   try {

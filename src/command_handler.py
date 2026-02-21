@@ -4,6 +4,7 @@
 """
 
 import re
+import threading
 import time
 from typing import Optional
 
@@ -228,6 +229,22 @@ class CommandHandler:
                 return False
         return None
 
+    def _schedule_user_msg_recall(self, message_id: str, channel: str, area: str, timestamp: str = ""):
+        """自动撤回开启时，延迟后撤回用户的指令消息"""
+        if not message_id:
+            return
+        if not AUTO_RECALL_CONFIG.get("enabled"):
+            return
+        delay = AUTO_RECALL_CONFIG.get("delay", 30)
+        if delay <= 0:
+            return
+        timer = threading.Timer(
+            delay, self.sender.recall_message,
+            kwargs={"message_id": message_id, "area": area, "channel": channel, "timestamp": timestamp},
+        )
+        timer.daemon = True
+        timer.start()
+
     @property
     def music(self):
         if self._music is None:
@@ -354,11 +371,13 @@ class CommandHandler:
             text = content.replace(_BOT_MENTION, "").strip()
             if text:
                 self._dispatch_mention(text, channel, area, user)
+            self._schedule_user_msg_recall(message_id, channel, area, msg_data.get("timestamp", ""))
             return
 
         # / 开头的命令
         if content.startswith("/"):
             self._dispatch_command(content, channel, area, user)
+            self._schedule_user_msg_recall(message_id, channel, area, msg_data.get("timestamp", ""))
             return
 
         # 非命令消息 → 聊天自动回复

@@ -43,6 +43,18 @@ NeteaseCloud API (:3000)
              Oopz API   Oopz CDN
                             │
                        database (SQLite)
+
+  ┌──────────────┐     Redis      ┌──────────────┐
+  │  web_player  │◄──────────────►│    music     │
+  │  (FastAPI)   │  web_commands  │              │
+  │  :8080       │  play_state    │ voice_client │
+  └──────┬───────┘  volume        └──────┬───────┘
+         │                               │
+    浏览器 (Web UI)                Agora RTC (语音频道)
+         │                               │
+    player.html                  agora_player.html
+    搜索/点歌/控制               Playwright 无头浏览器
+    暂停/进度/音量               音频推流/暂停/跳转/音量
 ```
 
 ## 技术栈
@@ -51,11 +63,13 @@ NeteaseCloud API (:3000)
 |------|------|
 | 运行时 | Python 3.10+ |
 | WebSocket | websocket-client |
-| 队列 | Redis |
+| Web 服务 | FastAPI + Uvicorn（Web 播放器 :8080） |
+| 队列 | Redis（播放队列 + 播放状态 + Web 命令通道） |
 | 数据库 | SQLite（缓存、统计） |
 | 加密签名 | cryptography（RSA PKCS1v15 + SHA256） |
 | AI 接口 | 豆包（火山方舟，OpenAI 兼容） |
 | 音乐 API | NeteaseCloudMusicApi（Node.js） |
+| 语音推流 | Agora Web SDK（Playwright 无头浏览器） |
 
 ## 项目结构
 
@@ -71,9 +85,13 @@ NeteaseCloud API (:3000)
 │   ├── oopz_client.py           # WebSocket 客户端（心跳、重连、事件分发）
 │   ├── oopz_sender.py           # 消息发送（RSA 签名、文件上传、用户管理）
 │   ├── command_handler.py       # 命令路由（@bot 指令 + / 命令 + 权限校验 + 脏话自动禁言）
-│   ├── music.py                 # 音乐核心（搜索、队列、播放、封面缓存、自动切歌）
-│   ├── netease.py               # 网易云音乐 API 封装
+│   ├── music.py                 # 音乐核心（搜索、队列、播放、封面缓存、自动切歌、Web 控制）
+│   ├── netease.py               # 网易云音乐 API 封装（搜索、歌词、翻译歌词）
 │   ├── queue_manager.py         # Redis 播放队列管理
+│   ├── web_player.py            # Web 播放器 FastAPI 服务（状态/歌词/队列/搜索/控制 API）
+│   ├── player.html              # Web 播放器前端（歌词同步、播放控制、搜索点歌）
+│   ├── agora_player.html        # Agora RTC 浏览器端（推流/暂停/跳转/音量控制）
+│   ├── voice_client.py          # Agora 语音客户端（Playwright 无头浏览器控制）
 │   ├── chat.py                  # AI 聊天 + 图片生成 + 关键词回复 + AI 脏话审核
 │   ├── lol_query.py             # LOL 封号查询
 │   ├── lol_fa8.py               # LOL 战绩查询（FA8 接口）
@@ -101,3 +119,66 @@ NeteaseCloud API (:3000)
 | `song_cache` | 歌曲信息缓存 | song_id, song_name, artist, play_count |
 | `play_history` | 播放历史记录 | song_cache_id, channel_id, user_id, played_at |
 | `statistics` | 每日统计汇总 | date, total_plays, unique_songs, cache_hits |
+
+## Web 播放器
+
+### 架构总览
+
+Web 播放器通过 FastAPI 提供 HTTP API，前端 `player.html` 通过轮询获取状态、歌词、队列，通过 POST 请求发送控制命令。
+
+```
+浏览器 (player.html)
+  │  轮询 GET /api/status, /api/queue, /api/lyric
+  │  控制 POST /api/control, /api/queue/action
+  │  搜索 GET /api/search → POST /api/add
+  ▼
+web_player.py (FastAPI :8080)
+  │  读取 Redis: music:current, music:queue, music:play_state, music:volume
+  │  写入 Redis: music:web_commands (RPUSH)
+  ▼
+music.py (BLPOP 独立线程，实时消费命令)
+  │  调用 voice_client 方法
+  ▼
+voice_client.py → agora_player.html (Playwright 无头浏览器)
+  │  Agora Web SDK: 推流/暂停/跳转/音量
+  ▼
+Agora RTC (语音频道)
+```
+
+### Redis 键约定
+
+| 键 | 类型 | 说明 |
+|----|------|------|
+| `music:current` | String (JSON) | 当前播放歌曲信息（song_id, name, artist, cover, duration_ms 等） |
+| `music:queue` | List (JSON[]) | 播放队列，每个元素为歌曲 JSON |
+| `music:play_state` | String (JSON) | 播放状态（start_time, duration, paused, pause_elapsed） |
+| `music:volume` | String | 当前音量 0-100 |
+| `music:web_commands` | List | Web 控制命令队列，由 BLPOP 实时消费 |
+
+### Web 控制命令
+
+命令通过 `RPUSH` 写入 `music:web_commands`，`music.py` 的独立监听线程通过 `BLPOP` 实时取出执行（延迟 < 100ms）。
+
+| 命令 | 说明 |
+|------|------|
+| `next` | 切下一首 |
+| `stop` | 停止播放并清空队列 |
+| `pause` | 暂停 |
+| `resume` | 恢复播放 |
+| `seek:<秒数>` | 跳转到指定位置 |
+| `volume:<0-100>` | 设置音量 |
+| `notify:<json>` | Web 点歌后在频道发送通知消息 |
+
+### Web API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/status` | 当前播放状态（歌曲信息、进度、暂停、音量） |
+| GET | `/api/queue` | 播放队列 |
+| GET | `/api/lyric?id=<song_id>` | 歌词 + 翻译歌词 |
+| GET | `/api/search?keyword=<kw>&limit=<n>` | 搜索歌曲 |
+| GET | `/api/liked?page=<n>&limit=<n>` | 喜欢的音乐列表（分页） |
+| POST | `/api/add` | 添加歌曲到队列（同时发送频道通知） |
+| POST | `/api/control` | 播放控制（action: next/stop/pause/resume/seek/volume） |
+| POST | `/api/queue/action` | 队列操作（action: remove/top, index） |
+| POST | `/api/liked/refresh` | 刷新喜欢列表缓存 |

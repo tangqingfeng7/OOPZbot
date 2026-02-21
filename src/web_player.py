@@ -11,7 +11,7 @@ from typing import Optional
 
 import redis
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from config import REDIS_CONFIG
@@ -25,7 +25,7 @@ app = FastAPI(title="Oopz Music Player", docs_url=None, redoc_url=None)
 _redis: Optional[redis.Redis] = None
 _netease: Optional[NeteaseCloud] = None
 
-_lyric_cache: dict[int, Optional[str]] = {}
+_lyric_cache: dict[str, dict] = {}
 _lyric_lock = Lock()
 _LYRIC_CACHE_MAX = 200
 
@@ -61,25 +61,41 @@ def api_status():
         except (ValueError, TypeError):
             duration = 0.0
 
+        paused = False
         if play_state_raw:
             ps = json.loads(play_state_raw)
             start = float(ps.get("start_time", 0) or 0)
             dur = float(ps.get("duration", 0) or 0)
+            paused = bool(ps.get("paused"))
             if dur:
                 duration = dur
-            if start and duration:
+            if paused:
+                progress = float(ps.get("pause_elapsed", 0) or 0)
+            elif start and duration:
                 progress = time.time() - start
+
+        vol_raw = r.get("music:volume")
+        volume = int(vol_raw) if vol_raw else 50
+
+        song_id = current.get("song_id") or current.get("id")
+        dur_text = current.get("durationText", "")
+        if not dur_text:
+            raw_dur = current.get("duration", "")
+            if isinstance(raw_dur, str) and ":" in raw_dur:
+                dur_text = raw_dur
 
         return JSONResponse({
             "playing": True,
-            "id": current.get("id"),
+            "paused": paused,
+            "id": song_id,
             "name": current.get("name", ""),
             "artists": current.get("artists", ""),
             "album": current.get("album", ""),
             "cover": current.get("cover", ""),
             "duration": duration,
-            "durationText": current.get("durationText", ""),
+            "durationText": dur_text,
             "progress": round(progress, 2),
+            "volume": volume,
         })
     except Exception as e:
         logger.error(f"/api/status 异常: {e}")
@@ -89,23 +105,31 @@ def api_status():
 @app.get("/api/lyric")
 def api_lyric(id: int = Query(...)):
     try:
+        cache_key = f"lyric:{id}"
         with _lyric_lock:
-            if id in _lyric_cache:
-                cached = _lyric_cache[id]
-                return JSONResponse({"id": id, "lyric": cached})
+            if cache_key in _lyric_cache:
+                cached = _lyric_cache[cache_key]
+                return JSONResponse({"id": id, **cached})
 
-        lyric = _get_netease().get_lyric(id)
+        nc = _get_netease()
+        lyric = nc.get_lyric(id)
+        tlyric = None
+        try:
+            tlyric = nc.get_tlyric(id)
+        except Exception:
+            pass
 
+        result = {"lyric": lyric, "tlyric": tlyric}
         with _lyric_lock:
             if len(_lyric_cache) >= _LYRIC_CACHE_MAX:
                 oldest = next(iter(_lyric_cache))
                 del _lyric_cache[oldest]
-            _lyric_cache[id] = lyric
+            _lyric_cache[cache_key] = result
 
-        return JSONResponse({"id": id, "lyric": lyric})
+        return JSONResponse({"id": id, **result})
     except Exception as e:
         logger.error(f"/api/lyric 异常: {e}")
-        return JSONResponse({"id": id, "lyric": None, "error": str(e)})
+        return JSONResponse({"id": id, "lyric": None, "tlyric": None, "error": str(e)})
 
 
 @app.get("/api/queue")
@@ -116,12 +140,17 @@ def api_queue():
         queue = []
         for item in items:
             song = json.loads(item)
+            dur_text = song.get("durationText", "")
+            if not dur_text:
+                raw_dur = song.get("duration", "")
+                if isinstance(raw_dur, str) and ":" in raw_dur:
+                    dur_text = raw_dur
             queue.append({
-                "id": song.get("id"),
+                "id": song.get("song_id") or song.get("id"),
                 "name": song.get("name", ""),
                 "artists": song.get("artists", ""),
                 "cover": song.get("cover", ""),
-                "durationText": song.get("durationText", ""),
+                "durationText": dur_text,
             })
         return JSONResponse({"queue": queue})
     except Exception as e:
@@ -146,6 +175,179 @@ def api_debug():
         })
     except Exception as e:
         return JSONResponse({"redis": "error", "detail": str(e)})
+
+
+KEY_WEB_COMMANDS = "music:web_commands"
+
+
+_liked_ids_cache: list = []
+
+
+@app.get("/api/liked")
+def api_liked(page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=50)):
+    """获取喜欢的音乐列表（分页）"""
+    global _liked_ids_cache
+    try:
+        nc = _get_netease()
+        if not _liked_ids_cache:
+            uid = nc.get_user_id()
+            if not uid:
+                return JSONResponse({"songs": [], "error": "无法获取网易云账号"})
+            _liked_ids_cache = nc.get_liked_ids(uid)
+        if not _liked_ids_cache:
+            return JSONResponse({"songs": [], "total": 0, "page": 1, "pages": 0})
+
+        total = len(_liked_ids_cache)
+        pages = (total + limit - 1) // limit
+        page = min(page, pages)
+        start = (page - 1) * limit
+        page_ids = _liked_ids_cache[start:start + limit]
+
+        details = nc.get_song_details_batch(page_ids)
+        return JSONResponse({"songs": details, "total": total, "page": page, "pages": pages})
+    except Exception as e:
+        logger.error(f"/api/liked 异常: {e}")
+        return JSONResponse({"songs": [], "error": str(e)})
+
+
+@app.post("/api/liked/refresh")
+def api_liked_refresh():
+    """刷新喜欢列表缓存"""
+    global _liked_ids_cache
+    _liked_ids_cache = []
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/search")
+def api_search(keyword: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=30)):
+    """搜索歌曲，返回列表"""
+    try:
+        nc = _get_netease()
+        results = nc.search_many(keyword, limit=limit)
+        return JSONResponse({"results": results})
+    except Exception as e:
+        logger.error(f"/api/search 异常: {e}")
+        return JSONResponse({"results": [], "error": str(e)})
+
+
+@app.post("/api/add")
+async def api_add(request: Request):
+    """通过歌曲 ID 添加到播放队列"""
+    try:
+        body = await request.json()
+        song_id = body.get("id")
+        if not song_id:
+            return JSONResponse({"ok": False, "error": "缺少歌曲 ID"})
+
+        nc = _get_netease()
+        url = nc.get_song_url(int(song_id))
+        if not url:
+            return JSONResponse({"ok": False, "error": "无法获取播放链接，可能需要 VIP"})
+
+        name = body.get("name", "")
+        artists = body.get("artists", "")
+        album = body.get("album", "")
+        cover = body.get("cover", "")
+        duration_ms = body.get("duration", 0)
+        duration_text = body.get("durationText", "")
+
+        song_data = {
+            "platform": "netease",
+            "song_id": str(song_id),
+            "name": name,
+            "artists": artists,
+            "album": album,
+            "url": url,
+            "cover": cover,
+            "duration": duration_text,
+            "duration_ms": duration_ms,
+            "attachments": [],
+            "channel": "",
+            "area": "",
+            "user": "web",
+        }
+
+        r = _get_redis()
+        r.rpush("music:queue", json.dumps(song_data, ensure_ascii=False))
+        queue_len = r.llen("music:queue")
+
+        notify = json.dumps({"name": name, "artists": artists, "position": queue_len}, ensure_ascii=False)
+        r.rpush("music:web_commands", f"notify:{notify}")
+
+        return JSONResponse({"ok": True, "position": queue_len, "name": name})
+    except Exception as e:
+        logger.error(f"/api/add 异常: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.post("/api/control")
+async def api_control(request: Request):
+    """Web 端控制接口：next / clear / stop / pause / resume / seek / volume"""
+    try:
+        body = await request.json()
+        action = body.get("action", "")
+        r = _get_redis()
+
+        if action == "next":
+            r.rpush(KEY_WEB_COMMANDS, "next")
+            return JSONResponse({"ok": True})
+        elif action == "clear":
+            r.delete("music:queue")
+            return JSONResponse({"ok": True})
+        elif action == "stop":
+            r.rpush(KEY_WEB_COMMANDS, "stop")
+            return JSONResponse({"ok": True})
+        elif action == "pause":
+            r.rpush(KEY_WEB_COMMANDS, "pause")
+            return JSONResponse({"ok": True})
+        elif action == "resume":
+            r.rpush(KEY_WEB_COMMANDS, "resume")
+            return JSONResponse({"ok": True})
+        elif action == "seek":
+            seek_time = body.get("time", 0)
+            r.rpush(KEY_WEB_COMMANDS, f"seek:{seek_time}")
+            return JSONResponse({"ok": True})
+        elif action == "volume":
+            vol = body.get("value", 50)
+            r.rpush(KEY_WEB_COMMANDS, f"volume:{vol}")
+            return JSONResponse({"ok": True})
+        else:
+            return JSONResponse({"ok": False, "error": f"未知操作: {action}"})
+    except Exception as e:
+        logger.error(f"/api/control 异常: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.post("/api/queue/action")
+async def api_queue_action(request: Request):
+    """队列项操作：top(置顶) / remove(删除)"""
+    try:
+        body = await request.json()
+        action = body.get("action", "")
+        index = body.get("index", -1)
+        r = _get_redis()
+
+        queue_items = r.lrange("music:queue", 0, -1)
+        if index < 0 or index >= len(queue_items):
+            return JSONResponse({"ok": False, "error": "索引无效"})
+
+        if action == "remove":
+            placeholder = "__REMOVED__"
+            r.lset("music:queue", index, placeholder)
+            r.lrem("music:queue", 1, placeholder)
+            return JSONResponse({"ok": True})
+        elif action == "top":
+            item = queue_items[index]
+            placeholder = "__REMOVED__"
+            r.lset("music:queue", index, placeholder)
+            r.lrem("music:queue", 1, placeholder)
+            r.lpush("music:queue", item)
+            return JSONResponse({"ok": True})
+        else:
+            return JSONResponse({"ok": False, "error": f"未知操作: {action}"})
+    except Exception as e:
+        logger.error(f"/api/queue/action 异常: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
 
 
 @app.get("/", response_class=HTMLResponse)
