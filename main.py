@@ -114,7 +114,8 @@ def main():
     agora_app_id = OOPZ_CONFIG.get("agora_app_id", "")
     voice = None
     if agora_app_id:
-        voice = VoiceClient(agora_app_id, oopz_uid=OOPZ_CONFIG.get("person_uid", ""))
+        init_timeout = OOPZ_CONFIG.get("agora_init_timeout", 60)
+        voice = VoiceClient(agora_app_id, oopz_uid=OOPZ_CONFIG.get("person_uid", ""), init_timeout=init_timeout)
         if voice.available:
             logger.info("Agora 语音频道已启用（浏览器模式）")
             atexit.register(voice.destroy)
@@ -128,8 +129,11 @@ def main():
     handler.music.start_web_command_listener()
     logger.info("自动播放监控已启动")
 
-    threading.Thread(target=run_web_player, kwargs={"host": "::", "port": 8080}, daemon=True).start()
-    logger.info("Web 歌词播放器已启动: http://[::]:8080 (IPv4 + IPv6)")
+    from config import WEB_PLAYER_CONFIG
+    web_host = WEB_PLAYER_CONFIG.get("host", "0.0.0.0")
+    web_port = WEB_PLAYER_CONFIG.get("port", 8080)
+    threading.Thread(target=run_web_player, kwargs={"host": web_host, "port": web_port}, daemon=True).start()
+    logger.info("Web 歌词播放器已启动: http://%s:%s (IPv4)", web_host, web_port)
 
     client = OopzClient(on_chat_message=handler.handle)
     logger.info("WebSocket 客户端启动中...")

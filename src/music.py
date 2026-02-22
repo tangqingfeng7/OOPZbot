@@ -47,7 +47,7 @@ def _get_web_player_url() -> str:
 
 
 def _detect_ip() -> str:
-    """检测本机 IP：优先 IPv6，回退 IPv4"""
+    """检测本机 IP：优先公网 IPv4（与 Web 仅监听 IPv4 一致），回退公网 IPv6、内网"""
     import socket
     import urllib.request
 
@@ -59,17 +59,27 @@ def _detect_ip() -> str:
         except Exception:
             return ""
 
-    # 优先公网 IPv6
+    # 优先公网 IPv4（Web 仅用 IPv4，链接也优先给 IPv4 便于外网访问）
+    for svc in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
+        ip = _query(svc)
+        if ip and ":" not in ip:
+            return ip
+
+    # 回退公网 IPv6
     for svc in ("https://api6.ipify.org", "https://ipv6.icanhazip.com"):
         ip = _query(svc)
         if ip:
             return ip
 
-    # 回退公网 IPv4
-    for svc in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
-        ip = _query(svc)
-        if ip:
-            return ip
+    # 回退内网 IPv4
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        pass
 
     # 回退内网 IPv6
     try:
@@ -80,16 +90,7 @@ def _detect_ip() -> str:
         return ip
     except Exception:
         pass
-
-    # 回退内网 IPv4
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return ""
+    return ""
 
 
 def _web_player_link() -> str:
@@ -490,6 +491,7 @@ class MusicHandler:
                 "url": data["url"],
                 "cover": data.get("cover"),
                 "duration": data["durationText"],
+                "duration_ms": data.get("duration", 0),
                 "attachments": attachments,
                 "channel": channel,
                 "area": area,
@@ -721,11 +723,21 @@ class MusicHandler:
                             pass
                         current = None
 
-                    # 队列有歌 → 自动切下一首
+                    # 队列有歌 → 自动切下一首（仅当 Bot 在语音频道时才真正播放，否则只从队列移除）
                     queue_length = self.queue.get_queue_length()
                     if queue_length > 0 and current is None:
                         next_song = self.queue.play_next()
                         if next_song:
+                            ch = next_song.get("channel") or self._voice_channel_id
+                            ar = next_song.get("area") or self._voice_channel_area
+                            next_song["channel"] = ch
+                            next_song["area"] = ar
+
+                            if not ch:
+                                logger.warning("自动播放: Bot 未在语音频道，跳过本首并从队列移除")
+                                time.sleep(2)
+                                continue
+
                             play_uuid = str(uuid.uuid4())
                             next_song["play_uuid"] = play_uuid
                             self._start_playing(next_song.get("duration_ms", 0))
@@ -738,28 +750,20 @@ class MusicHandler:
                             Statistics.update_today(next_song.get("platform", "netease"), cache_hit=False)
                             logger.info(f"自动播放: {next_song.get('name')}")
 
-                            ch = next_song.get("channel") or self._voice_channel_id
-                            ar = next_song.get("area") or self._voice_channel_area
-                            next_song["channel"] = ch
-                            next_song["area"] = ar
-                            self.queue.set_current(next_song)
+                            threading.Thread(
+                                target=self._stream_to_voice_channel,
+                                args=(next_song["url"], next_song.get("name", "music"), ch, ar,
+                                      str(next_song.get("song_id", "")), next_song.get("duration_ms", 0)),
+                                daemon=True,
+                            ).start()
 
-                            if ch:
-                                threading.Thread(
-                                    target=self._stream_to_voice_channel,
-                                    args=(next_song["url"], next_song.get("name", "music"), ch, ar,
-                                          str(next_song.get("song_id", "")), next_song.get("duration_ms", 0)),
-                                    daemon=True,
-                                ).start()
-
-                            if ch:
-                                text = self._build_now_playing_text("自动播放", next_song)
-                                self.sender.send_message(
-                                    text=text,
-                                    attachments=next_song.get("attachments", []),
-                                    channel=ch,
-                                    area=ar,
-                                )
+                            text = self._build_now_playing_text("自动播放", next_song)
+                            self.sender.send_message(
+                                text=text,
+                                attachments=next_song.get("attachments", []),
+                                channel=ch,
+                                area=ar,
+                            )
 
                             time.sleep(5)
                     elif queue_length == 0 and current is None and self._voice_channel_id:

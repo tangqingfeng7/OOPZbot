@@ -33,7 +33,7 @@ class VoiceClient:
     所有浏览器操作均通过任务队列派发到 Playwright 线程执行。
     """
 
-    def __init__(self, app_id: str, oopz_uid: str = ""):
+    def __init__(self, app_id: str, oopz_uid: str = "", init_timeout: float = 60):
         self._app_id = app_id
         self._oopz_uid = oopz_uid
         self._agora_uid = str(random.randint(100_000_000, 999_999_999))
@@ -53,7 +53,7 @@ class VoiceClient:
         pw_thread = threading.Thread(target=self._pw_thread_loop, daemon=True)
         pw_thread.start()
 
-        if not self._init_done.wait(timeout=30):
+        if not self._init_done.wait(timeout=init_timeout):
             logger.error("Playwright 线程启动超时")
             return
         if self._init_error:

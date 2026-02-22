@@ -357,7 +357,7 @@ def index():
         return HTMLResponse(f.read())
 
 
-def run_server(host: str = "::", port: int = 8080):
+def run_server(host: str = "0.0.0.0", port: int = 8080):
     display = f"[{host}]" if ":" in host else host
     logger.info(f"Web 播放器启动: http://{display}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

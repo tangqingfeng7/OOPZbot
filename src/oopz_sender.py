@@ -140,6 +140,15 @@ class OopzSender:
         self.signer = Signer()
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
+        # 代理：留空/不设=使用系统代理(HTTP_PROXY/HTTPS_PROXY)；False 或 "direct"=直连；或 "http://ip:port"
+        proxy_cfg = OOPZ_CONFIG.get("proxy")
+        if proxy_cfg is False or (isinstance(proxy_cfg, str) and proxy_cfg.strip().lower() == "direct"):
+            self.session.trust_env = False
+            logger.info("OopzSender: 已禁用代理（直连）")
+        elif isinstance(proxy_cfg, str) and proxy_cfg.strip():
+            self.session.proxies = {"http": proxy_cfg.strip(), "https": proxy_cfg.strip()}
+            logger.info(f"OopzSender: 使用代理 {proxy_cfg.strip()}")
+        # 否则使用 requests 默认行为（读取环境变量）
 
         logger.info("OopzSender 已初始化")
         logger.info(f"  用户: {OOPZ_CONFIG['person_uid']}")
@@ -183,6 +192,7 @@ class OopzSender:
             else [OOPZ_CONFIG["base_url"], OOPZ_CONFIG["api_url"]]
 
         last_error = None
+        resp = None
         for base in bases:
             try:
                 headers = {**self.session.headers, **self.signer.oopz_headers(sign_path, "")}
@@ -197,9 +207,11 @@ class OopzSender:
                 last_error = e
                 continue
 
+        if resp is not None:
+            return resp
         if last_error:
             raise last_error
-        return resp
+        raise RuntimeError("GET 请求未得到任何响应")
 
     # ---- 发送消息 ----
 
