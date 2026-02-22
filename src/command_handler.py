@@ -572,6 +572,31 @@ class CommandHandler:
                     self.sender.send_message("用法: @bot 解麦皇", channel=channel, area=area)
                 return
 
+        # 移出域 / 踢出
+        for prefix in ("移出域", "踢出", "移出"):
+            if text.startswith(prefix):
+                uid = self._resolve_target(text[len(prefix):].strip())
+                if uid:
+                    self._cmd_ban(uid, channel, area)
+                else:
+                    self.sender.send_message("用法: @bot 移出域 用户 或 @bot 踢出 用户", channel=channel, area=area)
+                return
+
+        # 解除域内封禁 / 解封
+        for prefix in ("解除域内封禁", "解封"):
+            if text.startswith(prefix):
+                uid = self._resolve_target(text[len(prefix):].strip())
+                if uid:
+                    self._cmd_unblock_in_area(uid, channel, area)
+                else:
+                    self.sender.send_message("用法: @bot 解封 用户（可先 @bot 封禁列表 查看）", channel=channel, area=area)
+                return
+
+        # 封禁列表
+        if text.strip() in ("封禁列表", "封禁名单", "黑名单"):
+            self._cmd_block_list(channel, area)
+            return
+
         # 撤回消息
         if text.startswith("撤回"):
             message_id = text[2:].strip()
@@ -718,6 +743,55 @@ class CommandHandler:
             self.sender.send_message(f"[x] 解除禁麦 {name} 失败: {result['error']}", channel=channel, area=area)
         else:
             self.sender.send_message(f"[ok] {result.get('message', f'已解除 {name} 的禁麦')}", channel=channel, area=area)
+
+    def _cmd_ban(self, uid: str, channel: str, area: str):
+        """将用户移出当前域（踢出域）。"""
+        from name_resolver import NameResolver
+        name = NameResolver().user(uid) or uid[:8]
+
+        result = self.sender.remove_from_area(uid, area=area)
+        if "error" in result:
+            self.sender.send_message(f"[x] 移出域 {name} 失败: {result['error']}", channel=channel, area=area)
+        else:
+            self.sender.send_message(f"[ok] {result.get('message', f'已移出域 {name}')}", channel=channel, area=area)
+
+    def _cmd_unblock_in_area(self, uid: str, channel: str, area: str):
+        """解除域内封禁（从域封禁列表移除）。"""
+        from name_resolver import NameResolver
+        name = NameResolver().user(uid) or uid[:8]
+
+        result = self.sender.unblock_user_in_area(uid, area=area)
+        if "error" in result:
+            self.sender.send_message(f"[x] 解除域内封禁 {name} 失败: {result['error']}", channel=channel, area=area)
+        else:
+            self.sender.send_message(f"[ok] {result.get('message', f'已解除 {name} 的域内封禁')}", channel=channel, area=area)
+
+    def _cmd_block_list(self, channel: str, area: str):
+        """展示当前域封禁列表（解除封禁前可先查看）。"""
+        from name_resolver import get_resolver
+        resolver = get_resolver()
+
+        data = self.sender.get_area_blocks(area=area)
+        if "error" in data:
+            self.sender.send_message(f"获取域封禁列表失败: {data['error']}", channel=channel, area=area)
+            return
+
+        blocks = data.get("blocks", [])
+        area_name = resolver.area(area)
+        if not blocks:
+            self.sender.send_message(f"{area_name} 当前无封禁用户。", channel=channel, area=area)
+            return
+
+        lines = [f"{area_name} - 封禁列表（共 {len(blocks)} 人）", "---"]
+        for i, item in enumerate(blocks, 1):
+            uid = item.get("uid") or item.get("person") or item.get("target") or str(item)
+            if isinstance(uid, dict):
+                uid = uid.get("uid") or uid.get("person") or ""
+            name = resolver.user(uid) if isinstance(uid, str) else ""
+            disp = f"{name} ({uid[:8]}…)" if name else uid[:16] + "…"
+            lines.append(f"{i}. {disp}")
+        lines.append("--- 使用 /unblock 用户 或 @bot 解封 用户 解除封禁")
+        self.sender.send_message("\n".join(lines), channel=channel, area=area)
 
     # ------------------------------------------------------------------
     # 域成员列表
@@ -1360,6 +1434,31 @@ class CommandHandler:
                 self.sender.send_message("用法: /解麦 皇", channel=channel, area=area)
             return
 
+        # /ban <名字> - 移出域（踢出）
+        if command == "/ban":
+            raw = " ".join(parts[1:]) if len(parts) > 1 else ""
+            uid = self._resolve_target(raw)
+            if uid:
+                self._cmd_ban(uid, channel, area)
+            else:
+                self.sender.send_message("用法: /ban 用户", channel=channel, area=area)
+            return
+
+        # /unblock <名字> - 解除域内封禁（从域封禁列表移除）
+        if command == "/unblock":
+            raw = " ".join(parts[1:]) if len(parts) > 1 else ""
+            uid = self._resolve_target(raw)
+            if uid:
+                self._cmd_unblock_in_area(uid, channel, area)
+            else:
+                self.sender.send_message("用法: /unblock 用户（可先 /blocklist 查看封禁列表）", channel=channel, area=area)
+            return
+
+        # /blocklist - 域封禁列表
+        if command == "/blocklist":
+            self._cmd_block_list(channel, area)
+            return
+
         # /autorecall - 自动撤回开关
         if command == "/autorecall":
             arg = " ".join(parts[1:]) if len(parts) > 1 else ""
@@ -1723,7 +1822,11 @@ class CommandHandler:
                 "│ @bot 解禁<用户>        解除   │",
                 "│ @bot 禁麦<用户>        禁麦   │",
                 "│ @bot 解麦<用户>        解除   │",
+                "│ @bot 移出域<用户> 踢出域     │",
+                "│ @bot 解封<用户> 解除域内封禁 │",
+                "│ @bot 封禁列表  域封禁名单   │",
                 "│ /禁言  /解禁  /禁麦  /解麦    │",
+                "│ /ban  /unblock  /blocklist   │",
                 "├─────────────────────────────┤",
                 "│ @bot 撤回<消息ID>  撤回消息   │",
                 "│ @bot 撤回最后      撤回最后   │",

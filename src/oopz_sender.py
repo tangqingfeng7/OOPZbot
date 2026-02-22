@@ -1166,6 +1166,105 @@ class OopzSender:
         body = {"area": area, "target": uid}
         return self._manage_patch("解除禁麦", url_path, query, body)
 
+    def remove_from_area(
+        self,
+        uid: str,
+        area: Optional[str] = None,
+    ) -> dict:
+        """
+        将用户移出当前域（踢出域）。
+
+        API: POST /area/v3/remove?area={area}&target={uid}
+
+        Args:
+            uid:  目标用户 UID
+            area: 域 ID（默认取配置）
+        """
+        area = area or OOPZ_CONFIG["default_area"]
+        url_path = "/area/v3/remove"
+        query = f"?area={area}&target={uid}"
+        full_path = url_path + query
+        body = {"area": area, "target": uid}
+
+        try:
+            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+            headers = {**self.session.headers, **self.signer.oopz_headers(full_path, body_str)}
+            url = OOPZ_CONFIG["base_url"] + full_path
+            resp = self.session.post(url, headers=headers, data=body_str.encode("utf-8"))
+        except Exception as e:
+            logger.error(f"移出域请求异常: {e}")
+            return {"error": str(e)}
+
+        raw = resp.text or ""
+        logger.info(f"移出域 POST {full_path} -> HTTP {resp.status_code}, body: {raw[:300]}")
+
+        if resp.status_code != 200:
+            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
+
+        try:
+            result = resp.json()
+        except Exception:
+            return {"error": f"响应非 JSON: {raw[:200]}"}
+
+        if result.get("status") is True:
+            logger.info("移出域成功")
+            return {"status": True, "message": "已移出域"}
+
+        err = result.get("message") or result.get("error") or str(result)
+        logger.error(f"移出域失败: {err}")
+        return {"error": err}
+
+    def get_area_blocks(self, area: Optional[str] = None, name: str = "") -> dict:
+        """
+        获取域内封禁列表。
+
+        API: GET /client/v1/area/v1/areaSettings/v1/blocks?area={area}&name={name}
+
+        Returns:
+            {"blocks": [{"uid": "...", ...}, ...]} 或 {"error": "..."}
+        """
+        area = area or OOPZ_CONFIG["default_area"]
+        url_path = "/client/v1/area/v1/areaSettings/v1/blocks"
+        params = {"area": area, "name": name}
+
+        try:
+            resp = self._get(url_path, params=params)
+            if resp.status_code != 200:
+                logger.error(f"获取域封禁列表失败: HTTP {resp.status_code}")
+                return {"error": f"HTTP {resp.status_code}"}
+
+            result = resp.json()
+            if not result.get("status"):
+                msg = result.get("message") or result.get("error") or "未知错误"
+                logger.error(f"获取域封禁列表失败: {msg}")
+                return {"error": msg}
+
+            data = result.get("data", {})
+            blocks = data if isinstance(data, list) else data.get("blocks", data.get("list", []))
+            if not isinstance(blocks, list):
+                blocks = []
+            logger.info(f"获取域封禁列表: {len(blocks)} 人")
+            return {"blocks": blocks}
+        except Exception as e:
+            logger.error(f"获取域封禁列表异常: {e}")
+            return {"error": str(e)}
+
+    def unblock_user_in_area(
+        self,
+        uid: str,
+        area: Optional[str] = None,
+    ) -> dict:
+        """
+        解除域内封禁（从域封禁列表移除）。
+
+        API: PATCH /client/v1/area/v1/unblock?area={area}&target={uid}
+        """
+        area = area or OOPZ_CONFIG["default_area"]
+        url_path = "/client/v1/area/v1/unblock"
+        query = f"?area={area}&target={uid}"
+        body = {"area": area, "target": uid}
+        return self._manage_patch("解除域内封禁", url_path, query, body)
+
     def _manage_patch(self, action: str, url_path: str, query: str, body: dict) -> dict:
         """通用 PATCH 管理操作（禁言/禁麦等），参数同时放 query string 和 body。"""
         full_path = url_path + query

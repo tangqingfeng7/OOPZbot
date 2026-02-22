@@ -419,6 +419,55 @@ GET /area/v3/members?area={area}&offsetStart={start}&offsetEnd={end}
 }
 ```
 
+### 移出域（踢出用户）
+
+```
+POST /area/v3/remove?area={area}&target={uid}
+```
+
+**参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `area` | 域 ID |
+| `target` | 被移出用户的 UID |
+
+**请求体（与 query 一致）：**
+
+```json
+{
+  "area": "域ID",
+  "target": "用户UID"
+}
+```
+
+**说明：** 将指定用户从当前域移出（踢出域），需管理员权限。
+
+### 获取域封禁列表
+
+```
+GET /client/v1/area/v1/areaSettings/v1/blocks?area={area}&name={name}
+```
+
+**参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `area` | 域 ID |
+| `name` | 可选，搜索关键词（空则返回全部） |
+
+**说明：** 解除域内封禁前可先调用此接口查看当前封禁用户列表。
+
+### 解除域内封禁（从域封禁列表移除）
+
+```
+PATCH /client/v1/area/v1/unblock?area={area}&target={uid}
+```
+
+**参数：** `area`、`target`（要解除封禁的用户 UID）。请求体与 query 一致。
+
+**说明：** 从域封禁列表中移除用户，允许其再次加入该域。可先通过「获取域封禁列表」查看当前封禁用户。
+
 ### 搜索域成员
 
 ```
