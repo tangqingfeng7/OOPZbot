@@ -7,6 +7,7 @@ import sys
 import subprocess
 import time
 import atexit
+import shutil
 
 if sys.platform == "win32":
     os.system("chcp 65001 >nul 2>&1")
@@ -47,11 +48,26 @@ def _start_netease_api():
         logger.info(f"网易云 API 目录不存在 ({api_dir})，跳过自动启动")
         return
 
+    # 查找 node：优先 PATH，再试 ~/.local/bin（常见用户安装位置）
+    node_cmd = shutil.which("node")
+    if not node_cmd:
+        for candidate in (os.path.expanduser("~/.local/bin/node"), "/usr/bin/node"):
+            if candidate and os.path.isfile(candidate):
+                node_cmd = candidate
+                break
+    if not node_cmd:
+        node_cmd = "node"
+    env = os.environ.copy()
+    local_bin = os.path.expanduser("~/.local/bin")
+    if local_bin and local_bin not in env.get("PATH", ""):
+        env["PATH"] = local_bin + os.pathsep + env.get("PATH", "")
+
     logger.info(f"正在启动网易云 API: {api_dir}")
     try:
         _netease_proc = subprocess.Popen(
-            ["node", "app.js"],
+            [node_cmd, "app.js"],
             cwd=api_dir,
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
@@ -112,8 +128,8 @@ def main():
     handler.music.start_web_command_listener()
     logger.info("自动播放监控已启动")
 
-    threading.Thread(target=run_web_player, kwargs={"host": "0.0.0.0", "port": 8080}, daemon=True).start()
-    logger.info("Web 歌词播放器已启动: http://0.0.0.0:8080")
+    threading.Thread(target=run_web_player, kwargs={"host": "::", "port": 8080}, daemon=True).start()
+    logger.info("Web 歌词播放器已启动: http://[::]:8080 (IPv4 + IPv6)")
 
     client = OopzClient(on_chat_message=handler.handle)
     logger.info("WebSocket 客户端启动中...")

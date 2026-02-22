@@ -198,7 +198,7 @@ PROFANITY_CONFIG = {
 
 # Web 播放器配置
 WEB_PLAYER_CONFIG = {
-    "url": "",       # 留空则自动检测（公网 IP 优先，回退内网 IP）；也可手动填写域名/IP
+    "url": "",       # 留空则自动检测（公网 IPv4/IPv6 优先，回退内网）；也可手动填写域名/IP，IPv6 示例: http://[::1]:8080
     "port": 8080,
 }
 

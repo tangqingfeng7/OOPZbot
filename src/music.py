@@ -38,7 +38,8 @@ def _get_web_player_url() -> str:
     port = WEB_PLAYER_CONFIG.get("port", 8080)
     ip = _detect_ip()
     if ip:
-        _resolved_web_url = f"http://{ip}:{port}"
+        host_part = f"[{ip}]" if ":" in ip else ip
+        _resolved_web_url = f"http://{host_part}:{port}"
         logger.info(f"Web 播放器地址自动检测: {_resolved_web_url}")
     else:
         _resolved_web_url = ""
@@ -46,22 +47,41 @@ def _get_web_player_url() -> str:
 
 
 def _detect_ip() -> str:
-    """检测本机 IP：优先公网 IPv4，回退内网 IP"""
+    """检测本机 IP：优先 IPv6，回退 IPv4"""
     import socket
     import urllib.request
 
-    # 尝试公网 IP
-    for svc in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
+    def _query(url: str) -> str:
         try:
-            req = urllib.request.Request(svc, headers={"User-Agent": "curl/7.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "curl/7.0"})
             with urllib.request.urlopen(req, timeout=3) as resp:
-                ip = resp.read().decode().strip()
-                if ip and ":" not in ip:
-                    return ip
+                return resp.read().decode().strip()
         except Exception:
-            continue
+            return ""
 
-    # 回退内网 IP
+    # 优先公网 IPv6
+    for svc in ("https://api6.ipify.org", "https://ipv6.icanhazip.com"):
+        ip = _query(svc)
+        if ip:
+            return ip
+
+    # 回退公网 IPv4
+    for svc in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
+        ip = _query(svc)
+        if ip:
+            return ip
+
+    # 回退内网 IPv6
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        s.connect(("2001:4860:4860::8888", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        pass
+
+    # 回退内网 IPv4
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
