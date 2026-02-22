@@ -64,7 +64,7 @@ cp private_key.example.py private_key.py
 python main.py
 ```
 
-启动后会自动连接 Oopz WebSocket；若配置了 Agora，Bot 可加入语音频道并推流播放音乐。Web 歌词播放器默认在配置的端口（如 8080）提供页面。
+启动后会自动连接 Oopz WebSocket；若配置了 Agora，Bot 可加入语音频道并推流播放音乐。Web 歌词播放器默认在配置的端口（如 3001）提供页面。
 
 ---
 
