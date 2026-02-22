@@ -39,6 +39,9 @@ copy private_key.example.py private_key.py
 | `base_url` | 网易云 API 服务地址（默认 `http://localhost:3000`） |
 | `cookie` | 登录后的 MUSIC_U Cookie（可选） |
 | `auto_start_path` | 相对于项目根目录的 API 目录名（如 `"NeteaseCloudMusicApi"`），留空则不自动启动 |
+| `audio_download_timeout` | 音频下载读超时（秒），弱网可调大（默认 `120`） |
+| `audio_download_retries` | 下载失败后重试次数（默认 `2`） |
+| `audio_quality` | 音质档位：`"standard"`（体积小/弱网友好）或 `"exhigh"`（音质更好） |
 
 ### 豆包 AI 聊天 (`DOUBAO_CONFIG`)
 
