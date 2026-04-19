@@ -451,6 +451,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         attachments: Optional[list] = None,
         style_tags: Optional[list] = None,
         channel: Optional[str] = None,
+        version: str = "v2",
     ) -> dict:
         """
         发送私信消息。
@@ -471,26 +472,25 @@ class OopzSender(UploadMixin, OopzApiMixin):
             logger.error("发送私信失败：私信 channel 不可用 (target=%s)", target[:12])
             return {"error": "私信 channel 不可用", "debug_reason": "missing_channel"}
 
-        # Web 端格式：请求体为 { "message": { ... } }，正文用 content（Playwright 抓包确认）
-        body = {
-            "message": {
-                "area": "",
-                "channel": channel,
-                "target": target,
-                "clientMessageId": self.signer.client_message_id(),
-                "timestamp": self.signer.timestamp_us(),
-                "isMentionAll": False,
-                "mentionList": [],
-                "styleTags": style_tags if style_tags is not None else [],
-                "referenceMessageId": None,
-                "animated": False,
-                "displayName": "",
-                "duration": 0,
-                "content": text,
-                "attachments": attachments or [],
-            }
+        normalized_version = "v1" if str(version).strip().lower() == "v1" else "v2"
+        message = {
+            "area": "",
+            "channel": channel,
+            "target": target,
+            "clientMessageId": self.signer.client_message_id(),
+            "timestamp": self.signer.timestamp_us(),
+            "isMentionAll": False,
+            "mentionList": [],
+            "styleTags": style_tags if style_tags is not None else [],
+            "referenceMessageId": None,
+            "animated": False,
+            "displayName": "",
+            "duration": 0,
+            "content": text,
+            "attachments": attachments or [],
         }
-        url_path = "/im/session/v2/sendImMessage"
+        body = message if normalized_version == "v1" else {"message": message}
+        url_path = f"/im/session/{normalized_version}/sendImMessage"
 
         try:
             self._throttle()

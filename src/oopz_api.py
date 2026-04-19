@@ -768,9 +768,9 @@ class OopzApiMixin:
                 if not data.get("status"):
                     continue
                 for person in data.get("data", []):
-                    uid = person.get("uid", "")
+                    uid = person.get("uid") or person.get("id") or ""
                     if uid:
-                        result_map[uid] = person
+                        result_map[str(uid)] = person
             except Exception as e:
                 logger.debug(f"批量获取用户信息部分失败: {e}")
         return result_map

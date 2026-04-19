@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import os
+import tempfile
 from typing import TYPE_CHECKING, Optional
 
 import requests
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 logger = get_logger("OopzUpload")
 
 UPLOAD_PUT_TIMEOUT = (10, 60)
+DOWNLOAD_TIMEOUT = (10, 30)
+STREAM_CHUNK_SIZE = 64 * 1024
 
 
 def get_image_info(file_path: str) -> tuple[int, int, int]:
@@ -31,6 +33,66 @@ def get_image_info(file_path: str) -> tuple[int, int, int]:
 
 class UploadMixin:
     """Oopz 文件上传 Mixin — 图片、音频上传与发送。"""
+
+    @staticmethod
+    def _pick_audio_ext(content_type: str) -> str:
+        if "mp4" in content_type or "m4a" in content_type:
+            return ".m4a"
+        if "flac" in content_type:
+            return ".flac"
+        return ".mp3"
+
+    def _request_signed_upload(self, *, file_type: str, ext: str) -> dict:
+        resp = self._put("/rtc/v1/cos/v1/signedUploadUrl", {"type": file_type, "ext": ext})
+        resp.raise_for_status()
+        data = resp.json().get("data") or {}
+        signed_url = data.get("signedUrl")
+        file_key = data.get("file")
+        cdn_url = data.get("url")
+        if not signed_url or not file_key or not cdn_url:
+            raise ValueError("签名上传地址响应缺少必要字段")
+        return {"signed_url": signed_url, "file_key": file_key, "cdn_url": cdn_url}
+
+    def _download_to_spooled_file(
+        self,
+        url: str,
+        *,
+        timeout: int | tuple[int, int],
+        headers: Optional[dict] = None,
+        stream: bool = False,
+    ) -> dict:
+        with self.session.get(url, stream=stream, timeout=timeout, headers=headers) as resp:
+            resp.raise_for_status()
+            content_type = resp.headers.get("Content-Type", "")
+
+            if not stream:
+                raw = resp.content
+                fp = tempfile.SpooledTemporaryFile(max_size=2 * 1024 * 1024)
+                fp.write(raw)
+                fp.seek(0)
+                return {
+                    "file": fp,
+                    "size": len(raw),
+                    "md5": hashlib.md5(raw).hexdigest(),
+                    "content_type": content_type,
+                }
+
+            fp = tempfile.SpooledTemporaryFile(max_size=2 * 1024 * 1024)
+            digest = hashlib.md5()
+            size = 0
+            for chunk in resp.iter_content(chunk_size=STREAM_CHUNK_SIZE):
+                if not chunk:
+                    continue
+                fp.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+            fp.seek(0)
+            return {
+                "file": fp,
+                "size": size,
+                "md5": digest.hexdigest(),
+                "content_type": content_type,
+            }
 
     def upload_file(self, file_path: str, file_type: str = "IMAGE", ext: str = ".webp") -> dict:
         """上传本地文件，返回 { fileKey, url }"""
@@ -58,44 +120,35 @@ class UploadMixin:
 
         return {"fileKey": file_key, "url": cdn_url}
 
-    def upload_file_from_url(self, image_url: str) -> dict:
+    def upload_file_from_url(self, image_url: str, *, stream: bool = False) -> dict:
         """从网络 URL 下载图片并上传到 Oopz（不落地磁盘）"""
         try:
-            resp = self.session.get(image_url, stream=True, timeout=15)
-            resp.raise_for_status()
-            image_bytes = resp.content
+            downloaded = self._download_to_spooled_file(
+                image_url, timeout=DOWNLOAD_TIMEOUT, stream=stream
+            )
+            fp = downloaded["file"]
+            with Image.open(fp) as img:
+                width, height = img.size
+                ext = "." + (img.format or "webp").lower()
 
-            img = Image.open(io.BytesIO(image_bytes))
-            width, height = img.size
-            file_size = len(image_bytes)
-            ext = "." + (img.format or "webp").lower()
-            md5 = hashlib.md5(image_bytes).hexdigest()
-
-            url_path = "/rtc/v1/cos/v1/signedUploadUrl"
-            body = {"type": "IMAGE", "ext": ext}
-            resp2 = self._put(url_path, body)
-            resp2.raise_for_status()
-            data = resp2.json()["data"]
-
-            signed_url = data["signedUrl"]
-            file_key = data["file"]
-            cdn_url = data["url"]
-
+            upload_target = self._request_signed_upload(file_type="IMAGE", ext=ext)
+            fp.seek(0)
             put_resp = self.session.put(
-                signed_url,
-                data=image_bytes,
+                upload_target["signed_url"],
+                data=fp,
                 headers={"Content-Type": "application/octet-stream"},
                 timeout=UPLOAD_PUT_TIMEOUT,
             )
             put_resp.raise_for_status()
+            fp.close()
 
             attachment = {
-                "fileKey": file_key,
-                "url": cdn_url,
+                "fileKey": upload_target["file_key"],
+                "url": upload_target["cdn_url"],
                 "width": width,
                 "height": height,
-                "fileSize": file_size,
-                "hash": md5,
+                "fileSize": downloaded["size"],
+                "hash": downloaded["md5"],
                 "animated": False,
                 "displayName": "",
                 "attachmentType": "IMAGE",
@@ -107,54 +160,42 @@ class UploadMixin:
             return {"code": "error", "message": str(e), "data": None}
 
     def upload_audio_from_url(
-        self, audio_url: str, filename: str = "music.mp3", duration_ms: int = 0
+        self,
+        audio_url: str,
+        filename: str = "music.mp3",
+        duration_ms: int = 0,
+        *,
+        stream: bool = False,
     ) -> dict:
         """从网络 URL 下载音频并上传到 Oopz（AUDIO 类型）"""
         try:
-            resp = self.session.get(audio_url, timeout=30, headers={
-                "Referer": "https://music.163.com/",
-            })
-            resp.raise_for_status()
-            audio_bytes = resp.content
-            file_size = len(audio_bytes)
-
-            content_type = resp.headers.get("Content-Type", "")
-            if "mp4" in content_type or "m4a" in content_type:
-                ext = ".m4a"
-            elif "flac" in content_type:
-                ext = ".flac"
-            else:
-                ext = ".mp3"
-
-            md5 = hashlib.md5(audio_bytes).hexdigest()
-
-            url_path = "/rtc/v1/cos/v1/signedUploadUrl"
-            body = {"type": "AUDIO", "ext": ext}
-            resp2 = self._put(url_path, body)
-            resp2.raise_for_status()
-            data = resp2.json()["data"]
-
-            signed_url = data["signedUrl"]
-            file_key = data["file"]
-            cdn_url = data["url"]
-
+            downloaded = self._download_to_spooled_file(
+                audio_url,
+                timeout=30,
+                headers={"Referer": "https://music.163.com/"},
+                stream=stream,
+            )
+            ext = self._pick_audio_ext(downloaded["content_type"])
+            upload_target = self._request_signed_upload(file_type="AUDIO", ext=ext)
+            downloaded["file"].seek(0)
             put_resp = self.session.put(
-                signed_url,
-                data=audio_bytes,
+                upload_target["signed_url"],
+                data=downloaded["file"],
                 headers={"Content-Type": "application/octet-stream"},
                 timeout=UPLOAD_PUT_TIMEOUT,
             )
             put_resp.raise_for_status()
+            downloaded["file"].close()
 
             base_name = os.path.splitext(filename or "")[0] or "music"
             display_name = base_name + ext
             duration_sec = duration_ms // 1000 if duration_ms else 0
 
             attachment = {
-                "fileKey": file_key,
-                "url": cdn_url,
-                "fileSize": file_size,
-                "hash": md5,
+                "fileKey": upload_target["file_key"],
+                "url": upload_target["cdn_url"],
+                "fileSize": downloaded["size"],
+                "hash": downloaded["md5"],
                 "animated": False,
                 "displayName": display_name,
                 "attachmentType": "AUDIO",
