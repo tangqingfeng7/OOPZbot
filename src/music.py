@@ -97,6 +97,26 @@ class MusicHandler(PlaybackMixin):
         self.platforms.register(self.netease)
         self._init_extra_platforms()
 
+        # 登录账号"我喜欢的音乐"本地搜索索引：/bf 时优先在这里命中，
+        # 命中可省一次 cloudsearch 且更贴近用户口味。索引在后台懒加载，
+        # 不阻塞启动；30 分钟过期后下一次 /bf 会触发后台刷新。
+        self._liked_search_index: list[dict] = []
+        self._liked_search_loaded_at: float = 0.0
+        self._liked_search_loading: bool = False
+        self._liked_search_lock = threading.Lock()
+        threading.Thread(
+            target=self._refresh_liked_search_index, daemon=True,
+        ).start()
+
+        # 封面下载+上传 side channel：首次播放某首歌时，封面没缓存
+        # 需要 1-3s 的"下载封面 + 申请 OSS 签名 + 上传"同步阻塞；
+        # 通过在搜索成功后立即后台预热，使其与 voice 加入/队列写入并行，
+        # 真正发消息时直接取结果，能省掉这段串行延迟。
+        # song_data 要进 Redis 不能塞 Event，故用 (platform, song_id)
+        # 作 key 的进程内注册表承载 future。
+        self._cover_prefetch: dict[str, tuple[threading.Event, dict]] = {}
+        self._cover_prefetch_lock = threading.Lock()
+
     def _get_queue(self, area: str = "") -> QueueManager:
         """获取域隔离的 QueueManager（带缓存）。"""
         area = (area or "").strip()
@@ -330,11 +350,30 @@ class MusicHandler(PlaybackMixin):
         return p.search_many(keyword, limit=max(1, min(limit, 10)))
 
     def search_best_candidate(self, keyword: str, platform: str = _PLATFORM_NETEASE) -> Optional[dict]:
-        """快速搜索首条候选，用于 /bf 直播放歌的快速命中。"""
+        """快速搜索首条候选，用于 /bf 直播放歌的快速命中。
+
+        netease 平台优先在登录账号"我喜欢的音乐"里搜，命中就用喜欢列表的那一首；
+        没命中再退回到全网 cloudsearch。
+        """
         resolved_platform = platform or _PLATFORM_NETEASE
         p = self.platforms.get(resolved_platform)
         if not p:
             return None
+        if resolved_platform == _PLATFORM_NETEASE:
+            try:
+                liked_hit = self._lookup_liked_song(keyword)
+            except Exception as e:
+                logger.debug("喜欢列表搜索异常 (%r): %s", keyword, e)
+                liked_hit = None
+            if liked_hit:
+                logger.info(
+                    "/bf 命中喜欢列表: keyword=%r → %s - %s (id=%s)",
+                    keyword,
+                    liked_hit.get("name"),
+                    liked_hit.get("artists"),
+                    liked_hit.get("id"),
+                )
+                return liked_hit
         try:
             return p.search(keyword, limit=1)
         except Exception as e:
@@ -407,6 +446,7 @@ class MusicHandler(PlaybackMixin):
             data = result["data"]
 
         song_data = self._build_song_data_from_platform_data(data, platform, song_id, channel, area, user)
+        self._kickoff_cover_prefetch(song_data)
         if not self._check_and_enter_voice_channel(user, channel, area):
             return
         user_name = self.names.user(user) if user else "未知用户"
@@ -562,6 +602,7 @@ class MusicHandler(PlaybackMixin):
         if not song_data:
             self.sender.send_message("获取歌曲失败，请稍后再试", channel=channel, area=area)
             return
+        self._kickoff_cover_prefetch(song_data)
 
         user_name = self.names.user(user) if user else "未知用户"
         result = self._commit_song_request(song_data, prefix=f"{user_name} 从喜欢列表点播了")
@@ -603,6 +644,7 @@ class MusicHandler(PlaybackMixin):
                 continue
 
             if success_count == 0:
+                self._kickoff_cover_prefetch(song_data)
                 result = self._commit_song_request(song_data, prefix=prefix)
                 first_text = result["message"]
                 first_attachments = result.get("attachments", [])
@@ -682,6 +724,155 @@ class MusicHandler(PlaybackMixin):
             "area": inherited.get("area", ""),
             "user": inherited.get("user", ""),
         }
+
+    _LIKED_SEARCH_TTL = 1800  # 30 分钟
+
+    def _refresh_liked_search_index(self) -> None:
+        """后台刷新喜欢列表索引；失败静默回退到原有全网搜索。"""
+        if self._liked_search_loading:
+            return
+        self._liked_search_loading = True
+        try:
+            uid = self.netease.get_user_id()
+            if not uid:
+                logger.debug("未登录或获取 uid 失败，跳过喜欢列表索引加载")
+                return
+            details = self.netease.get_all_liked_song_details(uid)
+            if not details:
+                logger.debug("喜欢列表为空或拉取失败，跳过索引加载")
+                return
+            with self._liked_search_lock:
+                self._liked_search_index = details
+                self._liked_search_loaded_at = time.time()
+            logger.info(f"喜欢列表索引已加载: {len(details)} 首")
+        except Exception as e:
+            logger.warning(f"加载喜欢列表索引失败: {e}")
+        finally:
+            self._liked_search_loading = False
+
+    @staticmethod
+    def _match_liked_in(songs: list[dict], keyword: str) -> Optional[dict]:
+        """在给定歌曲列表里按 keyword 找最匹配的一首。
+
+        匹配策略（按优先级降序）：
+          1. 歌名完全相等（大小写/空白不敏感）
+          2. 关键字是 "歌名" 的子串
+          3. 关键字是 "歌名 - 歌手" 的子串
+          4. 关键字按空格分词后全部命中 "歌名 + 歌手 + 专辑"
+        多个候选优先取歌名长度更短的（更精确）。
+        """
+        if not keyword or not keyword.strip() or not songs:
+            return None
+        kw = keyword.strip().lower()
+        kw_tokens = [t for t in kw.split() if t]
+
+        exact: list[dict] = []
+        prefix_name: list[dict] = []
+        contains_full: list[dict] = []
+        token_match: list[dict] = []
+        for song in songs:
+            name = (song.get("name") or "").strip().lower()
+            artists = (song.get("artists") or "").strip().lower()
+            album = (song.get("album") or "").strip().lower()
+            if not name:
+                continue
+            if name == kw:
+                exact.append(song)
+                continue
+            if kw in name:
+                prefix_name.append(song)
+                continue
+            full = f"{name} - {artists}"
+            if kw in full:
+                contains_full.append(song)
+                continue
+            haystack = f"{name} {artists} {album}"
+            if len(kw_tokens) > 1 and all(tok in haystack for tok in kw_tokens):
+                token_match.append(song)
+
+        for bucket in (exact, prefix_name, contains_full, token_match):
+            if bucket:
+                bucket.sort(key=lambda s: len((s.get("name") or "")))
+                return bucket[0]
+        return None
+
+    def _lookup_liked_song(self, keyword: str) -> Optional[dict]:
+        """在喜欢列表里找最匹配的一首；返回 None 表示未命中（外层走全网搜索）。
+
+        - 先在本地 cache 里搜
+        - 如果 miss，做一次"增量补漏"：拉最新 likelist 找出 cache 里没有的
+          新增 ID，只对增量拉详情，再搜一次。这能覆盖用户启动 bot 后才
+          点心的歌（cache 拍的是启动那一刻的快照）。
+        """
+        if not keyword or not keyword.strip():
+            return None
+
+        with self._liked_search_lock:
+            index = list(self._liked_search_index)
+            loaded_at = self._liked_search_loaded_at
+
+        if loaded_at and time.time() - loaded_at > self._LIKED_SEARCH_TTL:
+            threading.Thread(
+                target=self._refresh_liked_search_index, daemon=True,
+            ).start()
+
+        hit = self._match_liked_in(index, keyword)
+        if hit:
+            return hit
+
+        if not index:
+            logger.debug("/bf 喜欢列表索引尚未就绪，跳过喜欢列表搜索")
+            return None
+
+        # 增量补漏：cache miss 时检查是否有新增 ID 可补
+        return self._lookup_in_new_liked(keyword, {s.get("id") for s in index if s.get("id")})
+
+    _NEW_LIKED_PROBE_LIMIT = 200
+
+    def _lookup_in_new_liked(self, keyword: str, existing_ids: set) -> Optional[dict]:
+        """从 likelist 里找 cache 还没收录的新增 ID，按需拉详情匹配。"""
+        try:
+            uid = self.netease.get_user_id()
+            if not uid:
+                return None
+            all_ids = self.netease.get_liked_ids(uid)
+            new_ids = [i for i in all_ids if i not in existing_ids]
+            if not new_ids:
+                logger.debug(
+                    "/bf 喜欢列表 miss 且无新增 ID，回退全网搜索: keyword=%r 索引大小=%d",
+                    keyword, len(existing_ids),
+                )
+                return None
+            # 仅拉前 N 条，避免一次 /bf 触发数百次 API
+            probe = new_ids[: self._NEW_LIKED_PROBE_LIMIT]
+            details: list[dict] = []
+            for i in range(0, len(probe), 50):
+                chunk = probe[i:i + 50]
+                got = self.netease.get_song_details_batch(chunk)
+                if got:
+                    details.extend(got)
+            if not details:
+                return None
+
+            hit = self._match_liked_in(details, keyword)
+            with self._liked_search_lock:
+                self._liked_search_index.extend(details)
+                if not self._liked_search_loaded_at:
+                    self._liked_search_loaded_at = time.time()
+            if hit:
+                logger.info(
+                    "/bf 喜欢列表增量补漏命中: 新增 %d 首 → %s - %s",
+                    len(details), hit.get("name"), hit.get("artists"),
+                )
+            else:
+                logger.debug(
+                    "/bf 增量补漏后仍未命中: keyword=%r 新增 %d 首",
+                    keyword, len(details),
+                )
+            return hit
+        except Exception as e:
+            logger.debug(f"增量喜欢列表查询失败: {e}")
+            return None
 
     def _dequeue_next_song(self, natural_end: bool, current_song: dict | None) -> tuple[Optional[dict], str]:
         """根据播放模式决定下一首歌。"""
@@ -777,6 +968,29 @@ class MusicHandler(PlaybackMixin):
         if not p:
             return {"code": "error", "message": f"未知或未启用的音乐平台: {resolved_platform}"}
 
+        if resolved_platform == _PLATFORM_NETEASE:
+            liked_hit = self._lookup_liked_song(keyword)
+            if liked_hit:
+                summarized = p.summarize_by_id(liked_hit["id"])
+                if summarized["code"] == "success":
+                    logger.info(
+                        "/bf 命中喜欢列表: keyword=%r → %s - %s (id=%s)",
+                        keyword,
+                        summarized["data"].get("name"),
+                        summarized["data"].get("artists"),
+                        liked_hit["id"],
+                    )
+                    song_data = self._build_song_data_from_platform_data(
+                        summarized["data"], resolved_platform, liked_hit["id"],
+                        channel, area, user,
+                    )
+                    self._kickoff_cover_prefetch(song_data)
+                    return {"code": "success", "song_data": song_data}
+                logger.debug(
+                    "喜欢列表命中但取详情失败，回退全网搜索: id=%s err=%s",
+                    liked_hit["id"], summarized.get("message"),
+                )
+
         search_result = p.summarize(keyword)
         if search_result["code"] != "success":
             return search_result
@@ -790,8 +1004,73 @@ class MusicHandler(PlaybackMixin):
             area,
             user,
         )
+        self._kickoff_cover_prefetch(song_data)
 
         return {"code": "success", "song_data": song_data}
+
+    _COVER_PREFETCH_TIMEOUT = 5.0
+    _COVER_PREFETCH_TTL = 60.0
+
+    def _cover_prefetch_key(self, song_data: dict) -> Optional[str]:
+        cover = song_data.get("cover")
+        song_id = song_data.get("song_id")
+        if not cover or not song_id:
+            return None
+        platform = song_data.get("platform", _PLATFORM_NETEASE)
+        return f"{platform}:{song_id}"
+
+    def _kickoff_cover_prefetch(self, song_data: dict) -> None:
+        """后台预热封面下载+上传。可重复调用，相同歌曲只会发起一次。"""
+        key = self._cover_prefetch_key(song_data)
+        if not key:
+            return
+        # 兼容测试中 __new__ 跳过 __init__ 的场景
+        if not hasattr(self, "_cover_prefetch_lock"):
+            return
+        snapshot = dict(song_data)
+
+        with self._cover_prefetch_lock:
+            if key in self._cover_prefetch:
+                return
+            done = threading.Event()
+            holder: dict = {}
+            self._cover_prefetch[key] = (done, holder)
+
+        def _task():
+            try:
+                holder["result"] = self._resolve_song_attachments(snapshot)
+            except Exception as e:
+                logger.debug(f"封面预热失败 ({key}): {e}")
+            finally:
+                done.set()
+                # 没人来取就在 TTL 后清掉，避免长期占内存
+                threading.Timer(
+                    self._COVER_PREFETCH_TTL,
+                    self._purge_cover_prefetch, args=(key,),
+                ).start()
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _consume_cover_prefetch(self, song_data: dict):
+        """若该歌曲有正在进行/已完成的封面预热，等结果并取走；否则返回 None。"""
+        key = self._cover_prefetch_key(song_data)
+        if not key:
+            return None
+        if not hasattr(self, "_cover_prefetch_lock"):
+            return None
+        with self._cover_prefetch_lock:
+            entry = self._cover_prefetch.pop(key, None)
+        if not entry:
+            return None
+        done, holder = entry
+        if not done.wait(self._COVER_PREFETCH_TIMEOUT):
+            logger.debug(f"封面预热超时，回退同步处理: {key}")
+            return None
+        return holder.get("result")
+
+    def _purge_cover_prefetch(self, key: str) -> None:
+        with self._cover_prefetch_lock:
+            self._cover_prefetch.pop(key, None)
 
     def _resolve_song_attachments(self, song_data: dict) -> tuple[list, Optional[int], bool]:
         """在真正提交播放前再处理封面，避免失败请求也触发上传和写库。"""
@@ -891,8 +1170,17 @@ class MusicHandler(PlaybackMixin):
                 direct_play = True
             else:
                 pos = q.add_to_queue(song_data)
+                # 入队的歌也预加载，避免 /next 时浏览器去拉远程 URL 撞上
+                # 5s 超时 → 回退本地 → 再上传，全程能给用户 7+s 的"假静默"。
+                # 预加载 = 后台先把音频字节缓存到本机，next 时 voice.play_audio
+                # 命中缓存直接 agoraPlayLocal，省掉远程超时和下载。
+                self._preload_next_song_if_any()
 
-        attachments, image_cache_id, cache_hit = self._resolve_song_attachments(song_data)
+        prefetched = self._consume_cover_prefetch(song_data)
+        if prefetched is not None:
+            attachments, image_cache_id, cache_hit = prefetched
+        else:
+            attachments, image_cache_id, cache_hit = self._resolve_song_attachments(song_data)
         song_data["attachments"] = attachments
 
         if direct_play:

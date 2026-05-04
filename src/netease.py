@@ -253,7 +253,15 @@ class NeteaseCloud:
         return results
 
     def get_song_url(self, song_id: int, expected_duration_ms: int = 0, song_name: str = "") -> Optional[str]:
-        """获取歌曲播放 URL。level 可选 standard(体积小/弱网友好) 或 exhigh(音质更好)。"""
+        """获取歌曲播放 URL。level 可选 standard(体积小/弱网友好) 或 exhigh(音质更好)。
+
+        实测 NeteaseCloudMusicApi 本地服务存在缓存错乱 bug：
+        请求 id=A 有时会返回上一次 id=B 的 URL（响应里的 id 字段会暴露这一点）。
+        因此这里：
+        1. 给每次请求加 `timestamp` 破上游缓存；
+        2. 拿到响应后校验 `first["id"]` 必须等于 `song_id`，
+           否则丢弃这次响应（避免播错歌：UI 显示的是 A，实际推流是 B）。
+        """
         level = NETEASE_CLOUD.get("audio_quality", "standard")
         self._last_song_url_error = ""
         logger.debug(
@@ -263,6 +271,10 @@ class NeteaseCloud:
             expected_duration_ms or 0,
             bool(str(self.cookie or "").strip()),
         )
+        try:
+            song_id_int = int(song_id)
+        except (TypeError, ValueError):
+            song_id_int = None
         requests_to_try = (
             ("/song/url/v1", {"id": song_id, "level": level}),
             ("/song/url", {"id": song_id}),
@@ -270,10 +282,13 @@ class NeteaseCloud:
         for path, params in requests_to_try:
             attempts = [("POST", True), ("GET", False)] if self.cookie else [("GET", False)]
             for method, include_cookie_param in attempts:
+                # timestamp 破 NeteaseCloudMusicApi 的本地缓存，避免拿到上一首的 URL
+                req_params = dict(params)
+                req_params["timestamp"] = int(time.time() * 1000)
                 data = (
-                    self._post_with_cookie(path, params=params)
+                    self._post_with_cookie(path, params=req_params)
                     if method == "POST"
-                    else self._get(path, params=params)
+                    else self._get(path, params=req_params)
                 )
                 if not data or data.get("code") != 200:
                     logger.debug(
@@ -304,6 +319,27 @@ class NeteaseCloud:
                     summary,
                 )
                 if isinstance(first, dict) and first.get("url"):
+                    # 防御 NeteaseCloudMusicApi 缓存错乱：响应 id 必须跟请求 id 匹配
+                    resp_id = first.get("id")
+                    try:
+                        resp_id_int = int(resp_id) if resp_id is not None else None
+                    except (TypeError, ValueError):
+                        resp_id_int = None
+                    if (
+                        song_id_int is not None
+                        and resp_id_int is not None
+                        and resp_id_int != song_id_int
+                    ):
+                        logger.warning(
+                            "网易云播放链接 id 不匹配（疑似上游缓存错乱）: "
+                            "请求 song_id=%s 但响应 id=%s, 已丢弃此响应 path=%s method=%s",
+                            song_id,
+                            resp_id,
+                            path,
+                            method,
+                        )
+                        self._last_song_url_error = "上游返回了错乱的 URL"
+                        continue
                     if _looks_like_trial_audio(first, expected_duration_ms=expected_duration_ms):
                         self._last_song_url_error = _trial_audio_message(song_name)
                         logger.warning(
@@ -381,6 +417,41 @@ class NeteaseCloud:
             except Exception as e:
                 logger.warning(f"解析歌曲失败 (id={song.get('id')}): {e}")
         return results
+
+    def get_all_liked_song_details(self, uid: int, max_songs: int = 5000,
+                                   batch_size: int = 50) -> list[dict]:
+        """拉取登录用户"我喜欢的音乐"全部歌曲详情，用于本地匹配。
+
+        - 单次详情接口最多 50 个 ID，按 batch_size 分批
+        - 用 max_songs 兜底，防止用户喜欢列表异常大把启动拖死
+        - 任一批次失败不影响其它批次（容错）
+        """
+        ids = self.get_liked_ids(uid)
+        if not ids:
+            return []
+        total = len(ids)
+        if max_songs > 0 and total > max_songs:
+            logger.warning(
+                "喜欢列表共 %d 首，超过上限 %d，仅加载前 %d 首到本地索引",
+                total, max_songs, max_songs,
+            )
+            ids = ids[:max_songs]
+
+        out: list[dict] = []
+        for i in range(0, len(ids), batch_size):
+            chunk = ids[i:i + batch_size]
+            try:
+                details = self.get_song_details_batch(chunk)
+            except Exception as e:
+                logger.debug(f"喜欢列表详情拉取批次失败 (offset={i}): {e}")
+                continue
+            if details:
+                out.extend(details)
+        if len(out) < len(ids):
+            logger.debug(
+                "喜欢列表详情接口返回不全: 请求 %d, 实际 %d", len(ids), len(out),
+            )
+        return out
 
     def summarize_by_id(self, song_id: int) -> dict:
         """通过歌曲 ID 获取完整信息（详情 + URL）"""

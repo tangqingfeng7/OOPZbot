@@ -1,6 +1,9 @@
 import json
+import threading
 import time
+import uuid
 
+from database import SongCache, Statistics
 from logger_config import get_logger
 
 logger = get_logger("MusicWebControl")
@@ -48,9 +51,100 @@ class WebControlExecutor:
             logger.debug(f"{context} 停止音频失败: {e}")
 
     def _handle_next(self):
-        self.h._play_start_time = 0
-        self.h._play_duration = 0
-        self._stop_voice_audio("执行 next 时")
+        """Web 端用户主动切下一首：直接完成出队 + 切歌 + 推流。
+
+        这里不能依赖 auto_play_monitor 的轮询触发：
+        - 监控线程会把残留的 current 视作"自然播完"，传 natural_end=True
+          + current_song=旧歌 给 _dequeue_next_song，导致单曲循环重播本首；
+        - 监控线程的轮询周期最长 10s，会让 UI 卡在"上一首"几秒钟。
+
+        改成这里直接走切歌流程：
+        - 通过 _dequeue_next_song(natural_end=True, current_song=None)
+          既跳过 SINGLE 自循环（SINGLE 分支需要 current_song 才生效），
+          又保留空队列时 AUTOPLAY 模式自动续播的能力。
+        """
+        h = self.h
+        channel = h._voice_channel_id
+        area = h._voice_channel_area or ""
+
+        if not channel:
+            h._play_start_time = 0
+            h._play_duration = 0
+            self._stop_voice_audio("执行 next 时")
+            try:
+                h.queue.clear_current()
+                h.queue.clear_play_state()
+            except Exception as e:
+                logger.debug(f"未在语音频道时清理 play_state 失败: {e}")
+            return
+
+        next_song = None
+        with h._playback_lock:
+            try:
+                next_song, _source = h._dequeue_next_song(
+                    natural_end=True, current_song=None,
+                )
+            except Exception as e:
+                logger.warning(f"Web next 取下一首失败: {e}")
+                next_song = None
+
+            self._stop_voice_audio("执行 next 时")
+            h._play_start_time = 0
+            h._play_duration = 0
+
+            if not next_song:
+                try:
+                    h.queue.clear_current()
+                    h.queue.clear_play_state()
+                except Exception as e:
+                    logger.debug(f"队列空清理 play_state 失败: {e}")
+                return
+
+            next_song["channel"] = next_song.get("channel") or channel
+            next_song["area"] = next_song.get("area") or area
+            next_song["play_uuid"] = str(uuid.uuid4())
+
+            h._start_playing(next_song.get("duration_ms", 0))
+            h.queue.set_current(next_song)
+
+            try:
+                SongCache.record_play(
+                    song_id=next_song.get("song_id"),
+                    platform=next_song.get("platform"),
+                    data=next_song,
+                    channel_id=next_song["channel"],
+                    user_id=next_song.get("user", ""),
+                )
+                Statistics.update_today(
+                    next_song.get("platform", "netease"), cache_hit=False,
+                )
+            except Exception as e:
+                logger.debug(f"记录 Web 切歌播放历史失败: {e}")
+
+            threading.Thread(
+                target=h._stream_to_voice_channel,
+                args=(
+                    next_song["url"],
+                    next_song.get("name", "music"),
+                    next_song["channel"],
+                    next_song["area"],
+                    str(next_song.get("song_id", "")),
+                    next_song.get("duration_ms", 0),
+                ),
+                daemon=True,
+            ).start()
+            h._preload_next_song_if_any()
+
+        try:
+            text = h._build_now_playing_text("切换到下一首", next_song)
+            h.sender.send_message(
+                text=text,
+                attachments=next_song.get("attachments", []),
+                channel=next_song["channel"],
+                area=next_song["area"],
+            )
+        except Exception as e:
+            logger.warning(f"Web 切歌通知发送失败: {e}")
 
     def _handle_stop(self):
         self.h._play_start_time = 0

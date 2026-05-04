@@ -128,6 +128,84 @@ class NeteaseCookiePlaybackTest(unittest.TestCase):
         self.assertIn("试听音频", client.last_song_url_error)
         self.assertGreaterEqual(len(session.calls), 2)
 
+    def test_get_song_url_rejects_mismatched_response_id(self) -> None:
+        """上游 NeteaseCloudMusicApi 偶发的缓存错乱：请求 id=A 返回 id=B 的 URL。
+        必须在客户端拦截，否则会播错歌（UI 显示 A、实际播 B）。"""
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+                # 第一次 POST → 返回错乱响应 (id=999 不是请求的 1318235595)
+                # 第二次 GET → 同样错乱
+                # 第三次 GET (/song/url) → 返回正确的 id 用于验证 fallback
+                self.post_count = 0
+
+            def post(self, url, data=None, headers=None, timeout=10):
+                self.calls.append(("POST", url, data or {}))
+                self.post_count += 1
+                return _FakeResponse({
+                    "code": 200,
+                    "data": [{
+                        "id": 999,  # 错乱：跟请求的 1318235595 不一致
+                        "url": "https://music.example/wrong.mp3",
+                        "time": 269828,
+                        "size": 10_808_214,
+                    }],
+                })
+
+            def get(self, url, params=None, headers=None, timeout=10):
+                self.calls.append(("GET", url, params or {}))
+                # 第一次 GET 命中 /song/url/v1 (cookie 路径已被尝试)
+                # /song/url fallback 也返回错乱
+                return _FakeResponse({
+                    "code": 200,
+                    "data": [{
+                        "id": 999,
+                        "url": "https://music.example/wrong.mp3",
+                        "time": 269828,
+                        "size": 10_808_214,
+                    }],
+                })
+
+        session = FakeSession()
+        client = self._client(session)
+
+        url = client.get_song_url(1318235595, expected_duration_ms=241266, song_name="耳朵")
+
+        self.assertIsNone(url, "id 不匹配时必须丢弃错乱的 URL")
+        self.assertIn("错乱", client.last_song_url_error)
+        # 应该尝试了多次（v1 POST/GET + 兜底 path GET）
+        self.assertGreaterEqual(len(session.calls), 2)
+
+    def test_get_song_url_includes_timestamp_to_bust_cache(self) -> None:
+        """请求里必须带 timestamp，破上游本地缓存防止拿到上一次的错乱响应。"""
+        captured = []
+
+        class FakeSession:
+            def post(self, url, data=None, headers=None, timeout=10):
+                captured.append(("POST", data or {}))
+                return _FakeResponse({
+                    "code": 200,
+                    "data": [{
+                        "id": 100,
+                        "url": "https://music.example/ok.mp3",
+                        "time": 222000,
+                        "size": 8_000_000,
+                    }],
+                })
+
+            def get(self, url, params=None, headers=None, timeout=10):
+                captured.append(("GET", params or {}))
+                return _FakeResponse({"code": 500, "data": []})
+
+        client = self._client(FakeSession())
+        url = client.get_song_url(100, expected_duration_ms=222000, song_name="A")
+
+        self.assertEqual(url, "https://music.example/ok.mp3")
+        self.assertGreaterEqual(len(captured), 1)
+        first_method, first_params = captured[0]
+        self.assertIn("timestamp", first_params, "请求必须带 timestamp 破上游缓存")
+        self.assertGreater(int(first_params["timestamp"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
