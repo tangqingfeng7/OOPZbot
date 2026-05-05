@@ -274,6 +274,14 @@ class MusicHandler(PlaybackMixin):
             )
             return False
 
+        # 已经在用户所在的语音频道：直接复用现有连接。重新走 _do_enter_voice
+        # 会让浏览器侧的 agoraJoin 先调用 agoraLeave，把当前正在播放的 audioTrack
+        if (
+            self._voice_channel_id == voice_ch_id
+            and self._voice_channel_area == area
+        ):
+            return True
+
         if (self._voice_channel_id and self._voice_channel_id != voice_ch_id
                 and self._is_playing()):
             cur_ch_name = self.names.channel(self._voice_channel_id)

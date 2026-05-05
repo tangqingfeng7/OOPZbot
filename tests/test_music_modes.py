@@ -185,6 +185,24 @@ class MusicModeTest(unittest.TestCase):
         self.assertEqual(committed_song["duration"], "3:42")
         self.assertEqual(committed_song["duration_ms"], 222000)
 
+    def test_check_and_enter_skips_rejoin_when_already_in_same_channel(self) -> None:
+        """已在同一语音频道时不能再调用 _do_enter_voice/agora 重连，否则会断流。"""
+        self.handler.voice = Mock()
+        self.handler.voice.available = True
+        self.handler.sender = Mock()
+        self.handler.sender.get_voice_channel_for_user.return_value = "voice-1"
+        self.handler._do_enter_voice = Mock()
+        self.handler._is_playing = Mock(return_value=True)
+        self.handler.names = Mock()
+
+        result = self.handler._check_and_enter_voice_channel(
+            user="user-1", channel="text-1", area="area-1",
+        )
+
+        self.assertTrue(result)
+        self.handler._do_enter_voice.assert_not_called()
+        self.handler.sender.send_message.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
