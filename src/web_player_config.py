@@ -109,7 +109,6 @@ CONFIG_GROUPS: dict[str, dict] = {
         "fields": {
             "default_area": {"type": "str", "max_len": 128},
             "default_channel": {"type": "str", "max_len": 128},
-            "use_announcement_style": {"type": "bool"},
             "proxy": {"type": "str", "max_len": 300},
             "agora_app_id": {"type": "str", "max_len": 128},
             "agora_init_timeout": {"type": "int", "min": 10, "max": 7200},

@@ -41,6 +41,14 @@
             <div class="field field--wide"><label for="ac_plugins_enabled">启用插件（逗号分隔，空=全部）</label><input id="ac_plugins_enabled" type="text" /></div>
             <div class="field field--wide"><label for="ac_plugins_disabled">禁用插件（逗号分隔）</label><input id="ac_plugins_disabled" type="text" /></div>
             <div class="field field--check"><label><input id="ac_profanity" type="checkbox" checked /> 启用脏话检测</label></div>
+            <div class="field field--wide">
+              <label for="ac_announcement_style">公告样式（IMPORTANT）</label>
+              <select id="ac_announcement_style">
+                <option value="">跟随全局默认（config.py）</option>
+                <option value="true">该域强制开启</option>
+                <option value="false">该域强制关闭</option>
+              </select>
+            </div>
           </div>
           <div id="areaConfigMsg" class="msg" style="padding:0 20px 12px"></div>
         </article>

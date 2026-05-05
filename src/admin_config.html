@@ -135,7 +135,6 @@
               <div class="field"><label for="cfg_oopz_default_area">默认区域 ID</label><input id="cfg_oopz_default_area" type="text" /></div>
               <div class="field"><label for="cfg_oopz_default_channel">默认频道 ID</label><input id="cfg_oopz_default_channel" type="text" /></div>
               <div class="field field--wide"><label for="cfg_oopz_proxy">OOPZ 代理</label><input id="cfg_oopz_proxy" type="text" placeholder="direct / http://127.0.0.1:7890" /></div>
-              <div class="field field--wide field--check"><label><input id="cfg_oopz_announcement" type="checkbox" /> 使用公告样式消息</label></div>
               <div class="field field--wide"><label for="cfg_netease_base_url">网易云 API 地址</label><input id="cfg_netease_base_url" type="text" placeholder="http://127.0.0.1:3000" /></div>
               <div class="field"><label for="cfg_netease_timeout">网易云音频超时（秒）</label><input id="cfg_netease_timeout" type="number" min="5" /></div>
               <div class="field"><label for="cfg_netease_retries">网易云音频重试次数</label><input id="cfg_netease_retries" type="number" min="0" /></div>
@@ -403,7 +402,6 @@
       setVal("cfg_oopz_default_area", config.oopz?.default_area || "");
       setVal("cfg_oopz_default_channel", config.oopz?.default_channel || "");
       setVal("cfg_oopz_proxy", config.oopz?.proxy || "");
-      setVal("cfg_oopz_announcement", config.oopz?.use_announcement_style);
 
       setVal("cfg_netease_base_url", config.netease?.base_url || "");
       setVal("cfg_netease_timeout", config.netease?.audio_download_timeout || 120);
@@ -474,7 +472,6 @@
           default_area: val("cfg_oopz_default_area"),
           default_channel: val("cfg_oopz_default_channel"),
           proxy: val("cfg_oopz_proxy"),
-          use_announcement_style: chk("cfg_oopz_announcement"),
         },
         netease: {
           base_url: val("cfg_netease_base_url"),

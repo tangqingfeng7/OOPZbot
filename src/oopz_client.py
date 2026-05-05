@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import threading
 from typing import Callable, Optional, Any
@@ -21,6 +22,10 @@ EVENT_SERVER_ID = 1
 EVENT_CHAT_MESSAGE = 9
 EVENT_AUTH = 253
 EVENT_HEARTBEAT = 254
+
+# 设置 OOPZ_DEBUG_WS_EVENTS=1 打开 WS 收到事件的原始 body 调试日志，
+# 默认关闭以避免高频事件刷屏。诊断语音状态广播、成员变更等问题时再打开。
+_DEBUG_WS_EVENTS = os.environ.get("OOPZ_DEBUG_WS_EVENTS", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 class OopzClient:
@@ -159,6 +164,13 @@ class OopzClient:
 
         event = data.get("event")
 
+        if _DEBUG_WS_EVENTS and event != EVENT_HEARTBEAT:
+            try:
+                preview = message[:600]
+            except Exception:
+                preview = "<unprintable>"
+            logger.debug(f"[WS recv] event={event} body={preview}")
+
         # 心跳响应 -- 最高频事件，优先处理
         if event == EVENT_HEARTBEAT:
             body_raw = data.get("body", {})
@@ -231,7 +243,6 @@ class OopzClient:
             logger.debug("发送心跳失败（连接可能已关闭）: %s", e)
 
     def _heartbeat_loop(self, ws):
-        """定时心跳线程"""
         while self._running:
             time.sleep(self.heartbeat_interval)
             if ws.sock and ws.sock.connected:

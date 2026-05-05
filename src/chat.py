@@ -10,6 +10,23 @@ _AI_TIMEOUT = 15
 _IMAGE_TIMEOUT = 60
 
 
+def _normalize_ai_base(raw: str, *known_suffixes: str) -> str:
+    """裁掉 base_url 末尾被意外贴上的子路径。
+
+    用户从豆包文档粘贴示例时容易把完整 endpoint（``…/api/v3/chat/completions``）填到
+    base_url 里，结果代码再追加一次 ``/chat/completions`` 造成路径重复 → ark 返回 401。
+    这里把已知的尾巴裁掉，再去掉末尾斜杠，得到干净的 base。
+    """
+    base = (raw or "").strip().rstrip("/")
+    lower = base.lower()
+    for suffix in known_suffixes:
+        s = suffix.lower().rstrip("/")
+        if s and lower.endswith(s):
+            base = base[: len(base) - len(s)].rstrip("/")
+            break
+    return base
+
+
 def _extract_chat_content(data: dict) -> Optional[str]:
     """从 OpenAI 兼容的 chat/completions 响应中安全提取文本内容。"""
     choices = data.get("choices")
@@ -43,7 +60,11 @@ class ChatHandler:
 
         # 豆包 AI
         self.ai_enabled = DOUBAO_CONFIG.get("enabled", False)
-        self._ai_base = DOUBAO_CONFIG.get("base_url", "").rstrip("/")
+        self._ai_base = _normalize_ai_base(
+            DOUBAO_CONFIG.get("base_url", ""),
+            "/chat/completions",
+            "/responses",
+        )
         self._ai_key = DOUBAO_CONFIG.get("api_key", "")
         self._ai_model = DOUBAO_CONFIG.get("model", "")
         self._system_prompt = DOUBAO_CONFIG.get("system_prompt", "你是一个友好的聊天机器人。")
@@ -52,7 +73,10 @@ class ChatHandler:
 
         # 图片生成
         self.img_enabled = DOUBAO_IMAGE_CONFIG.get("enabled", False)
-        self._img_base = DOUBAO_IMAGE_CONFIG.get("base_url", "").rstrip("/")
+        self._img_base = _normalize_ai_base(
+            DOUBAO_IMAGE_CONFIG.get("base_url", ""),
+            "/images/generations",
+        )
         self._img_key = DOUBAO_IMAGE_CONFIG.get("api_key", "")
         self._img_model = DOUBAO_IMAGE_CONFIG.get("model", "")
         self._img_size = DOUBAO_IMAGE_CONFIG.get("size", "1920x1920")

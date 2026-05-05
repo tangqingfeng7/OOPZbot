@@ -17,6 +17,7 @@ class AppContextBuilder:
             on_chat_message=handler.handle_message,
             on_other_event=notifier_callback,
         )
+
         return AppContext(
             sender=sender,
             handler=handler,

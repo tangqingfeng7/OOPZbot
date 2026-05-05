@@ -1,4 +1,5 @@
 import json
+import random
 import time
 from typing import Optional
 import threading
@@ -15,6 +16,7 @@ KEY_QUEUE = "music:queue"
 KEY_CURRENT = "music:current"
 KEY_DEFAULT_CHANNEL = "music:default_channel"
 KEY_PLAY_STATE = "music:play_state"
+KEY_PLAY_MODE = "music:play_mode"
 
 
 def _area_key(base: str, area: str) -> str:
@@ -198,6 +200,9 @@ class QueueManager:
     def _pskey(self) -> str:
         return _area_key(KEY_PLAY_STATE, self._area)
 
+    def _pmkey(self) -> str:
+        return _area_key(KEY_PLAY_MODE, self._area)
+
     # ------------------------------------------------------------------
     # 队列操作
     # ------------------------------------------------------------------
@@ -259,6 +264,31 @@ class QueueManager:
             logger.warning("移除队列位置 %d 失败: %s", index, e)
             return False
 
+    def pop_random(self) -> Optional[dict]:
+        """随机弹出队列中的一首（用于随机播放模式）。
+
+        Redis LIST 没有原生随机弹出，这里用 LRANGE + LSET/LREM 的占位符模式
+        与 remove_from_queue 一致，避免破坏其他索引。
+        """
+        key = self._qkey()
+        length = self.redis.llen(key)
+        if not length:
+            return None
+        idx = random.randrange(length)
+        try:
+            data = self.redis.lindex(key, idx)
+            if not data:
+                return None
+            placeholder = "__REMOVED__"
+            self.redis.lset(key, idx, placeholder)
+            self.redis.lrem(key, 1, placeholder)
+            song = json.loads(data)
+            logger.info(f"队列随机弹出 (位置 {idx}): {song.get('name')}")
+            return song
+        except Exception as e:
+            logger.warning("随机弹出队列失败: %s", e)
+            return None
+
     # ------------------------------------------------------------------
     # 当前播放
     # ------------------------------------------------------------------
@@ -295,6 +325,19 @@ class QueueManager:
 
     def clear_play_state(self):
         self.redis.delete(self._pskey())
+
+    # ------------------------------------------------------------------
+    # 播放模式（域隔离）
+    # ------------------------------------------------------------------
+
+    def get_play_mode(self) -> Optional[str]:
+        val = self.redis.get(self._pmkey())
+        if isinstance(val, bytes):
+            val = val.decode("utf-8", errors="ignore")
+        return val or None
+
+    def set_play_mode(self, mode: str) -> None:
+        self.redis.set(self._pmkey(), mode)
 
     # ------------------------------------------------------------------
     # 默认频道

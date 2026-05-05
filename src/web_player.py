@@ -18,7 +18,14 @@ from fastapi.staticfiles import StaticFiles
 
 from logger_config import get_logger
 from netease import NeteaseCloud
-from queue_manager import get_redis_client, _area_key, KEY_QUEUE, KEY_CURRENT, KEY_PLAY_STATE
+from queue_manager import (
+    get_redis_client,
+    _area_key,
+    KEY_QUEUE,
+    KEY_CURRENT,
+    KEY_PLAY_STATE,
+    KEY_PLAY_MODE,
+)
 from web_link_token import ensure_token, get_token, set_token, get_active_area
 
 import web_player_config as cfg
@@ -105,6 +112,20 @@ liked_ids_cache: list = []
 
 KEY_WEB_COMMANDS = "music:web_commands"
 KEY_VOLUME = "music:volume"
+
+# 播放模式取值（与 src/music.py 中的 PLAY_MODE_* 常量保持一致）
+PLAY_MODE_LIST = "list"
+PLAY_MODE_SINGLE = "single"
+PLAY_MODE_SHUFFLE = "shuffle"
+PLAY_MODE_AUTOPLAY = "autoplay"
+_VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE, PLAY_MODE_AUTOPLAY}
+
+
+def _read_play_mode(redis_client: redis.Redis, area: str = "") -> str:
+    raw = redis_client.get(_area_key(KEY_PLAY_MODE, area))
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="ignore")
+    return raw if raw in _VALID_PLAY_MODES else PLAY_MODE_LIST
 
 
 def _normalize_volume(value, fallback: int | None = None) -> int:
@@ -290,6 +311,14 @@ def execute_control_action(action: str, body: dict, redis_client: redis.Redis, a
         redis_client.set(KEY_VOLUME, str(vol))
         redis_client.rpush(KEY_WEB_COMMANDS, f"volume:{vol}")
         return {"ok": True, "volume": vol}
+    if action == "mode":
+        mode = body.get("value") or body.get("mode")
+        if mode not in _VALID_PLAY_MODES:
+            return {"ok": False, "error": f"未知播放模式: {mode}"}
+        # 直接写入 Redis：MusicHandler.get_play_mode() 会读取这里的值。
+        # 不走 KEY_WEB_COMMANDS，避免与正在播放的音频流抢锁。
+        redis_client.set(_area_key(KEY_PLAY_MODE, area), mode)
+        return {"ok": True, "mode": mode}
     return {"ok": False, "error": f"未知操作: {action}"}
 
 
@@ -438,11 +467,15 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
         pipe.get(current_key)
         pipe.get(ps_key)
         pipe.get(KEY_VOLUME)
-        current_raw, play_state_raw, vol_raw = pipe.execute()
+        pipe.get(_area_key(KEY_PLAY_MODE, area))
+        current_raw, play_state_raw, vol_raw, mode_raw = pipe.execute()
         volume = _normalize_volume(vol_raw)
+        if isinstance(mode_raw, bytes):
+            mode_raw = mode_raw.decode("utf-8", errors="ignore")
+        mode = mode_raw if mode_raw in _VALID_PLAY_MODES else PLAY_MODE_LIST
 
         if not current_raw:
-            return JSONResponse({"playing": False, "volume": volume})
+            return JSONResponse({"playing": False, "volume": volume, "mode": mode})
 
         current = json.loads(current_raw)
         progress = 0.0
@@ -494,6 +527,7 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
             "durationText": dur_text,
             "progress": round(progress, 2),
             "volume": volume,
+            "mode": mode,
             "server_time": round(time.time(), 3),
         })
     except Exception as e:

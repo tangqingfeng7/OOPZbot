@@ -14,7 +14,7 @@ from queue_manager import QueueManager
 from database import ImageCache, SongCache, Statistics
 from name_resolver import NameResolver
 from voice_client import VoiceClient
-from config import WEB_PLAYER_CONFIG
+from config import OOPZ_CONFIG, WEB_PLAYER_CONFIG
 from logger_config import get_logger
 from web_link_token import clear_token, get_token, set_active_area
 from music_web_control import WebControlExecutor
@@ -227,6 +227,12 @@ class MusicHandler(PlaybackMixin):
         if self._voice_channel_id and self._voice_channel_id != voice_channel_id:
             self._leave_current_voice_channel()
 
+        # 处理服务端残留：本地无记录但服务端可能仍记着 bot 在某个语音频道（上次崩溃/重启留下）。
+        # 这种情况下直接 enter_channel 会被服务端视为重复进入，不广播"成员加入"事件，其他客户端看不到 bot。
+        # 这里先查询一次 bot 自己是否还挂在某个语音频道，若有则先 leave 一次。
+        if not self._voice_channel_id:
+            self._cleanup_stale_voice_membership(area)
+
         agora_pid = self.voice.agora_uid if self.voice and self.voice.available else ""
         self.sender.enter_area(area=area)
         data = self.sender.enter_channel(
@@ -314,8 +320,59 @@ class MusicHandler(PlaybackMixin):
         ok = self.voice.join(token=token, room_id=room_id, uid=uid)
         if ok:
             logger.info(f"Agora RTC 已连接: room={room_id}, uid={uid}")
+            self._restore_volume_from_redis()
         else:
             logger.warning("Agora RTC 连接失败")
+
+    def _restore_volume_from_redis(self) -> None:
+        """从 Redis 恢复用户上次设置的播放音量。
+
+        浏览器进程重启或重新加入 Agora 房间后，agora_player.html 内的
+        `_currentVolume` 会回到默认值。这里把 Redis 持久化的音量回灌到浏览器，
+        避免用户每次重连后都得手动重新拉一遍音量条。
+        """
+        if not self.voice or not self.voice.available:
+            return
+        try:
+            raw = self.queue.redis.get("music:volume")
+        except Exception as e:
+            logger.debug(f"读取 music:volume 失败，跳过音量恢复: {e}")
+            return
+        if raw is None:
+            return
+        try:
+            vol = int(raw)
+        except (TypeError, ValueError):
+            return
+        vol = max(0, min(100, vol))
+        try:
+            self.voice.set_volume(vol)
+            logger.debug(f"已从 Redis 恢复播放音量: {vol}")
+        except Exception as e:
+            logger.debug(f"恢复音量失败: {e}")
+
+    def _cleanup_stale_voice_membership(self, area: str) -> None:
+        """清理服务端残留的 bot 语音频道成员状态。
+
+        bot 进程上次未正常退出时，服务端可能仍把 bot 挂在某个语音频道里。
+        新一次 enter_channel 会被当作重复进入，不会广播"成员加入"事件，
+        其他客户端因此看不到 bot。这里在进入前主动 leave 一次。
+        """
+        bot_uid = (OOPZ_CONFIG.get("person_uid") or "").strip()
+        if not bot_uid:
+            return
+        try:
+            stale_ch = self.sender.get_voice_channel_for_user(bot_uid, area=area)
+        except Exception as e:
+            logger.debug(f"查询服务端残留语音状态失败，跳过清理: {e}")
+            return
+        if not stale_ch:
+            return
+        logger.info(f"检测到服务端残留: bot 仍登记在语音频道 {stale_ch}，先 leave 清理")
+        try:
+            self.sender.leave_voice_channel(channel=stale_ch, area=area)
+        except Exception as e:
+            logger.warning(f"清理残留语音状态失败: {e}")
 
     def _leave_current_voice_channel(self):
         """退出 Bot 当前所在的语音频道。"""

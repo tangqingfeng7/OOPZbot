@@ -678,7 +678,6 @@
       setVal("cfg_oopz_default_area", config.oopz?.default_area || "");
       setVal("cfg_oopz_default_channel", config.oopz?.default_channel || "");
       setVal("cfg_oopz_proxy", config.oopz?.proxy || "");
-      setVal("cfg_oopz_announcement", config.oopz?.use_announcement_style);
       setVal("cfg_agora_app_id", config.oopz?.agora_app_id || "");
       setVal("cfg_agora_timeout", config.oopz?.agora_init_timeout || 1800);
 
@@ -796,7 +795,6 @@
           default_area: val("cfg_oopz_default_area"),
           default_channel: val("cfg_oopz_default_channel"),
           proxy: val("cfg_oopz_proxy"),
-          use_announcement_style: chk("cfg_oopz_announcement"),
           agora_app_id: val("cfg_agora_app_id"),
           agora_init_timeout: getInt("cfg_agora_timeout") || 1800,
         },

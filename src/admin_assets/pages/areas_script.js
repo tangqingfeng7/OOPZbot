@@ -236,6 +236,10 @@
         setAcVal("ac_plugins_enabled", (c.plugins_enabled || []).join(", "));
         setAcVal("ac_plugins_disabled", (c.plugins_disabled || []).join(", "));
         setAcVal("ac_profanity", c.profanity_enabled !== false);
+        const ann = c.use_announcement_style;
+        const annVal = ann === true ? "true" : (ann === false ? "false" : "");
+        setAcVal("ac_announcement_style", annVal);
+        AdminShell.refreshCustomSelect("ac_announcement_style");
         syncAreaAssistantSelects();
         if (data.configured) {
           AdminShell.showMessage("areaConfigMsg", "当前域已有独立配置");
@@ -253,6 +257,8 @@
 
     async function saveAreaConfig() {
       if (!currentArea) return;
+      const annStr = (AdminShell.byId("ac_announcement_style").value || "").trim();
+      const annVal = annStr === "true" ? true : (annStr === "false" ? false : null);
       const body = {
         name: (AdminShell.byId("ac_name").value || "").trim(),
         default_channel: (AdminShell.byId("ac_default_channel").value || "").trim(),
@@ -264,6 +270,7 @@
         plugins_enabled: splitList(AdminShell.byId("ac_plugins_enabled").value || ""),
         plugins_disabled: splitList(AdminShell.byId("ac_plugins_disabled").value || ""),
         profanity_enabled: !!AdminShell.byId("ac_profanity").checked,
+        use_announcement_style: annVal,
       };
       try {
         await AdminShell.req(`/admin/api/area-configs/${encodeURIComponent(currentArea)}`, {
@@ -545,6 +552,7 @@
     AdminShell.init({ page: "areas", passwordHandler: login });
     AdminShell.upgradeSelect("ac_default_channel_select");
     AdminShell.upgradeSelect("ac_auto_role_select");
+    AdminShell.upgradeSelect("ac_announcement_style");
     AdminShell.upgradeSelect("newChType");
     AdminShell.upgradeSelect("editChVoiceQuality");
     AdminShell.upgradeSelect("editChVoiceDelay");

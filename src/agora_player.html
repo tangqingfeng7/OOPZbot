@@ -23,6 +23,9 @@ let client = null;
 let audioTrack = null;
 let _state = "idle";
 let _playGen = 0;
+// 跨 audioTrack 持久化的音量（0-100）。每次创建新 track 后会自动应用，
+// 避免每首歌切换后用户都得重新拖一次音量条。
+let _currentVolume = 100;
 
 window.agoraReady = () => typeof AgoraRTC !== "undefined";
 
@@ -51,6 +54,7 @@ window.agoraPlayAudio = async (url) => {
       return { ok: false, error: "superseded" };
     }
     audioTrack = track;
+    try { audioTrack.setVolume(_currentVolume); } catch (_) {}
     audioTrack.on("source-state-change", (st) => {
       if (gen !== _playGen) return;
       _state = st === "playing" ? "playing" : st === "stopped" ? "finished" : st;
@@ -77,6 +81,7 @@ window.agoraPlayLocal = async (base64Data, mimeType) => {
       source: objectUrl,
       cacheOnlineFile: false,
     });
+    try { audioTrack.setVolume(_currentVolume); } catch (_) {}
     audioTrack.on("source-state-change", (st) => {
       _state = st === "playing" ? "playing" : st === "stopped" ? "finished" : st;
     });
@@ -135,10 +140,12 @@ window.agoraSeek = (time) => {
 };
 
 window.agoraSetVolume = (vol) => {
-  if (!audioTrack) return { ok: false, error: "no track" };
+  const v = Math.max(0, Math.min(100, Number(vol) || 0));
+  _currentVolume = v;
+  if (!audioTrack) return { ok: true, pending: true, volume: v };
   try {
-    audioTrack.setVolume(Math.max(0, Math.min(100, vol)));
-    return { ok: true };
+    audioTrack.setVolume(v);
+    return { ok: true, volume: v };
   } catch (e) { return { ok: false, error: e.message }; }
 };
 

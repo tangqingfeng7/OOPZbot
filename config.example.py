@@ -18,7 +18,7 @@ OOPZ_CONFIG = {
 
     "default_area": "",    # 默认区域 ID
     "default_channel": "", # 默认频道 ID
-    "use_announcement_style": True,  # 发送消息默认是否使用公告样式（styleTags=IMPORTANT）
+    "use_announcement_style": False,  # 全局默认是否使用公告样式（styleTags=IMPORTANT）；可在 admin 后台 → 域配置 → 公告样式 单独覆盖。bot 不是域主时一般保持 False，否则发公告会被服务端拒
 
     # Agora RTC（语音频道推流；Playwright 优先，Selenium 可回退）
     "agora_app_id": "358eebceadb94c2a9fd91ecd7b341602",

@@ -371,9 +371,6 @@
                 <label>OOPZ 代理</label>
                 <input id="cfg_oopz_proxy" type="text" placeholder="direct / http://127.0.0.1:7890" />
               </div>
-              <div class="cfg-item">
-                <label><input id="cfg_oopz_announcement" type="checkbox" />发送公告样式消息</label>
-              </div>
 
               <div class="cfg-item">
                 <label>网易云 API 地址</label>
@@ -746,7 +743,6 @@
       setVal("cfg_oopz_default_area", c.oopz?.default_area || "");
       setVal("cfg_oopz_default_channel", c.oopz?.default_channel || "");
       setVal("cfg_oopz_proxy", c.oopz?.proxy || "");
-      setVal("cfg_oopz_announcement", c.oopz?.use_announcement_style);
 
       setVal("cfg_netease_base_url", c.netease?.base_url || "");
       setVal("cfg_netease_timeout", c.netease?.audio_download_timeout || 120);
@@ -807,8 +803,7 @@
         oopz: {
           default_area: document.getElementById("cfg_oopz_default_area").value || "",
           default_channel: document.getElementById("cfg_oopz_default_channel").value || "",
-          proxy: document.getElementById("cfg_oopz_proxy").value || "",
-          use_announcement_style: document.getElementById("cfg_oopz_announcement").checked
+          proxy: document.getElementById("cfg_oopz_proxy").value || ""
         },
         netease: {
           base_url: document.getElementById("cfg_netease_base_url").value || "",

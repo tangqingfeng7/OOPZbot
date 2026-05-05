@@ -201,6 +201,21 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
     # ---- 发送消息 ----
 
+    @staticmethod
+    def _resolve_default_style_tags(area: str) -> list[str]:
+        """根据"域级覆盖 + 全局默认"决定 styleTags。
+
+        全局默认来自 OOPZ_CONFIG.use_announcement_style；某个域可以在 AreaConfig 里
+        显式打开/关闭，覆盖全局值。
+        """
+        fallback = bool(OOPZ_CONFIG.get("use_announcement_style", False))
+        try:
+            from area_config import get_area_registry
+            use_announcement = get_area_registry().get_announcement_style(area, fallback)
+        except Exception:
+            use_announcement = fallback
+        return ["IMPORTANT"] if use_announcement else []
+
     def send_message(
         self,
         text: str,
@@ -217,11 +232,11 @@ class OopzSender(UploadMixin, OopzApiMixin):
             area:    区域 ID（默认取配置）
             channel: 频道 ID（默认取配置）
             auto_recall: 是否自动撤回。None=按配置决定，False=不撤回，True=强制撤回
-            **kwargs: attachments, mentionList, referenceMessageId, styleTags 等。styleTags 默认由配置 use_announcement_style 决定（公告样式=["IMPORTANT"]）
+            **kwargs: attachments, mentionList, referenceMessageId, styleTags 等。styleTags 默认由"域级 use_announcement_style"覆盖"全局 OOPZ_CONFIG.use_announcement_style"决定（开启=["IMPORTANT"]）
         """
         area = area or OOPZ_CONFIG["default_area"]
         channel = channel or OOPZ_CONFIG["default_channel"]
-        default_style = ["IMPORTANT"] if OOPZ_CONFIG.get("use_announcement_style", True) else []
+        default_style = self._resolve_default_style_tags(area)
 
         body = {
             "area": area,

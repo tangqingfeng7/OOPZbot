@@ -21,7 +21,7 @@ copy private_key.example.py private_key.py
 | `default_area` | 默认区域 ID |
 | `default_channel` | 默认频道 ID |
 | `base_url` | 网关 API 地址（默认 `https://gateway.oopz.cn`） |
-| `use_announcement_style` | Bot 发送消息默认是否使用公告样式（`styleTags: ["IMPORTANT"]`） |
+| `use_announcement_style` | Bot 发送消息默认是否使用公告样式（`styleTags: ["IMPORTANT"]`）。可在 admin 后台 → 域配置 → 公告样式 给单个域覆盖 |
 | `proxy` | 代理配置：留空走系统代理；`False` / `"direct"` 表示直连 |
 | `agora_app_id` | Oopz 语音频道使用的 Agora App ID |
 | `agora_init_timeout` | 语音浏览器初始化等待秒数 |

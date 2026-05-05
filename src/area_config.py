@@ -13,6 +13,25 @@ _DEFAULT_WELCOME = "欢迎 {name} 加入域～\n请阅读频道规则，祝你�
 _DEFAULT_LEAVE = "{name} 已退出域"
 
 
+def _parse_optional_bool(raw: object) -> Optional[bool]:
+    """三态 bool 解析：None/空/"inherit" → None，其余按布尔解析。"""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        v = raw.strip().lower()
+        if v in {"", "inherit", "default", "global", "null", "none"}:
+            return None
+        if v in {"1", "true", "yes", "on"}:
+            return True
+        if v in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 @dataclass(frozen=True)
 class AreaConfig:
     """单个域的配置快照。"""
@@ -28,6 +47,8 @@ class AreaConfig:
     plugins_enabled: tuple[str, ...] = ()
     plugins_disabled: tuple[str, ...] = ()
     profanity_enabled: bool = True
+    # None = 跟随全局 OOPZ_CONFIG.use_announcement_style；True/False = 域级强制
+    use_announcement_style: Optional[bool] = None
 
     @classmethod
     def from_dict(cls, area_id: str, raw: dict) -> "AreaConfig":
@@ -43,6 +64,7 @@ class AreaConfig:
             plugins_enabled=tuple(str(p) for p in (raw.get("plugins_enabled") or [])),
             plugins_disabled=tuple(str(p) for p in (raw.get("plugins_disabled") or [])),
             profanity_enabled=bool(raw.get("profanity_enabled", True)),
+            use_announcement_style=_parse_optional_bool(raw.get("use_announcement_style")),
         )
 
 
@@ -153,7 +175,15 @@ class AreaConfigRegistry:
             "plugins_enabled": list(cfg.plugins_enabled),
             "plugins_disabled": list(cfg.plugins_disabled),
             "profanity_enabled": cfg.profanity_enabled,
+            "use_announcement_style": cfg.use_announcement_style,
         }
+
+    def get_announcement_style(self, area_id: str, fallback: bool) -> bool:
+        """解析最终的"是否启用公告样式"：域级 None 时回退到 fallback（一般为全局默认）。"""
+        cfg = self.get(area_id)
+        if cfg.use_announcement_style is None:
+            return fallback
+        return bool(cfg.use_announcement_style)
 
     def export_all(self) -> dict[str, dict]:
         """导出所有域配置为可持久化的 dict。"""

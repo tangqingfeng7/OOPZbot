@@ -173,7 +173,10 @@ class PlaybackMixin:
                                     current_song=finished_song,
                                 )
                             else:
-                                next_song = self.queue.play_next() if queue_length > 0 else None
+                                next_song, _source = (
+                                    self.queue.play_next() if queue_length > 0 else None,
+                                    "queue",
+                                )
                             if next_song:
                                 ch = next_song.get("channel") or self._voice_channel_id
                                 ar = next_song.get("area") or self._voice_channel_area
@@ -212,13 +215,16 @@ class PlaybackMixin:
                                 ).start()
                                 self._preload_next_song_if_any()
 
-                                text = self._build_now_playing_text("自动播放", next_song)
-                                self.sender.send_message(
-                                    text=text,
-                                    attachments=next_song.get("attachments", []),
-                                    channel=ch,
-                                    area=ar,
-                                )
+                                # 智能续播（autoplay）由系统从喜欢列表挑歌，不打扰频道；
+                                # 队列内的正常切歌仍发送通知。
+                                if _source != "autoplay":
+                                    text = self._build_now_playing_text("自动播放", next_song)
+                                    self.sender.send_message(
+                                        text=text,
+                                        attachments=next_song.get("attachments", []),
+                                        channel=ch,
+                                        area=ar,
+                                    )
 
                                 time.sleep(_PLAY_FADE_DELAY)
                         elif queue_length == 0 and current is None and self._voice_channel_id:
