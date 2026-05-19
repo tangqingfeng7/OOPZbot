@@ -160,4 +160,5 @@ class HelpService:
             "\n".join(lines),
             channel=channel,
             area=area,
+            styleTags=["IMPORTANT"],
         )
