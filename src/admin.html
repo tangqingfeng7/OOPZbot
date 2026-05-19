@@ -467,9 +467,8 @@
             <div class="btns">
               <div class="toolbar">
                 <button onclick="loadConfig()">刷新配置</button>
-                <button class="primary" onclick="saveConfig(true)">保存并持久化</button>
-                <button onclick="saveConfig(false)">仅本次生效</button>
-                <button class="danger" onclick="resetOverrides()">清除持久化覆盖</button>
+                <button class="primary" onclick="saveConfig(true)">保存并立即生效</button>
+                <button onclick="resetOverrides()">从 config.py 重新加载</button>
               </div>
             </div>
             <div id="cfgMsg" class="msg"></div>
@@ -852,12 +851,12 @@
         const updates = buildConfigUpdates();
         const d = await req("/admin/api/config", {
           method: "POST",
-          body: JSON.stringify({ updates, persist })
+          body: JSON.stringify({ updates, persist: true })
         });
         if (Array.isArray(d.errors) && d.errors.length > 0) {
           showMsg(msg, "部分失败: " + d.errors.join(" | "), true);
         } else {
-          showMsg(msg, persist ? "配置已保存并持久化" : "配置已更新（仅本次进程）");
+          showMsg(msg, d.message || "配置已应用到当前进程");
         }
         document.getElementById("cfg_admin_password").value = "";
         document.getElementById("cfg_netease_cookie").value = "";
@@ -873,8 +872,8 @@
     async function resetOverrides() {
       const msg = document.getElementById("cfgMsg");
       try {
-        await req("/admin/api/config/reset", { method: "POST", body: "{}" });
-        showMsg(msg, "已清除持久化覆盖，重启后恢复为 config.py 配置");
+        const d = await req("/admin/api/config/reset", { method: "POST", body: "{}" });
+        showMsg(msg, d.message || (d.legacy_removed ? "已重新加载 config.py，并移除旧覆盖文件" : "已重新加载 config.py"));
       } catch (e) {
         showMsg(msg, e.message, true);
       }

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import copy
 import io
 import json
 import os
@@ -808,7 +807,7 @@ _ADMIN_PAGES: dict[str, dict[str, str]] = {
         "brand_copy": "把长表单整理成章节化配置工作台，保留原字段和保存接口。",
         "topbar_actions": (
             '<button class="btn btn-ghost" type="button" onclick="loadConfig().catch(() => {})">刷新配置</button>\n'
-            '          <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并持久化</button>'
+            '          <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并立即生效</button>'
         ),
         "login_title": "登录配置中心",
         "login_copy": "登录后调整后台配置。",
@@ -1192,7 +1191,7 @@ def admin_get_config():
         "runtime": {
             "music_area": _music_area_context(),
         },
-        "overrides_path": cfg.ADMIN_OVERRIDES_PATH,
+        "config_source": "config.py",
     })
 
 
@@ -1202,6 +1201,7 @@ async def admin_update_config(request: Request):
     updates = body.get("updates", {})
     persist = bool(body.get("persist", True))
     applied, errors, persist_payload = cfg.apply_config_updates(updates)
+    persisted = False
     music_runtime = {}
 
     import web_player
@@ -1227,13 +1227,20 @@ async def admin_update_config(request: Request):
     cfg.refresh_runtime_dependents(set(applied))
 
     if persist and persist_payload:
-        merged = cfg.merge_overrides(cfg.read_admin_overrides(), persist_payload)
-        cfg.write_admin_overrides(merged)
+        try:
+            cfg.persist_config_updates(persist_payload)
+            persisted = True
+        except Exception as exc:
+            logger.exception("保存配置到 config.py 失败")
+            errors.append(f"保存 config.py 失败: {exc}")
+
     return JSONResponse({
         "ok": len(errors) == 0,
         "applied": applied,
         "errors": errors,
-        "persisted": bool(persist and persist_payload),
+        "persisted": persisted,
+        "config_source": "config.py",
+        "message": "配置已保存到 config.py 并立即生效" if persisted else "配置已应用到当前进程",
         "config": cfg.config_snapshot(),
         "runtime": {
             "music_area": _music_area_context(),
@@ -1575,14 +1582,14 @@ def admin_bilibili_account():
 
 @admin_router.post("/admin/api/config/reset")
 def admin_reset_config_overrides():
-    if os.path.exists(cfg.ADMIN_OVERRIDES_PATH):
-        os.remove(cfg.ADMIN_OVERRIDES_PATH)
-    for group_name, group in cfg.CONFIG_GROUPS.items():
-        target = group.get("target")
-        baseline = cfg.CONFIG_BASELINES.get(group_name)
-        if isinstance(target, dict) and isinstance(baseline, dict):
-            target.clear()
-            target.update(copy.deepcopy(baseline))
+    legacy_removed = False
+    if os.path.exists(cfg.LEGACY_ADMIN_OVERRIDES_PATH):
+        os.remove(cfg.LEGACY_ADMIN_OVERRIDES_PATH)
+        legacy_removed = True
+    try:
+        cfg.reload_config_from_file()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"重新加载 config.py 失败: {exc}"}, status_code=500)
 
     import web_player
     web_player.reset_redis(force=True)
@@ -1594,7 +1601,13 @@ def admin_reset_config_overrides():
         logger.debug("重置配置后刷新音乐平台失败: %s", exc)
         music_runtime = {"available": False, "error": str(exc)}
     cfg.refresh_runtime_dependents({"redis", "web_player"})
-    return JSONResponse({"ok": True, "removed": True, "path": cfg.ADMIN_OVERRIDES_PATH, "music_platforms": music_runtime})
+    return JSONResponse({
+        "ok": True,
+        "legacy_removed": legacy_removed,
+        "config_source": "config.py",
+        "message": "已从 config.py 重新加载并立即生效",
+        "music_platforms": music_runtime,
+    })
 
 
 def _parse_oopz_login_payload(body: dict[str, Any]) -> tuple[str, str, float]:
@@ -2470,11 +2483,16 @@ async def admin_bot_admins_add(request: Request):
     if uid in _cfg.ADMIN_UIDS:
         return JSONResponse({"ok": True, "message": "该用户已是管理员"})
     _cfg.ADMIN_UIDS.append(uid)
-    _persist_admin_uids(_cfg.ADMIN_UIDS)
+    try:
+        _persist_admin_uids(_cfg.ADMIN_UIDS)
+    except Exception as exc:
+        _cfg.ADMIN_UIDS.remove(uid)
+        logger.exception("保存 Bot 管理员列表失败")
+        return JSONResponse({"ok": False, "error": f"保存 config.py 失败: {exc}"}, status_code=500)
     resolver = get_resolver()
     name = resolver.user(uid) or uid[:12]
     logger.info("Bot 管理员已添加: %s (%s)", name, uid[:12])
-    return JSONResponse({"ok": True, "message": f"已将 {name} 设为管理员"})
+    return JSONResponse({"ok": True, "message": f"已将 {name} 设为管理员，并写入 config.py"})
 
 
 @admin_router.delete("/admin/api/bot-admins/{uid}")
@@ -2485,18 +2503,20 @@ def admin_bot_admins_remove(uid: str):
     if uid not in _cfg.ADMIN_UIDS:
         return JSONResponse({"ok": False, "error": "该用户不是管理员"}, status_code=404)
     _cfg.ADMIN_UIDS.remove(uid)
-    _persist_admin_uids(_cfg.ADMIN_UIDS)
+    try:
+        _persist_admin_uids(_cfg.ADMIN_UIDS)
+    except Exception as exc:
+        _cfg.ADMIN_UIDS.append(uid)
+        logger.exception("保存 Bot 管理员列表失败")
+        return JSONResponse({"ok": False, "error": f"保存 config.py 失败: {exc}"}, status_code=500)
     resolver = get_resolver()
     name = resolver.user(uid) or uid[:12]
     logger.info("Bot 管理员已移除: %s (%s)", name, uid[:12])
-    return JSONResponse({"ok": True, "message": f"已移除 {name} 的管理员权限"})
+    return JSONResponse({"ok": True, "message": f"已移除 {name} 的管理员权限，并写入 config.py"})
 
 
 def _persist_admin_uids(uids: list) -> None:
-    """将管理员列表持久化到 admin_runtime_config.json。"""
-    overrides = cfg.read_admin_overrides()
-    overrides["admin_uids"] = list(uids)
-    cfg.write_admin_overrides(overrides)
+    cfg.persist_admin_uids(list(uids))
 
 
 @admin_router.post("/admin/api/members/{uid}/role")

@@ -138,11 +138,7 @@
     }
 
     function setNeteaseQrSaveEnabled(enabled) {
-      const persistButton = AdminShell.byId("cfg_netease_qr_save_persist");
       const runtimeButton = AdminShell.byId("cfg_netease_qr_save_runtime");
-      if (persistButton) {
-        persistButton.disabled = !enabled;
-      }
       if (runtimeButton) {
         runtimeButton.disabled = !enabled;
       }
@@ -281,7 +277,7 @@
         setNeteaseQrStatus("请先完成扫码登录", true);
         return;
       }
-      await saveConfig(!!persist);
+      await saveConfig(true);
     }
 
     let bilibiliQrTimer = null;
@@ -355,11 +351,7 @@
     }
 
     function setBilibiliQrSaveEnabled(enabled) {
-      const persistButton = AdminShell.byId("cfg_bilibili_qr_save_persist");
       const runtimeButton = AdminShell.byId("cfg_bilibili_qr_save_runtime");
-      if (persistButton) {
-        persistButton.disabled = !enabled;
-      }
       if (runtimeButton) {
         runtimeButton.disabled = !enabled;
       }
@@ -494,7 +486,7 @@
         setBilibiliQrStatus("请先完成扫码登录", true);
         return;
       }
-      await saveConfig(!!persist);
+      await saveConfig(true);
     }
 
     function setSecretState(id, configured) {
@@ -895,14 +887,14 @@
       try {
         const data = await AdminShell.req("/admin/api/config", {
           method: "POST",
-          body: JSON.stringify({ updates: build(), persist }),
+          body: JSON.stringify({ updates: build(), persist: true }),
         });
         if (Array.isArray(data.errors) && data.errors.length > 0) {
           AdminShell.showMessage("msg", "部分失败：" + data.errors.join(" | "), true);
           setPageState("配置保存有错误", "error");
         } else {
-          AdminShell.showMessage("msg", persist ? "配置已保存并持久化" : "配置已更新，仅当前进程生效");
-          setPageState("配置已保存", "success");
+          AdminShell.showMessage("msg", data.message || "配置已应用到当前进程");
+          setPageState("配置已应用", "success");
         }
         await loadConfig();
       } catch (error) {
@@ -913,9 +905,9 @@
 
     async function resetOverrides() {
       try {
-        await AdminShell.req("/admin/api/config/reset", { method: "POST", body: "{}" });
-        AdminShell.showMessage("msg", "已清除持久化覆盖，重启后回退到 config.py");
-        setPageState("覆盖已清除", "warning");
+        const data = await AdminShell.req("/admin/api/config/reset", { method: "POST", body: "{}" });
+        AdminShell.showMessage("msg", data.message || (data.legacy_removed ? "已重新加载 config.py，并移除旧覆盖文件" : "已重新加载 config.py"));
+        setPageState("配置已重新加载", "success");
         await loadConfig();
       } catch (error) {
         AdminShell.showMessage("msg", error.message, true);

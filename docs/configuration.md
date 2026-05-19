@@ -154,7 +154,7 @@ copy private_key.example.py private_key.py
 | `cookie_secure` | 是否仅在 HTTPS 下发送 cookie（使用 Nginx + SSL 时设为 `True`） |
 | `link_idle_release_seconds` | 播放列表空闲超时后释放随机链接（秒，`0` 表示不释放） |
 
-> **注意**：管理后台保存的运行时覆盖（`data/admin_runtime_config.json`）优先级高于 `config.py`。修改 `url` 等字段时，建议通过管理后台 `/admin` -> 配置页面操作，或同时修改 JSON 文件。
+> **注意**：长期配置只认 `config.py`。管理后台 `/admin` -> 配置页面保存时会写回 `config.py`，并同步更新当前进程，不需要重启。
 
 ### 自动撤回 (`AUTO_RECALL_CONFIG`)
 

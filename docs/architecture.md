@@ -105,7 +105,7 @@ NeteaseCloud API (:3000)
 │   ├── queue_manager.py         # Redis 播放队列管理
 │   ├── web_player.py            # Web 播放器 FastAPI 主应用（播放器 API 路由、共享状态）
 │   ├── web_player_admin.py      # Admin 后台路由（/admin + /admin/api，使用 APIRouter）
-│   ├── web_player_config.py     # Web 播放器 / Admin 配置常量、分组定义、运行时覆盖管理
+│   ├── web_player_config.py     # Web 播放器 / Admin 配置常量、分组定义、config.py 写回与热更新
 │   ├── web_link_token.py        # Web 播放器随机访问链接/令牌管理
 │   ├── player.html              # Web 播放器前端（歌词同步、播放控制、搜索点歌）
 │   ├── agora_player.html        # Agora RTC 浏览器端（推流/暂停/跳转/音量控制）
@@ -158,7 +158,6 @@ NeteaseCloud API (:3000)
 │
 ├── data/                        # 运行时数据（自动生成）
 │   ├── names.json               # ID → 名称缓存
-│   ├── admin_runtime_config.json # Admin 运行时配置覆盖
 │   └── oopz_cache.db            # SQLite 数据库文件
 │
 ├── docs/                        # 文档目录
@@ -194,7 +193,7 @@ NeteaseCloud API (:3000)
 |------|------|
 | `web_player.py` | FastAPI 主应用实例、播放器 API 路由、共享状态（Redis/Netease 客户端） |
 | `web_player_admin.py` | Admin 后台所有路由（`APIRouter`），包括登录、概览、统计、配置、队列管理等 |
-| `web_player_config.py` | 配置常量（`WEB_PLAYER_CONFIG` 引用）、分组定义、基线值、运行时覆盖读写 |
+| `web_player_config.py` | 配置常量（`WEB_PLAYER_CONFIG` 引用）、分组定义、基线值、config.py 写回与热更新 |
 
 `web_player.py` 通过 `app.include_router(admin_router)` 挂载 Admin 路由。
 

@@ -1,11 +1,12 @@
-"""Web 播放器配置管理 — 配置分组、校验、持久化覆盖、运行时辅助函数。"""
+"""Web 播放器配置管理 — 配置分组、校验、运行时辅助函数。"""
 
 from __future__ import annotations
 
+import ast
 import copy
+import importlib
 import json
 import os
-from typing import Optional
 
 import config as runtime_config
 from logger_config import get_logger
@@ -39,8 +40,29 @@ MESSAGE_STATS_CONFIG = getattr(runtime_config, "MESSAGE_STATS_CONFIG", {"enabled
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ADMIN_OVERRIDES_PATH = os.path.join(PROJECT_ROOT, "data", "admin_runtime_config.json")
+CONFIG_FILE_PATH = os.path.join(PROJECT_ROOT, "config.py")
+LEGACY_ADMIN_OVERRIDES_PATH = os.path.join(PROJECT_ROOT, "data", "admin_runtime_config.json")
 KEY_ADMIN_SESSION = "music:admin_session"
+
+CONFIG_GROUP_SOURCES: dict[str, str] = {
+    "web_player": "WEB_PLAYER_CONFIG",
+    "auto_recall": "AUTO_RECALL_CONFIG",
+    "area_join_notify": "AREA_JOIN_NOTIFY",
+    "chat": "CHAT_CONFIG",
+    "profanity": "PROFANITY_CONFIG",
+    "oopz": "OOPZ_CONFIG",
+    "netease": "NETEASE_CLOUD",
+    "redis": "REDIS_CONFIG",
+    "doubao_chat": "DOUBAO_CONFIG",
+    "doubao_image": "DOUBAO_IMAGE_CONFIG",
+    "scheduler": "SCHEDULER_CONFIG",
+    "reminder": "REMINDER_CONFIG",
+    "music": "MUSIC_CONFIG",
+    "command_cooldown": "COMMAND_COOLDOWN_CONFIG",
+    "qq_music": "QQ_MUSIC_CONFIG",
+    "bilibili_music": "BILIBILI_MUSIC_CONFIG",
+    "message_stats": "MESSAGE_STATS_CONFIG",
+}
 
 # ---------------------------------------------------------------------------
 # 配置分组定义
@@ -368,25 +390,8 @@ def coerce_config_value(meta: dict, raw: object) -> object:
 
 
 # ---------------------------------------------------------------------------
-# 管理后台配置覆盖（持久化到 JSON 文件）
+# 管理后台配置更新（先改当前进程，再写回 config.py）
 # ---------------------------------------------------------------------------
-
-def read_admin_overrides() -> dict:
-    if not os.path.exists(ADMIN_OVERRIDES_PATH):
-        return {}
-    try:
-        with open(ADMIN_OVERRIDES_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        logger.warning(f"读取后台配置覆盖文件失败: {e}")
-        return {}
-
-
-def write_admin_overrides(payload: dict) -> None:
-    os.makedirs(os.path.dirname(ADMIN_OVERRIDES_PATH), exist_ok=True)
-    with open(ADMIN_OVERRIDES_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def apply_config_updates(updates: dict) -> tuple[dict, list[str], dict]:
@@ -429,18 +434,182 @@ def apply_config_updates(updates: dict) -> tuple[dict, list[str], dict]:
     return applied, errors, persist_payload
 
 
-def merge_overrides(base: dict, patch: dict) -> dict:
-    out: dict = {}
-    for k, v in (base or {}).items():
-        out[k] = dict(v) if isinstance(v, dict) else v
-    for group, values in (patch or {}).items():
-        if isinstance(values, dict):
-            if not isinstance(out.get(group), dict):
-                out[group] = {}
-            out[group].update(values)
-        else:
-            out[group] = values
-    return out
+def _python_literal(value: object) -> str:
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if value is None:
+        return "None"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_python_literal(item) for item in value) + "]"
+    if isinstance(value, dict):
+        parts = [
+            f"{_python_literal(str(key))}: {_python_literal(item)}"
+            for key, item in value.items()
+        ]
+        return "{" + ", ".join(parts) + "}"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _line_offsets(lines: list[str]) -> list[int]:
+    offsets: list[int] = []
+    pos = 0
+    for line in lines:
+        offsets.append(pos)
+        pos += len(line)
+    return offsets
+
+
+def _byte_col_to_char_index(line: str, byte_col: int) -> int:
+    total = 0
+    for index, char in enumerate(line):
+        total += len(char.encode("utf-8"))
+        if total > byte_col:
+            return index
+        if total == byte_col:
+            return index + 1
+    return len(line)
+
+
+def _node_span(lines: list[str], offsets: list[int], node: ast.AST) -> tuple[int, int]:
+    start_col = _byte_col_to_char_index(lines[node.lineno - 1], node.col_offset)
+    end_col = _byte_col_to_char_index(lines[node.end_lineno - 1], node.end_col_offset)
+    start = offsets[node.lineno - 1] + start_col
+    end = offsets[node.end_lineno - 1] + end_col
+    return start, end
+
+
+def _dict_assignments(tree: ast.AST) -> dict[str, ast.Dict]:
+    assignments: dict[str, ast.Dict] = {}
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                assignments[target.id] = node.value
+    return assignments
+
+
+def persist_config_updates(updates: dict, path: str | None = None) -> None:
+    """把后台保存的配置写回 config.py；内存生效由 apply_config_updates 负责。"""
+    if not updates:
+        return
+    config_path = path or CONFIG_FILE_PATH
+    if not os.path.exists(config_path):
+        raise RuntimeError("config.py 不存在，无法保存配置")
+
+    with open(config_path, "r", encoding="utf-8", newline="") as f:
+        text = f.read()
+    try:
+        tree = ast.parse(text, filename=config_path)
+    except SyntaxError as exc:
+        raise RuntimeError(f"config.py 语法错误，无法保存配置: {exc}") from exc
+
+    lines = text.splitlines(keepends=True)
+    offsets = _line_offsets(lines)
+    assignments = _dict_assignments(tree)
+    replacements: list[tuple[int, int, str]] = []
+    insertions: dict[int, list[str]] = {}
+
+    for group_name, values in (updates or {}).items():
+        if not isinstance(values, dict) or not values:
+            continue
+        source_name = CONFIG_GROUP_SOURCES.get(group_name)
+        if not source_name:
+            continue
+        dict_node = assignments.get(source_name)
+        if dict_node is None:
+            raise RuntimeError(f"config.py 中找不到 {source_name}")
+
+        existing_keys: dict[str, ast.AST] = {}
+        for key_node, value_node in zip(dict_node.keys, dict_node.values):
+            if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                existing_keys[key_node.value] = value_node
+
+        for field, value in values.items():
+            literal = _python_literal(value)
+            value_node = existing_keys.get(field)
+            if value_node is not None:
+                start, end = _node_span(lines, offsets, value_node)
+                replacements.append((start, end, literal))
+                continue
+
+            closing_line = lines[dict_node.end_lineno - 1]
+            closing_indent = closing_line[: len(closing_line) - len(closing_line.lstrip())]
+            entry_indent = closing_indent + "    "
+            insert_pos = offsets[dict_node.end_lineno - 1]
+            insertions.setdefault(insert_pos, []).append(
+                f"{entry_indent}{_python_literal(field)}: {literal},\n"
+            )
+
+    edits: list[tuple[int, int, str]] = replacements[:]
+    for pos, chunks in insertions.items():
+        edits.append((pos, pos, "".join(chunks)))
+    if not edits:
+        return
+
+    for start, end, replacement in sorted(edits, key=lambda item: item[0], reverse=True):
+        text = text[:start] + replacement + text[end:]
+
+    temp_path = f"{config_path}.tmp"
+    with open(temp_path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    os.replace(temp_path, config_path)
+
+
+def persist_admin_uids(uids: list, path: str | None = None) -> None:
+    config_path = path or CONFIG_FILE_PATH
+    if not os.path.exists(config_path):
+        raise RuntimeError("config.py 不存在，无法保存管理员列表")
+
+    with open(config_path, "r", encoding="utf-8", newline="") as f:
+        text = f.read()
+    try:
+        tree = ast.parse(text, filename=config_path)
+    except SyntaxError as exc:
+        raise RuntimeError(f"config.py 语法错误，无法保存管理员列表: {exc}") from exc
+
+    lines = text.splitlines(keepends=True)
+    offsets = _line_offsets(lines)
+    replacement = _python_literal([str(uid) for uid in uids])
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "ADMIN_UIDS" for target in node.targets):
+            continue
+        start, end = _node_span(lines, offsets, node.value)
+        text = text[:start] + replacement + text[end:]
+        temp_path = f"{config_path}.tmp"
+        with open(temp_path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(temp_path, config_path)
+        return
+    raise RuntimeError("config.py 中找不到 ADMIN_UIDS")
+
+
+def reload_config_from_file() -> None:
+    """重新读取 config.py，并把值同步到现有字典引用，避免重启。"""
+    old_admin_uids = getattr(runtime_config, "ADMIN_UIDS", None)
+    importlib.invalidate_caches()
+    importlib.reload(runtime_config)
+    for group_name, source_name in CONFIG_GROUP_SOURCES.items():
+        group = CONFIG_GROUPS.get(group_name)
+        if not group:
+            continue
+        target = group.get("target")
+        fresh = getattr(runtime_config, source_name, None)
+        if isinstance(target, dict) and isinstance(fresh, dict):
+            target.clear()
+            target.update(copy.deepcopy(fresh))
+            setattr(runtime_config, source_name, target)
+    fresh_admin_uids = getattr(runtime_config, "ADMIN_UIDS", None)
+    if isinstance(old_admin_uids, list) and isinstance(fresh_admin_uids, list):
+        old_admin_uids.clear()
+        old_admin_uids.extend(str(uid) for uid in fresh_admin_uids)
+        setattr(runtime_config, "ADMIN_UIDS", old_admin_uids)
 
 
 def config_snapshot() -> dict:
@@ -478,32 +647,6 @@ def refresh_runtime_dependents(applied_groups: set[str]) -> None:
             cb()
         except Exception as e:
             logger.debug("Config refresh callback failed: %s", e)
-
-
-def bootstrap_admin_overrides() -> None:
-    existing = read_admin_overrides()
-    if not existing:
-        return
-
-    saved_admin_uids = existing.pop("admin_uids", None)
-    if isinstance(saved_admin_uids, list) and saved_admin_uids:
-        try:
-            import config as _cfg
-            current = set(_cfg.ADMIN_UIDS)
-            for uid in saved_admin_uids:
-                uid = str(uid).strip()
-                if uid and uid not in current:
-                    _cfg.ADMIN_UIDS.append(uid)
-                    current.add(uid)
-            logger.info("从覆盖文件恢复了 %d 个 Bot 管理员", len(saved_admin_uids))
-        except Exception as e:
-            logger.warning("恢复 Bot 管理员列表失败: %s", e)
-
-    if not existing:
-        return
-    _, errors, _ = apply_config_updates(existing)
-    if errors:
-        logger.warning("加载后台配置覆盖时存在问题: %s", " | ".join(errors))
 
 
 def display_web_base_url() -> str:

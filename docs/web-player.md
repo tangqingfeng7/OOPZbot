@@ -57,7 +57,7 @@ Web 播放器是一个独立的歌词与播放控制页面，与 Bot 播放状�
 | `admin_session_ttl_seconds` | 后台会话有效期（秒） |
 | `admin_cookie_secure` | 后台 cookie 是否仅 HTTPS 发送（使用 Nginx + SSL 时设为 `True`） |
 
-> **注意**：管理后台(`/admin` -> 配置)保存的运行时覆盖（`data/admin_runtime_config.json`）优先级高于 `config.py`。如果在后台修改过 URL 等字段，手动编辑 `config.py` 不会生效，需通过后台或直接编辑 JSON 文件修改。
+> **注意**：长期配置只认 `config.py`。管理后台(`/admin` -> 配置)保存时会写回 `config.py`，并同步更新当前进程，不需要重启。
 
 ---
 
@@ -180,8 +180,8 @@ nginx/ssl/key.pem    # 私钥
 | GET | `/admin/api/statistics?days=7&top_page=1&top_page_size=10` | 统计详情（近 N 天、Top 歌曲〔基于 play_history 聚合〕、最近歌曲） |
 | GET | `/admin/api/logs?tail=200` | 读取日志尾部 |
 | GET | `/admin/api/config` | 获取后台可编辑配置快照 |
-| POST | `/admin/api/config` | 更新配置。Body: `{"updates": {...}, "persist": true|false}` |
-| POST | `/admin/api/config/reset` | 清理 `data/admin_runtime_config.json` 持久化覆盖 |
+| POST | `/admin/api/config` | 写入 `config.py` 并立即更新当前进程。Body: `{"updates": {...}, "persist": true}` |
+| POST | `/admin/api/config/reset` | 从 `config.py` 重新加载配置并立即生效 |
 | POST | `/admin/api/control` | 播放控制（同 `/api/control`） |
 | POST | `/admin/api/queue/clear` | 清空播放队列 |
 | GET | `/admin/api/queue?page=1&page_size=10` | 获取分页队列详情（含索引） |
@@ -213,7 +213,7 @@ nginx/ssl/key.pem    # 私钥
 |------|------|
 | `web_player.py` | FastAPI 主应用实例、播放器 API 路由（`/api/*`）、共享状态（Redis / Netease 客户端） |
 | `web_player_admin.py` | Admin 后台路由（`/admin` + `/admin/api/*`），通过 `APIRouter` 挂载 |
-| `web_player_config.py` | 配置常量引用、分组定义、基线值、运行时覆盖读写（`admin_runtime_config.json`） |
+| `web_player_config.py` | 配置常量引用、分组定义、基线值、config.py 写回与热更新 |
 | `admin_assets/` | Admin 页面 Shell 模板与各页面内容片段 / 脚本 |
 
 ## 相关文档

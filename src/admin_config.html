@@ -19,7 +19,7 @@
         <div class="topbar-actions">
           <span id="topStatus" class="status-text is-warning">等待登录</span>
           <button class="btn btn-ghost" type="button" onclick="loadConfig().catch(() => {})">刷新配置</button>
-          <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并持久化</button>
+          <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并立即生效</button>
           <button class="btn" type="button" onclick="logout()">退出登录</button>
         </div>
       </div>
@@ -227,10 +227,9 @@
             <div id="railState" class="micro-status is-warning">等待操作</div>
             <h3 class="rail-block__title">保存轨道</h3>
             <div class="action-row">
-              <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并持久化</button>
-              <button class="btn btn-ghost" type="button" onclick="saveConfig(false)">仅当前进程生效</button>
-              <button class="btn btn-ghost" type="button" onclick="loadConfig()">重新加载</button>
-              <button class="btn btn-danger" type="button" onclick="resetOverrides()">清除持久化覆盖</button>
+              <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并立即生效</button>
+              <button class="btn btn-ghost" type="button" onclick="loadConfig()">刷新页面数据</button>
+              <button class="btn btn-ghost" type="button" onclick="resetOverrides()">从 config.py 重新加载</button>
             </div>
             <div id="msg" class="msg"></div>
           </div>
@@ -531,14 +530,14 @@
       try {
         const data = await AdminShell.req("/admin/api/config", {
           method: "POST",
-          body: JSON.stringify({ updates: build(), persist }),
+          body: JSON.stringify({ updates: build(), persist: true }),
         });
         if (Array.isArray(data.errors) && data.errors.length > 0) {
           AdminShell.showMessage("msg", "部分失败：" + data.errors.join(" | "), true);
           setPageState("配置保存有错误", "error");
         } else {
-          AdminShell.showMessage("msg", persist ? "配置已保存并持久化" : "配置已更新，仅当前进程生效");
-          setPageState("配置已保存", "success");
+          AdminShell.showMessage("msg", data.message || "配置已应用到当前进程");
+          setPageState("配置已应用", "success");
         }
         await loadConfig();
       } catch (error) {
@@ -549,9 +548,9 @@
 
     async function resetOverrides() {
       try {
-        await AdminShell.req("/admin/api/config/reset", { method: "POST", body: "{}" });
-        AdminShell.showMessage("msg", "已清除持久化覆盖，重启后回退到 config.py");
-        setPageState("覆盖已清除", "warning");
+        const data = await AdminShell.req("/admin/api/config/reset", { method: "POST", body: "{}" });
+        AdminShell.showMessage("msg", data.message || (data.legacy_removed ? "已重新加载 config.py，并移除旧覆盖文件" : "已重新加载 config.py"));
+        setPageState("配置已重新加载", "success");
         await loadConfig();
       } catch (error) {
         AdminShell.showMessage("msg", error.message, true);

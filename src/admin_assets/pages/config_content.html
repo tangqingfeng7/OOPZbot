@@ -167,8 +167,7 @@
                   <div class="netease-login">
                     <div class="action-row">
                       <button id="cfg_netease_qr_refresh" class="btn btn-sm btn-primary" type="button" onclick="refreshNeteaseQr()">刷新二维码</button>
-                      <button id="cfg_netease_qr_save_persist" class="btn btn-sm btn-ghost" type="button" onclick="saveNeteaseQrCookie(true)" disabled>保存并持久化</button>
-                      <button id="cfg_netease_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveNeteaseQrCookie(false)" disabled>仅当前进程生效</button>
+                      <button id="cfg_netease_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveNeteaseQrCookie(true)" disabled>保存并立即生效</button>
                     </div>
                     <div class="netease-login__body">
                       <div id="cfg_netease_qr_box" class="netease-qr-box">
@@ -249,8 +248,7 @@
                   <div class="qr-login">
                     <div class="action-row">
                       <button id="cfg_bilibili_qr_refresh" class="btn btn-sm btn-primary" type="button" onclick="refreshBilibiliQr()">刷新二维码</button>
-                      <button id="cfg_bilibili_qr_save_persist" class="btn btn-sm btn-ghost" type="button" onclick="saveBilibiliQrCookie(true)" disabled>保存并持久化</button>
-                      <button id="cfg_bilibili_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveBilibiliQrCookie(false)" disabled>仅当前进程生效</button>
+                      <button id="cfg_bilibili_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveBilibiliQrCookie(true)" disabled>保存并立即生效</button>
                     </div>
                     <div class="qr-login__body">
                       <div id="cfg_bilibili_qr_box" class="qr-box">
@@ -359,10 +357,9 @@
             <div id="railState" class="micro-status is-warning">等待操作</div>
             <h3 class="rail-block__title">保存操作</h3>
             <div class="action-row">
-              <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并持久化</button>
-              <button class="btn btn-ghost" type="button" onclick="saveConfig(false)">仅当前进程生效</button>
-              <button class="btn btn-ghost" type="button" onclick="loadConfig()">重新加载</button>
-              <button class="btn btn-danger" type="button" onclick="resetOverrides()">清除持久化覆盖</button>
+              <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并立即生效</button>
+              <button class="btn btn-ghost" type="button" onclick="loadConfig()">刷新页面数据</button>
+              <button class="btn btn-ghost" type="button" onclick="resetOverrides()">从 config.py 重新加载</button>
             </div>
             <div id="msg" class="msg"></div>
           </div>

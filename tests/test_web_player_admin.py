@@ -1,4 +1,6 @@
+import copy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,6 +100,46 @@ class WebPlayerAdminTest(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["enabled_plugins"], ["alpha"])
         self.assertEqual(data["plugins"][0]["name"], "alpha")
+
+    def test_config_update_writes_config_py_and_not_admin_runtime_config(self) -> None:
+        import web_player_admin
+
+        baseline = copy.deepcopy(web_player_admin.cfg.CONFIG_BASELINES["web_player"])
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.py"
+            legacy_path = Path(tmp) / "admin_runtime_config.json"
+            config_path.write_text(
+                'WEB_PLAYER_CONFIG = {\n'
+                '    "url": "",\n'
+                '    "host": "0.0.0.0",\n'
+                '}\n',
+                encoding="utf-8",
+            )
+            try:
+                with (
+                    patch.object(self.module, "_admin_enabled", return_value=True),
+                    patch.object(self.module, "_is_admin_authorized", return_value=True),
+                    patch.object(web_player_admin.cfg, "CONFIG_FILE_PATH", str(config_path)),
+                    patch.object(web_player_admin.cfg, "LEGACY_ADMIN_OVERRIDES_PATH", str(legacy_path)),
+                ):
+                    response = self.client.post(
+                        "/admin/api/config",
+                        json={
+                            "updates": {"web_player": {"url": "https://example.test"}},
+                            "persist": True,
+                        },
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                data = response.json()
+                self.assertTrue(data["ok"])
+                self.assertTrue(data["persisted"])
+                self.assertEqual(data["config_source"], "config.py")
+                self.assertIn('"url": "https://example.test"', config_path.read_text(encoding="utf-8"))
+                self.assertFalse(legacy_path.exists())
+            finally:
+                web_player_admin.cfg.WEB_PLAYER_CONFIG.clear()
+                web_player_admin.cfg.WEB_PLAYER_CONFIG.update(copy.deepcopy(baseline))
 
     def test_netease_qr_login_returns_qr_image_when_logged_in(self) -> None:
         calls = []
