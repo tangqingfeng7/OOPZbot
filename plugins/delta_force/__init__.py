@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from logger_config import get_logger
-from plugin_base import (
+from core.logger_config import get_logger
+from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
     PluginConfigField,

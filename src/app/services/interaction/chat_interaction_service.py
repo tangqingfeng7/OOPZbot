@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from app.services.runtime import CommandRuntimeView, chat_of, sender_of
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 if TYPE_CHECKING:
-    from conversation_memory import ConversationMemory
+    from services.conversation_memory import ConversationMemory
 
 logger = get_logger("ChatInteractionService")
 
@@ -27,8 +27,8 @@ class ChatInteractionService:
             return
         self._memory_init = True
         try:
-            from conversation_memory import create_conversation_memory
-            from queue_manager import get_redis_client
+            from services.conversation_memory import create_conversation_memory
+            from core.queue_manager import get_redis_client
             redis_client = get_redis_client()
             self._memory = create_conversation_memory(redis_client)
         except Exception as e:

@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("FA8")
 

@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 
-from plugin_base import PluginDescriptor
+from domain.plugins.base import PluginDescriptor
 
 
 def _read_value(item: Mapping[str, object] | PluginDescriptor, key: str, default: object = "") -> object:

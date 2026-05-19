@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Optional
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 from .api import SteamPriceApiClient
 from .store import SteamPriceStore

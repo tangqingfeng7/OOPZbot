@@ -94,7 +94,7 @@ def _render_plugin_template(
 
 from __future__ import annotations
 
-from plugin_base import (
+from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
     PluginConfig,

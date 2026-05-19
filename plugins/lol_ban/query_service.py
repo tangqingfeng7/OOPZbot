@@ -3,8 +3,8 @@ import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from logger_config import get_logger
-from proxy_utils import resolve_requests_proxies
+from core.logger_config import get_logger
+from core.proxy_utils import resolve_requests_proxies
 
 logger = get_logger("LolQuery")
 

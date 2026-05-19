@@ -1,7 +1,7 @@
 from typing import Optional
 
 from app.services.runtime import CommandRuntimeView, music_of, sender_of
-from music import parse_platform_prefix
+from music.music import parse_platform_prefix
 
 
 class MusicCommandService:

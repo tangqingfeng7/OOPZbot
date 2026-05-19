@@ -12,7 +12,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-from voice_client import VoiceClient
+from music.voice_client import VoiceClient
 
 
 class VoiceClientPlaybackTest(unittest.TestCase):

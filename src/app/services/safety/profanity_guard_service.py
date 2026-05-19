@@ -9,7 +9,7 @@ from domain.safety.profanity_rules import (
     match_context_keyword,
     match_keyword,
 )
-from logger_config import get_logger
+from core.logger_config import get_logger
 from app.services.runtime import CommandRuntimeView, sender_of
 
 logger = get_logger("ProfanityGuardService")
@@ -135,7 +135,7 @@ class ProfanityGuardService:
         messages: list[dict],
     ) -> None:
         """处理违禁消息，包括撤回、警告和自动禁言。"""
-        from name_resolver import NameResolver
+        from oopz.name_resolver import NameResolver
 
         name = NameResolver().user(user) or user[:8]
         duration = PROFANITY_CONFIG.get("mute_duration", 5)

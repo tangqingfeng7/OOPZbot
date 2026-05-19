@@ -1,7 +1,7 @@
-from area_join_notifier import start_area_join_notifier
-from command_handler import CommandHandler
-from oopz_client import OopzClient
-from oopz_sender import OopzSender
+from services.area_join_notifier import start_area_join_notifier
+from bot.command_handler import CommandHandler
+from oopz.oopz_client import OopzClient
+from oopz.oopz_sender import OopzSender
 
 from app.lifecycle.context import AppContext
 

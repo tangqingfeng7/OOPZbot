@@ -1,8 +1,8 @@
 import threading
 
 from config import WEB_PLAYER_CONFIG
-from logger_config import setup_logger
-from web_player import run_server as run_web_player
+from core.logger_config import setup_logger
+from web.web_player import run_server as run_web_player
 
 from app.lifecycle.context import AppContext
 
@@ -27,7 +27,7 @@ class BackgroundServiceRunner:
         logger.info("自动播放监控已启动。")
 
     def _start_web_player(self, context: AppContext) -> None:
-        from web_player import register_runtime_dependencies, set_sender
+        from web.web_player import register_runtime_dependencies, set_sender
         set_sender(context.sender)
         register_runtime_dependencies(
             music=context.handler.infrastructure.music,
@@ -47,7 +47,7 @@ class BackgroundServiceRunner:
 
     def _warmup_members_cache(self, sender) -> None:
         try:
-            from area_config import get_area_registry
+            from core.area_config import get_area_registry
             registry = get_area_registry()
             area_ids = registry.get_all_area_ids()
             if not area_ids:

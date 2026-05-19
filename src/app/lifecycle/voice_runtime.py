@@ -1,8 +1,8 @@
 from typing import Optional
 
 from config import OOPZ_CONFIG
-from logger_config import setup_logger
-from voice_client import VoiceClient
+from core.logger_config import setup_logger
+from music.voice_client import VoiceClient
 
 logger = setup_logger("VoiceRuntime")
 

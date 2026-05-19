@@ -7,9 +7,9 @@ from typing import Any
 import requests
 
 import config as runtime_config
-import web_player_config as web_cfg
-from database import DB_PATH
-from queue_manager import get_redis_client
+import web.web_player_config as web_cfg
+from core.database import DB_PATH
+from core.queue_manager import get_redis_client
 
 
 class SetupDiagnostics:

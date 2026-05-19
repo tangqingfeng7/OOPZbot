@@ -11,14 +11,14 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-from music import (
+from music.music import (
     MusicHandler,
     PLAY_MODE_AUTOPLAY,
     PLAY_MODE_LIST,
     PLAY_MODE_SHUFFLE,
     PLAY_MODE_SINGLE,
 )
-import web_player_config as cfg
+import web.web_player_config as cfg
 
 
 class MusicModeTest(unittest.TestCase):

@@ -14,7 +14,8 @@ if str(SRC_ROOT) not in sys.path:
 
 
 from app.infrastructure.plugin_runtime import config_assets, loader, module_tools
-from plugin_base import BotModule, PluginConfigField, PluginConfigSpec, PluginMetadata
+from domain.plugins.plugin_name import normalize_plugin_name
+from domain.plugins.base import BotModule, PluginConfigField, PluginConfigSpec, PluginMetadata
 
 
 class _DemoPlugin(BotModule):
@@ -28,14 +29,11 @@ class _DemoPlugin(BotModule):
 
 
 class PluginConfigLayoutTest(unittest.TestCase):
-    def test_load_plugin_config_prefers_nested_config_json(self) -> None:
+    def test_load_plugin_config_reads_nested_config_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            config_dir = root / "config" / "plugins"
-            legacy_path = config_dir / "demo_plugin.json"
-            nested_path = config_dir / "demo_plugin" / "config.json"
+            nested_path = root / "config" / "plugins" / "demo_plugin" / "config.json"
             nested_path.parent.mkdir(parents=True)
-            legacy_path.write_text(json.dumps({"enabled": False}), encoding="utf-8")
             nested_path.write_text(json.dumps({"enabled": True}), encoding="utf-8")
 
             with patch.object(loader, "_PROJECT_ROOT", str(root)):
@@ -45,20 +43,19 @@ class PluginConfigLayoutTest(unittest.TestCase):
         self.assertEqual(config["enabled"], True)
         self.assertEqual(Path(config.path), nested_path)
 
-    def test_load_plugin_config_falls_back_to_legacy_flat_json(self) -> None:
+    def test_load_plugin_config_ignores_flat_json_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_dir = root / "config" / "plugins"
-            legacy_path = config_dir / "demo_plugin.json"
+            flat_path = config_dir / "demo_plugin.json"
             config_dir.mkdir(parents=True)
-            legacy_path.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+            flat_path.write_text(json.dumps({"enabled": True}), encoding="utf-8")
 
             with patch.object(loader, "_PROJECT_ROOT", str(root)):
                 config = loader.load_plugin_config("demo_plugin")
 
-        self.assertTrue(config.exists)
-        self.assertEqual(config["enabled"], True)
-        self.assertEqual(Path(config.path), legacy_path)
+        self.assertFalse(config.exists)
+        self.assertEqual(Path(config.path), config_dir / "demo_plugin" / "config.json")
 
     def test_write_plugin_config_assets_uses_plugin_subdirectory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -82,7 +79,7 @@ class PluginConfigLayoutTest(unittest.TestCase):
             alpha_dir.mkdir(parents=True)
             shared_dir.mkdir()
             (alpha_dir / "__init__.py").write_text(
-                "from plugin_base import BotModule, PluginMetadata\n"
+                "from domain.plugins.base import BotModule, PluginMetadata\n"
                 "class AlphaPlugin(BotModule):\n"
                 "    @property\n"
                 "    def metadata(self):\n"
@@ -98,6 +95,10 @@ class PluginConfigLayoutTest(unittest.TestCase):
         self.assertEqual(names, ["alpha", "beta"])
         self.assertEqual(module_name, "plugins.alpha")
         self.assertIsNotNone(module_tools.find_plugin_class(module))
+
+    def test_plugin_name_does_not_accept_py_suffix(self) -> None:
+        self.assertIsNone(normalize_plugin_name("alpha.py"))
+        self.assertEqual(normalize_plugin_name("alpha"), "alpha")
 
 
 if __name__ == "__main__":

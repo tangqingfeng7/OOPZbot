@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from command_handler import CommandHandler
-from oopz_client import OopzClient
-from oopz_sender import OopzSender
-from voice_client import VoiceClient
+from bot.command_handler import CommandHandler
+from oopz.oopz_client import OopzClient
+from oopz.oopz_sender import OopzSender
+from music.voice_client import VoiceClient
 
 
 @dataclass

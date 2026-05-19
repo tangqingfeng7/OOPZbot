@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-import oopz_password_login as password_login
+import oopz.oopz_password_login as password_login
 
 
 PRIVATE_KEY_PEM = "-----BEGIN PRIVATE KEY-----\nunit-test-key\n-----END PRIVATE KEY-----"
@@ -245,19 +245,6 @@ class OopzApiPasswordLoginTest(unittest.TestCase):
         api_login.assert_called_once_with("13800138000", "plain-password", timeout=5)
         save_credentials.assert_called_once_with(credentials)
 
-    def test_refresh_credentials_from_config_password_accepts_legacy_config_keys(self) -> None:
-        config = types.ModuleType("config")
-        config.OOPZ_CONFIG = {"phone": "13800138000", "password": "plain-password"}
-
-        with (
-            patch.dict(sys.modules, {"config": config}),
-            patch.object(password_login, "login_with_api_password", return_value={"ok": True}) as api_login,
-            patch.object(password_login, "save_credentials"),
-        ):
-            password_login.refresh_credentials_from_config_password(save=False)
-
-        api_login.assert_called_once_with("13800138000", "plain-password", timeout=20)
-
     def test_refresh_credentials_from_config_password_skips_when_missing_config_login(self) -> None:
         config = types.ModuleType("config")
         config.OOPZ_CONFIG = {}
@@ -325,22 +312,22 @@ class OopzClientCredentialsTest(unittest.TestCase):
             "Accept-Language": "zh-CN",
             "Accept-Encoding": "gzip",
         }
-        name_resolver = types.ModuleType("name_resolver")
+        name_resolver = types.ModuleType("oopz.name_resolver")
         name_resolver.get_resolver = lambda: None
-        proxy_utils = types.ModuleType("proxy_utils")
+        proxy_utils = types.ModuleType("core.proxy_utils")
         proxy_utils.get_websocket_proxy_kwargs = lambda proxy: {}
         websocket = types.ModuleType("websocket")
 
-        sys.modules.pop("oopz_client", None)
+        sys.modules.pop("oopz.oopz_client", None)
         fake_modules = {
             "config": config,
-            "name_resolver": name_resolver,
-            "proxy_utils": proxy_utils,
+            "oopz.name_resolver": name_resolver,
+            "core.proxy_utils": proxy_utils,
             "websocket": websocket,
         }
 
         with patch.dict(sys.modules, fake_modules):
-            import oopz_client
+            import oopz.oopz_client as oopz_client
 
             class _Socket:
                 closed = False

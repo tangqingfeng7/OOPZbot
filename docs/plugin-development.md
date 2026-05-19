@@ -13,7 +13,7 @@
 
 ## 插件契约
 
-插件基础契约定义在 `src/plugin_base.py`。
+插件基础契约定义在 `src/domain/plugins/base.py`。
 
 一个标准插件通常需要实现这些部分：
 
@@ -37,7 +37,7 @@
 ## 配置规范
 
 插件运行时收到的 `config` 已经不是裸 `dict`，而是 `PluginConfig`。
-它仍然兼容常见字典写法：
+它提供这些常见读取方式：
 
 - `config["key"]`
 - `config.get("key")`

@@ -1,8 +1,8 @@
 import signal
 from typing import Optional
 
-from logger_config import setup_logger
-from oopz_password_login import OopzPasswordLoginError, refresh_credentials_from_config_password
+from core.logger_config import setup_logger
+from oopz.oopz_password_login import OopzPasswordLoginError, refresh_credentials_from_config_password
 
 from app.lifecycle import (
     AppContext,

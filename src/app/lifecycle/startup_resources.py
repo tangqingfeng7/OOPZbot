@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from database import init_database
-from oopz_sender import OopzSender
+from core.database import init_database
+from oopz.oopz_sender import OopzSender
 
 
 @dataclass(frozen=True)

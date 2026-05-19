@@ -1,4 +1,4 @@
-from plugin_base import (
+from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
     PluginConfigField,

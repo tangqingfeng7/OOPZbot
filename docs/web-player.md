@@ -96,7 +96,7 @@ nginx/ssl/key.pem    # 私钥
 
 以下为 Web 播放器服务提供的接口，根路径为 `http://<host>:<port>`。
 
-播放器 API 由 `web_player.py` 提供；Admin 后台 API 由 `web_player_admin.py`（`APIRouter`）提供；配置管理由 `web_player_config.py` 集中处理。
+播放器 API 由 `src/web/web_player.py` 提供；Admin 后台 API 由 `src/web/web_player_admin.py`（`APIRouter`）提供；配置管理由 `src/web/web_player_config.py` 集中处理。
 
 ### 播放状态
 
@@ -211,10 +211,10 @@ nginx/ssl/key.pem    # 私钥
 
 | 文件 | 职责 |
 |------|------|
-| `web_player.py` | FastAPI 主应用实例、播放器 API 路由（`/api/*`）、共享状态（Redis / Netease 客户端） |
-| `web_player_admin.py` | Admin 后台路由（`/admin` + `/admin/api/*`），通过 `APIRouter` 挂载 |
-| `web_player_config.py` | 配置常量引用、分组定义、基线值、config.py 写回与热更新 |
-| `admin_assets/` | Admin 页面 Shell 模板与各页面内容片段 / 脚本 |
+| `src/web/web_player.py` | FastAPI 主应用实例、播放器 API 路由（`/api/*`）、共享状态（Redis / Netease 客户端） |
+| `src/web/web_player_admin.py` | Admin 后台路由（`/admin` + `/admin/api/*`），通过 `APIRouter` 挂载 |
+| `src/web/web_player_config.py` | 配置常量引用、分组定义、基线值、config.py 写回与热更新 |
+| `src/web/assets/` | Web 播放器页面、Agora 浏览器页、Agora Web SDK 本地缓存和 Admin 页面资源 |
 
 ## 相关文档
 

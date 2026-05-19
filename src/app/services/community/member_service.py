@@ -1,6 +1,6 @@
 import datetime
 
-from name_resolver import get_resolver
+from oopz.name_resolver import get_resolver
 from app.services.runtime import CommandRuntimeView, sender_of
 
 

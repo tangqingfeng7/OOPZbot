@@ -1,7 +1,7 @@
 from typing import Any, Optional
-from logger_config import get_logger
+from core.logger_config import get_logger
 
-from plugin_base import BotModule, PluginCommandCapabilities, PluginDescriptor
+from domain.plugins.base import BotModule, PluginCommandCapabilities, PluginDescriptor
 
 logger = get_logger("PluginRegistry")
 
@@ -73,16 +73,7 @@ class PluginRegistry:
         capabilities = getattr(module, "command_capabilities", None)
         if isinstance(capabilities, PluginCommandCapabilities):
             return cls._normalize_command_capabilities(capabilities)
-
-        return cls._normalize_command_capabilities(PluginCommandCapabilities(
-            mention_prefixes=tuple(getattr(module, "mention_prefixes", ()) or ()),
-            slash_commands=tuple(
-                command.strip().lower()
-                for command in (getattr(module, "slash_commands", ()) or ())
-                if isinstance(command, str) and command.strip()
-            ),
-            is_public_command=bool(getattr(module, "is_public_command", True)),
-        ))
+        return PluginCommandCapabilities()
 
     def describe(self, name: str) -> Optional[PluginDescriptor]:
         """返回单个插件的标准描述对象。"""

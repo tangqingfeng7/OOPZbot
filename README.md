@@ -117,7 +117,7 @@ cp private_key.example.py private_key.py
 - `config.py`：写入 `app_version`、`device_id`、`person_uid`、`jwt_token`
 - `private_key.py`：写入 RSA 私钥
 
-这个方式对应项目里的 `src/oopz_password_login.py` 和 `/admin/api/oopz/login`，返回给页面的 Token 和私钥只展示脱敏状态。
+这个方式对应项目里的 `src/oopz/oopz_password_login.py` 和 `/admin/api/oopz/login`，返回给页面的 Token 和私钥只展示脱敏状态。
 
 **备用方式：命令行网页抓取**
 

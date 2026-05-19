@@ -6,7 +6,7 @@ import sys
 from types import ModuleType
 from typing import Any
 
-from plugin_base import BotModule
+from domain.plugins.base import BotModule
 
 
 PROJECT_ROOT = os.path.dirname(

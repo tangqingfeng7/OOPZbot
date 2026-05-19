@@ -10,7 +10,7 @@ from typing import Optional
 import requests
 
 from config import NETEASE_CLOUD
-from logger_config import setup_logger
+from core.logger_config import setup_logger
 
 logger = setup_logger("NeteaseApiRuntime")
 

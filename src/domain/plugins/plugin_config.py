@@ -59,7 +59,7 @@ class PluginConfig(Mapping[str, Any]):
         return self.values.get(key, default)
 
     def copy(self) -> dict[str, Any]:
-        """返回一个可变字典副本，兼容旧插件写法。"""
+        """返回一个可变字典副本。"""
         return dict(self.values)
 
     def to_dict(self) -> dict[str, Any]:

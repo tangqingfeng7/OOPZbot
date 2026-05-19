@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 
-from plugin_base import BotModule
+from domain.plugins.base import BotModule
 
 from .loader import discover_plugins
 from .module_tools import build_plugin_instance

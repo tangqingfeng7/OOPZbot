@@ -14,7 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 
 from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
-from plugin_base import BotModule, PluginMetadata
+from domain.plugins.base import BotModule, PluginMetadata
 
 
 class _FakePlugin(BotModule):

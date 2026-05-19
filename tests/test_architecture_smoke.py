@@ -39,7 +39,7 @@ class ArchitectureSmokeTest(unittest.TestCase):
         self.assertNotIn("app.voice_runtime", imports)
 
     def test_command_handler_imports_registry_package(self) -> None:
-        imports = _parse_imports(SRC_ROOT / "command_handler.py")
+        imports = _parse_imports(SRC_ROOT / "bot" / "command_handler.py")
         self.assertIn("app.services.registry", imports)
         self.assertNotIn("app.service_registry", imports)
 
@@ -48,7 +48,7 @@ class ArchitectureSmokeTest(unittest.TestCase):
         for path in service_root.rglob("*.py"):
             with self.subTest(path=path):
                 imports = _parse_imports(path)
-                self.assertNotIn("command_handler", imports)
+                self.assertNotIn("bot.command_handler", imports)
 
     def test_core_architecture_modules_compile(self) -> None:
         targets = [

@@ -1,4 +1,4 @@
-from name_resolver import NameResolver, get_resolver
+from oopz.name_resolver import NameResolver, get_resolver
 from app.services.runtime import CommandRuntimeView, sender_of
 
 

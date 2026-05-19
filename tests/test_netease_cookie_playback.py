@@ -33,7 +33,7 @@ class NeteaseCookiePlaybackTest(unittest.TestCase):
         if _REQUESTS_ERROR is not None:
             self.skipTest(f"缺少 requests 依赖: {_REQUESTS_ERROR}")
         self._old_config_module = sys.modules.get("config")
-        self._old_netease_module = sys.modules.get("netease")
+        self._old_netease_module = sys.modules.get("music.netease")
         fake_config = types.ModuleType("config")
         fake_config.NETEASE_CLOUD = {
             "base_url": "http://netease.example",
@@ -41,15 +41,15 @@ class NeteaseCookiePlaybackTest(unittest.TestCase):
             "audio_quality": "exhigh",
         }
         sys.modules["config"] = fake_config
-        sys.modules.pop("netease", None)
-        import netease
+        sys.modules.pop("music.netease", None)
+        import music.netease as netease
 
         self.module = netease
 
     def tearDown(self) -> None:
-        sys.modules.pop("netease", None)
+        sys.modules.pop("music.netease", None)
         if self._old_netease_module is not None:
-            sys.modules["netease"] = self._old_netease_module
+            sys.modules["music.netease"] = self._old_netease_module
         if self._old_config_module is not None:
             sys.modules["config"] = self._old_config_module
         else:

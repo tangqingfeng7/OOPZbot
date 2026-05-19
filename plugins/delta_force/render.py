@@ -5,7 +5,7 @@ from pathlib import Path
 from string import Template
 from typing import Optional
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 from .assets import TEMPLATES_DIR
 

@@ -92,39 +92,46 @@ NeteaseCloud API (:3000)
 ├── requirements.txt             # Python 依赖
 │
 ├── src/                         # 核心源码模块
-│   ├── oopz_client.py           # WebSocket 客户端（心跳、重连、事件分发）
-│   ├── oopz_sender.py           # 消息发送核心（RSA 签名、HTTP 请求、继承 UploadMixin + OopzApiMixin）
-│   ├── oopz_upload.py           # UploadMixin：文件/图片/音频上传
-│   ├── oopz_api.py              # OopzApiMixin：Oopz 平台 API 交互（成员/频道/角色/禁言等）
-│   ├── area_join_notifier.py    # 域成员加入/退出通知（轮询域成员 API 检测加入 + WebSocket 退出事件）
-│   ├── command_handler.py       # 命令路由（@bot 指令 + / 命令 + 权限校验 + 脏话自动禁言）
-│   ├── music.py                 # 音乐核心（搜索、队列、封面缓存、Web 控制，继承 PlaybackMixin）
-│   ├── music_playback.py        # PlaybackMixin：播放执行、推流、IP 检测、Web 播放器链接
-│   ├── music_web_control.py     # Web 控制命令消费与分发
-│   ├── netease.py               # 网易云音乐 API 封装（搜索、歌词、翻译歌词）
-│   ├── queue_manager.py         # Redis 播放队列管理
-│   ├── web_player.py            # Web 播放器 FastAPI 主应用（播放器 API 路由、共享状态）
-│   ├── web_player_admin.py      # Admin 后台路由（/admin + /admin/api，使用 APIRouter）
-│   ├── web_player_config.py     # Web 播放器 / Admin 配置常量、分组定义、config.py 写回与热更新
-│   ├── web_link_token.py        # Web 播放器随机访问链接/令牌管理
-│   ├── player.html              # Web 播放器前端（歌词同步、播放控制、搜索点歌）
-│   ├── agora_player.html        # Agora RTC 浏览器端（推流/暂停/跳转/音量控制）
-│   ├── voice_client.py          # Agora 语音客户端（Playwright/Selenium 浏览器控制）
-│   ├── chat.py                  # AI 聊天 + 图片生成 + 关键词回复 + AI 脏话审核
-│   ├── database.py              # SQLite 数据层（图片缓存、歌曲缓存、播放历史、统计、db_connection 上下文管理器）
-│   ├── name_resolver.py         # ID → 名称解析（用户/频道/区域，自动发现 + 持久化）
-│   ├── plugin_loader.py         # 插件发现/加载/卸载
-│   ├── plugin_registry.py       # 插件注册表与命令能力汇总
-│   ├── plugin_base.py           # 插件基类
-│   ├── logger_config.py         # 日志配置（轮转文件 + 控制台，UTF-8）
-│   └── admin_assets/            # Admin 后台前端资源
-│       ├── admin-shell-template.html  # Admin 页面公共 Shell 模板
-│       └── pages/               # 各页面内容片段 + 脚本
-│           ├── dashboard_content.html / dashboard_script.js
-│           ├── music_content.html     / music_script.js
-│           ├── config_content.html    / config_script.js
-│           ├── stats_content.html     / stats_script.js
-│           └── system_content.html    / system_script.js
+│   ├── bot/                     # Bot 消息入口
+│   │   └── command_handler.py   # 命令路由（@bot 指令 + / 命令 + 权限校验 + 脏话自动禁言）
+│   ├── core/                    # 基础设施
+│   │   ├── database.py          # SQLite 数据层
+│   │   ├── logger_config.py     # 日志配置
+│   │   ├── queue_manager.py     # Redis 播放队列管理
+│   │   ├── proxy_utils.py       # 代理配置
+│   │   └── area_config.py       # 域配置
+│   ├── music/                   # 音乐与语音播放
+│   │   ├── music.py             # 音乐核心调度
+│   │   ├── music_playback.py    # 播放执行、推流、链接生成
+│   │   ├── music_web_control.py # Web 控制命令消费与分发
+│   │   ├── netease.py           # 网易云音乐 API 封装
+│   │   ├── bilibili_music.py    # B 站音频搜索
+│   │   ├── qq_music.py          # QQ 音乐适配
+│   │   └── voice_client.py      # Agora 语音客户端
+│   ├── oopz/                    # OOPZ 通信
+│   │   ├── oopz_client.py       # WebSocket 客户端
+│   │   ├── oopz_sender.py       # 消息发送核心
+│   │   ├── oopz_upload.py       # 文件/图片/音频上传
+│   │   ├── oopz_api.py          # OOPZ 平台 API 交互
+│   │   ├── oopz_password_login.py # OOPZ 账号密码登录
+│   │   └── name_resolver.py     # ID → 名称解析
+│   ├── services/                # 独立服务
+│   │   ├── chat.py              # AI 聊天 + 图片生成
+│   │   ├── area_join_notifier.py # 域成员加入/退出通知
+│   │   ├── scheduler_service.py # 定时任务服务
+│   │   └── conversation_memory.py # AI 上下文记忆
+│   ├── web/                     # Web 播放器与 Admin 后台
+│   │   ├── web_player.py        # FastAPI 主应用
+│   │   ├── web_player_admin.py  # Admin 后台路由
+│   │   ├── web_player_config.py # Web / Admin 配置管理
+│   │   ├── web_link_token.py    # Web 播放器访问令牌
+│   │   └── assets/              # Web 前端资源
+│   │       ├── player.html      # Web 播放器前端
+│   │       ├── agora_player.html # Agora RTC 浏览器端
+│   │       ├── agora_sdk.js     # Agora Web SDK 本地缓存
+│   │       └── admin/           # Admin 后台前端资源
+│   ├── app/                     # 应用启动、运行时和服务编排
+│   └── domain/                  # 业务规则、插件契约和数据结构
 │
 ├── plugins/                     # 插件目录
 │   ├── delta_force/             # 三角洲插件
@@ -188,11 +195,11 @@ NeteaseCloud API (:3000)
 
 | 模块 | 职责 |
 |------|------|
-| `web_player.py` | FastAPI 主应用实例、播放器 API 路由、共享状态（Redis/Netease 客户端） |
-| `web_player_admin.py` | Admin 后台所有路由（`APIRouter`），包括登录、概览、统计、配置、队列管理等 |
-| `web_player_config.py` | 配置常量（`WEB_PLAYER_CONFIG` 引用）、分组定义、基线值、config.py 写回与热更新 |
+| `src/web/web_player.py` | FastAPI 主应用实例、播放器 API 路由、共享状态（Redis/Netease 客户端） |
+| `src/web/web_player_admin.py` | Admin 后台所有路由（`APIRouter`），包括登录、概览、统计、配置、队列管理等 |
+| `src/web/web_player_config.py` | 配置常量（`WEB_PLAYER_CONFIG` 引用）、分组定义、基线值、config.py 写回与热更新 |
 
-`web_player.py` 通过 `app.include_router(admin_router)` 挂载 Admin 路由。
+`src/web/web_player.py` 通过 `app.include_router(admin_router)` 挂载 Admin 路由。
 
 ## 数据库表结构
 
@@ -207,7 +214,7 @@ NeteaseCloud API (:3000)
 
 ### 架构总览
 
-Web 播放器通过 FastAPI 提供 HTTP API，前端 `player.html` 通过轮询获取状态、歌词、队列，通过 POST 请求发送控制命令。Admin 后台路由由 `web_player_admin.py` 通过 `APIRouter` 提供，配置管理由 `web_player_config.py` 集中处理。
+Web 播放器通过 FastAPI 提供 HTTP API，前端 `player.html` 通过轮询获取状态、歌词、队列，通过 POST 请求发送控制命令。Admin 后台路由由 `src/web/web_player_admin.py` 通过 `APIRouter` 提供，配置管理由 `src/web/web_player_config.py` 集中处理。
 
 ```
 浏览器 (player.html / admin 页面)
@@ -216,8 +223,8 @@ Web 播放器通过 FastAPI 提供 HTTP API，前端 `player.html` 通过轮询�
 Nginx / OpenResty (:80 HTTP, :443 HTTPS)
   │  / → bot:8080,  /netease-api/ → netease-api:3000
   ▼
-web_player.py ──► web_player_admin.py (APIRouter)
-(FastAPI :8080)    └── web_player_config.py (配置管理)
+src/web/web_player.py ──► src/web/web_player_admin.py (APIRouter)
+(FastAPI :8080)        └── src/web/web_player_config.py (配置管理)
   │  读取 Redis: music:current, music:queue, music:play_state, music:volume
   │  写入 Redis: music:web_commands (RPUSH)
   ▼

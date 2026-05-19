@@ -21,7 +21,7 @@ from app.services.safety.message_recall_scheduler import MessageRecallScheduler
 from app.services.safety.moderation_service import ModerationService
 from app.services.safety.profanity_guard_service import ProfanityGuardService
 from app.services.safety.recall_service import RecallService
-from scheduler_service import ReminderService, ScheduledMessageService
+from services.scheduler_service import ReminderService, ScheduledMessageService
 
 
 @dataclass(frozen=True)

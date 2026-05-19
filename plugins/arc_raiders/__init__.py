@@ -10,8 +10,8 @@ from typing import Any, Optional
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-from logger_config import get_logger
-from plugin_base import (
+from core.logger_config import get_logger
+from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
     PluginConfig,

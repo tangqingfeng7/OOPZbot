@@ -19,7 +19,7 @@ class PluginManagementService:
 
     @staticmethod
     def normalize_plugin_name(raw_name: str) -> Optional[str]:
-        """规范化插件名，仅允许字母数字下划线，兼容 .py 后缀。"""
+        """规范化插件名，仅允许字母数字下划线。"""
         return normalize_plugin_name(raw_name)
 
     def show_plugin_list(self, channel: str, area: str) -> None:

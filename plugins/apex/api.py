@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import requests
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("ApexApi")
 

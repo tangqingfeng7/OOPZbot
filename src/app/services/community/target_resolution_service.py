@@ -1,7 +1,7 @@
 import re
 from typing import Optional
 
-from name_resolver import get_resolver
+from oopz.name_resolver import get_resolver
 
 
 class TargetResolutionService:

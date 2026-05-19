@@ -1,7 +1,7 @@
 import datetime
 
 from domain.community.role_rules import resolve_role_id
-from name_resolver import get_resolver
+from oopz.name_resolver import get_resolver
 from app.services.runtime import CommandRuntimeView, sender_of
 
 

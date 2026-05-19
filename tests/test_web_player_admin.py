@@ -21,7 +21,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-from plugin_base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
+from domain.plugins.base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
 
 
 class _FakePlugins:
@@ -72,7 +72,7 @@ class WebPlayerAdminTest(unittest.TestCase):
     def setUp(self) -> None:
         if TestClient is None:
             self.skipTest(f"缺少 TestClient 依赖: {_TESTCLIENT_ERROR}")
-        import web_player
+        import web.web_player as web_player
 
         self.module = web_player
         self.module.register_runtime_dependencies(
@@ -101,13 +101,12 @@ class WebPlayerAdminTest(unittest.TestCase):
         self.assertEqual(data["enabled_plugins"], ["alpha"])
         self.assertEqual(data["plugins"][0]["name"], "alpha")
 
-    def test_config_update_writes_config_py_and_not_admin_runtime_config(self) -> None:
-        import web_player_admin
+    def test_config_update_writes_config_py(self) -> None:
+        import web.web_player_admin as web_player_admin
 
         baseline = copy.deepcopy(web_player_admin.cfg.CONFIG_BASELINES["web_player"])
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.py"
-            legacy_path = Path(tmp) / "admin_runtime_config.json"
             config_path.write_text(
                 'WEB_PLAYER_CONFIG = {\n'
                 '    "url": "",\n'
@@ -120,7 +119,6 @@ class WebPlayerAdminTest(unittest.TestCase):
                     patch.object(self.module, "_admin_enabled", return_value=True),
                     patch.object(self.module, "_is_admin_authorized", return_value=True),
                     patch.object(web_player_admin.cfg, "CONFIG_FILE_PATH", str(config_path)),
-                    patch.object(web_player_admin.cfg, "LEGACY_ADMIN_OVERRIDES_PATH", str(legacy_path)),
                 ):
                     response = self.client.post(
                         "/admin/api/config",
@@ -136,13 +134,12 @@ class WebPlayerAdminTest(unittest.TestCase):
                 self.assertTrue(data["persisted"])
                 self.assertEqual(data["config_source"], "config.py")
                 self.assertIn('"url": "https://example.test"', config_path.read_text(encoding="utf-8"))
-                self.assertFalse(legacy_path.exists())
             finally:
                 web_player_admin.cfg.WEB_PLAYER_CONFIG.clear()
                 web_player_admin.cfg.WEB_PLAYER_CONFIG.update(copy.deepcopy(baseline))
 
     def test_oopz_login_payload_falls_back_to_config_account(self) -> None:
-        import web_player_admin
+        import web.web_player_admin as web_player_admin
 
         with patch.object(
             web_player_admin.cfg,
@@ -179,7 +176,7 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin._netease_api_get", side_effect=fake_get),
+            patch("web.web_player_admin._netease_api_get", side_effect=fake_get),
         ):
             response = self.client.post(
                 "/admin/api/netease/login/qr",
@@ -223,8 +220,8 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin._netease_api_get", side_effect=fake_get),
-            patch("web_player_admin._netease_api_post", side_effect=fake_post),
+            patch("web.web_player_admin._netease_api_get", side_effect=fake_get),
+            patch("web.web_player_admin._netease_api_post", side_effect=fake_post),
         ):
             response = self.client.post(
                 "/admin/api/netease/login/qr/check",
@@ -254,8 +251,8 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin.cfg.NETEASE_CLOUD", {"base_url": "http://localhost:3000", "cookie": "MUSIC_U=abc"}),
-            patch("web_player_admin._netease_api_post", side_effect=fake_post),
+            patch("web.web_player_admin.cfg.NETEASE_CLOUD", {"base_url": "http://localhost:3000", "cookie": "MUSIC_U=abc"}),
+            patch("web.web_player_admin._netease_api_post", side_effect=fake_post),
         ):
             response = self.client.get("/admin/api/netease/account")
 
@@ -281,8 +278,8 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin._bilibili_api_get", side_effect=fake_get),
-            patch("web_player_admin._make_qr_data_uri", return_value="data:image/png;base64,bili"),
+            patch("web.web_player_admin._bilibili_api_get", side_effect=fake_get),
+            patch("web.web_player_admin._make_qr_data_uri", return_value="data:image/png;base64,bili"),
         ):
             response = self.client.post("/admin/api/bilibili/login/qr", json={})
 
@@ -313,8 +310,8 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin._bilibili_api_get", side_effect=fake_get),
-            patch("web_player_admin._bilibili_account_status", return_value={
+            patch("web.web_player_admin._bilibili_api_get", side_effect=fake_get),
+            patch("web.web_player_admin._bilibili_account_status", return_value={
                 "ok": True,
                 "logged_in": True,
                 "profile": {"user_id": "100", "nickname": "B站测试账号"},
@@ -355,8 +352,8 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin.cfg.BILIBILI_MUSIC_CONFIG", {"enabled": True, "cookie": "SESSDATA=sess"}),
-            patch("web_player_admin._bilibili_account_api_get", side_effect=fake_get),
+            patch("web.web_player_admin.cfg.BILIBILI_MUSIC_CONFIG", {"enabled": True, "cookie": "SESSDATA=sess"}),
+            patch("web.web_player_admin._bilibili_account_api_get", side_effect=fake_get),
         ):
             response = self.client.get("/admin/api/bilibili/account")
 
@@ -402,7 +399,7 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin.SetupDiagnostics") as diagnostics_cls,
+            patch("web.web_player_admin.SetupDiagnostics") as diagnostics_cls,
         ):
             diagnostics_cls.return_value.build_report.return_value = fake_report
             response = self.client.get("/admin/api/setup/diagnostics")
@@ -431,7 +428,7 @@ class WebPlayerAdminTest(unittest.TestCase):
         with (
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
-            patch("web_player_admin.ScheduledMessageDB.create", return_value=99) as create_task,
+            patch("web.web_player_admin.ScheduledMessageDB.create", return_value=99) as create_task,
         ):
             response = self.client.post(
                 "/admin/api/scheduled-message-templates/morning/apply",

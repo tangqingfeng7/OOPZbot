@@ -7,7 +7,7 @@ from typing import Any
 
 from domain.plugins.plugin_config import PluginConfig, PluginConfigValidationError
 from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 from .module_tools import (
     PROJECT_ROOT,
@@ -30,25 +30,8 @@ def plugin_config_path(plugin_name: str, config_dir: str = DEFAULT_PLUGIN_CONFIG
     return os.path.join(_PROJECT_ROOT, config_dir, plugin_name, "config.json")
 
 
-def legacy_plugin_config_path(plugin_name: str, config_dir: str = DEFAULT_PLUGIN_CONFIG_DIR) -> str:
-    return os.path.join(_PROJECT_ROOT, config_dir, f"{plugin_name}.json")
-
-
-def resolve_plugin_config_path(plugin_name: str, config_dir: str = DEFAULT_PLUGIN_CONFIG_DIR) -> str:
-    path = plugin_config_path(plugin_name, config_dir)
-    if os.path.isfile(path):
-        return path
-    legacy_path = legacy_plugin_config_path(plugin_name, config_dir)
-    if os.path.isfile(legacy_path):
-        return legacy_path
-    return path
-
-
 def plugin_config_schema_path(plugin_name: str, config_dir: str = DEFAULT_PLUGIN_CONFIG_DIR) -> str:
-    path = os.path.join(_PROJECT_ROOT, config_dir, plugin_name, "schema.json")
-    if os.path.isfile(path):
-        return path
-    return os.path.join(_PROJECT_ROOT, config_dir, f"{plugin_name}.schema.json")
+    return os.path.join(_PROJECT_ROOT, config_dir, plugin_name, "schema.json")
 
 
 def load_plugin_config(
@@ -56,7 +39,7 @@ def load_plugin_config(
     config_dir: str = DEFAULT_PLUGIN_CONFIG_DIR,
 ) -> PluginConfig:
     """读取插件配置文件并返回显式配置对象。"""
-    path = resolve_plugin_config_path(plugin_name, config_dir)
+    path = plugin_config_path(plugin_name, config_dir)
     if not os.path.isfile(path):
         return PluginConfig.empty(plugin_name, path)
 

@@ -31,10 +31,8 @@ plugins/
 
 - `config/plugins/<插件名>/config.json`
 
-旧路径 `config/plugins/<插件名>.json` 仍可读取；新保存会写入新的目录结构。
-
 插件收到的 `config` 现在是 `PluginConfig` 对象，而不是裸字典。
-它兼容旧写法：
+它提供这些常见读取方式：
 
 - `config["key"]`
 - `config.get("key")`

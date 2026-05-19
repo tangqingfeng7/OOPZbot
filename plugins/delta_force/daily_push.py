@@ -4,7 +4,7 @@ import threading
 from datetime import datetime
 from typing import Optional
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("DeltaForceDailyPush")
 

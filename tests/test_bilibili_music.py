@@ -33,7 +33,7 @@ class BilibiliMusicTest(unittest.TestCase):
     def setUp(self) -> None:
         if _REQUESTS_ERROR is not None:
             self.skipTest(f"缺少 requests 依赖: {_REQUESTS_ERROR}")
-        import bilibili_music
+        import music.bilibili_music as bilibili_music
 
         self.module = bilibili_music
         self._old_config = bilibili_music._cached_config

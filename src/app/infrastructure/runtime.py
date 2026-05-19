@@ -3,10 +3,10 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from chat import ChatHandler
+from services.chat import ChatHandler
 from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
-from oopz_sender import OopzSender
-from plugin_base import PluginDescriptor
+from oopz.oopz_sender import OopzSender
+from domain.plugins.base import PluginDescriptor
 
 from .gateways import ChatGateway, SenderGateway
 from .plugin_runtime import PluginRegistry, discover_plugins, load_plugin, load_plugins_dir, reload_plugin_config, unload_plugin
@@ -27,7 +27,7 @@ class MusicGateway:
     def handler(self):
         if self._handler is None:
             # 只有真正用到音乐命令时才导入并创建处理器。
-            from music import MusicHandler
+            from music.music import MusicHandler
 
             self._handler = MusicHandler(self._sender, voice=self._voice_client)
         return self._handler

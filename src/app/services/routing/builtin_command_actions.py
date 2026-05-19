@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
 from app.services.runtime import CommandRuntimeView, sender_of
-from database import MessageStatsDB, ReminderDB, ScheduledMessageDB, SongCache
-from name_resolver import get_resolver
+from core.database import MessageStatsDB, ReminderDB, ScheduledMessageDB, SongCache
+from oopz.name_resolver import get_resolver
 
 
 class CommunityCommandActions:

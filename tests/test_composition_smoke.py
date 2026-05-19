@@ -74,7 +74,7 @@ class BotApplicationCompositionTest(unittest.TestCase):
 
 class CommandHandlerCompositionTest(unittest.TestCase):
     def test_initialization_builds_runtime_registry_and_plugin_host(self) -> None:
-        import command_handler as command_handler_module
+        import bot.command_handler as command_handler_module
 
         infrastructure = Mock()
         infrastructure.plugins = Mock()
@@ -105,7 +105,7 @@ class CommandHandlerCompositionTest(unittest.TestCase):
             self.assertIs(services_getter(), registry)
 
     def test_handle_message_routes_message_context(self) -> None:
-        import command_handler as command_handler_module
+        import bot.command_handler as command_handler_module
 
         infrastructure = Mock()
         infrastructure.plugins = Mock()

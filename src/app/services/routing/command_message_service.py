@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from config import PROFANITY_CONFIG
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 from app.services.runtime import CommandRuntimeView
 

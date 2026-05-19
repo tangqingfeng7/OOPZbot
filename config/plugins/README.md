@@ -16,8 +16,6 @@
 - `lol_ban/example.json`
 - `lol_ban/schema.json`
 
-兼容旧路径：如果还存在 `lol_ban.json`，程序仍会读取；新保存会写入 `lol_ban/config.json`。
-
 ## 资产刷新
 
 如果插件实现了 `config_spec`，可以通过下面的命令刷新示例和结构文件：

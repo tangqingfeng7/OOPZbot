@@ -1,4 +1,4 @@
-from logger_config import setup_logger
+from core.logger_config import setup_logger
 
 from app.lifecycle.context import AppContext
 from app.lifecycle.netease_api_runtime import NeteaseApiRuntime
@@ -21,7 +21,7 @@ class ShutdownCoordinator:
                 logger.warning("停止定时服务时出现异常: %s", exc)
 
         try:
-            from database import MessageStatsDB
+            from core.database import MessageStatsDB
             MessageStatsDB.stop()
         except Exception as exc:
             logger.warning("刷入消息统计缓冲区时出现异常: %s", exc)

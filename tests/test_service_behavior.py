@@ -296,7 +296,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
 
         with patch("app.services.safety.profanity_guard_service.PROFANITY_CONFIG", config):
             service = ProfanityGuardService(self.handler)
-            with patch("name_resolver.NameResolver") as resolver:
+            with patch("oopz.name_resolver.NameResolver") as resolver:
                 resolver.return_value.user.return_value = "测试用户"
 
                 service.handle_profanity(
@@ -327,7 +327,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
         with patch("app.services.safety.profanity_guard_service.PROFANITY_CONFIG", config):
             service = ProfanityGuardService(self.handler)
             service._warnings["user-1"] = 1
-            with patch("name_resolver.NameResolver") as resolver:
+            with patch("oopz.name_resolver.NameResolver") as resolver:
                 resolver.return_value.user.return_value = "测试用户"
 
                 service.handle_profanity(
@@ -357,7 +357,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
 
         with patch("app.services.safety.profanity_guard_service.PROFANITY_CONFIG", config):
             service = ProfanityGuardService(self.handler)
-            with patch("name_resolver.NameResolver") as resolver:
+            with patch("oopz.name_resolver.NameResolver") as resolver:
                 resolver.return_value.user.return_value = "测试用户"
 
                 service.handle_profanity(
@@ -528,7 +528,7 @@ class ModerationServiceTest(unittest.TestCase):
 
 class HelpServiceTest(unittest.TestCase):
     def setUp(self) -> None:
-        from plugin_base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
+        from domain.plugins.base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
 
         self.sender = Mock()
         self.chat = SimpleNamespace(
@@ -624,7 +624,7 @@ class HelpServiceTest(unittest.TestCase):
 
 class PluginManagementServiceTest(unittest.TestCase):
     def setUp(self) -> None:
-        from plugin_base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
+        from domain.plugins.base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
 
         self.sender = Mock()
         self.plugins = Mock()
