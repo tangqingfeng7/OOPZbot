@@ -4,6 +4,7 @@
   "stats_api_base": "https://arctracker.io/api/stats/items",
   "item_page_base": "https://arctracker.io/items",
   "zh_item_page_base": "https://arctracker.io/zh-CN/items",
+  "zh_map_events_url": "https://arctracker.io/zh-CN/map-events",
   "cache_ttl_sec": 600,
   "request_timeout_sec": 12,
   "max_candidates": 6,

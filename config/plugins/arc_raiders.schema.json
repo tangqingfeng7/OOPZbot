@@ -42,6 +42,14 @@
       "example": "https://arctracker.io/zh-CN/items"
     },
     {
+      "name": "zh_map_events_url",
+      "type": "string",
+      "required": false,
+      "description": "中文地图事件页地址（用于/arcevent截图）",
+      "default": "https://arctracker.io/zh-CN/map-events",
+      "example": "https://arctracker.io/zh-CN/map-events"
+    },
+    {
       "name": "cache_ttl_sec",
       "type": "integer",
       "required": false,
