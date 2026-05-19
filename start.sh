@@ -238,9 +238,9 @@ if [ ! -f private_key.py ] && [ -f private_key.example.py ]; then
   echo "Created private_key.py from private_key.example.py"
 fi
 
-for example_json in config/plugins/*.example.json; do
+for example_json in config/plugins/*/example.json; do
   [ -e "$example_json" ] || break
-  target="${example_json%.example.json}.json"
+  target="$(dirname "$example_json")/config.json"
   if [ ! -f "$target" ]; then
     cp "$example_json" "$target"
   fi

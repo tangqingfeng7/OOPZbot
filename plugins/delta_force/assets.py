@@ -5,7 +5,7 @@ from urllib.parse import unquote
 
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-ASSETS_DIR = PLUGIN_DIR / "delta_force_assets"
+ASSETS_DIR = PLUGIN_DIR / "assets"
 TEMPLATES_DIR = ASSETS_DIR / "templates"
 
 

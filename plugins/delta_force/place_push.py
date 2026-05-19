@@ -5,7 +5,7 @@ from typing import Optional
 
 from logger_config import get_logger
 
-from ._delta_force_api import describe_common_failure
+from .api import describe_common_failure
 
 logger = get_logger("DeltaForcePlacePush")
 

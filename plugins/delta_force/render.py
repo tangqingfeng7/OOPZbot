@@ -7,7 +7,7 @@ from typing import Optional
 
 from logger_config import get_logger
 
-from ._delta_force_assets import TEMPLATES_DIR
+from .assets import TEMPLATES_DIR
 
 logger = get_logger("DeltaForceRender")
 _PLAYWRIGHT_RENDER_ARGS = [

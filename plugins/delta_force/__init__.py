@@ -19,9 +19,9 @@ from plugin_base import (
     validate_range,
 )
 
-from ._delta_force_api import DeltaForceApiClient, describe_common_failure
-from ._delta_force_assets import normalize_mode
-from ._delta_force_formatters import (
+from .api import DeltaForceApiClient, describe_common_failure
+from .assets import normalize_mode
+from .formatters import (
     ban_history_fallback_text,
     build_daily_context,
     build_ban_history_context,
@@ -52,11 +52,11 @@ from ._delta_force_formatters import (
     today_yyyymmdd,
     weekly_fallback_text,
 )
-from ._delta_force_daily_push import DeltaForceDailyKeywordPushManager
-from ._delta_force_login import DeltaForceLoginManager
-from ._delta_force_place_push import DeltaForcePlacePushManager
-from ._delta_force_render import DeltaForceRenderer
-from ._delta_force_store import DeltaForceStore
+from .daily_push import DeltaForceDailyKeywordPushManager
+from .login import DeltaForceLoginManager
+from .place_push import DeltaForcePlacePushManager
+from .render import DeltaForceRenderer
+from .store import DeltaForceStore
 
 logger = get_logger("DeltaForcePlugin")
 
@@ -92,14 +92,14 @@ class DeltaForcePlugin(BotModule):
     @property
     def private_modules(self) -> tuple[str, ...]:
         return (
-            "plugins._delta_force_api",
-            "plugins._delta_force_assets",
-            "plugins._delta_force_daily_push",
-            "plugins._delta_force_formatters",
-            "plugins._delta_force_login",
-            "plugins._delta_force_place_push",
-            "plugins._delta_force_render",
-            "plugins._delta_force_store",
+            "plugins.delta_force.api",
+            "plugins.delta_force.assets",
+            "plugins.delta_force.daily_push",
+            "plugins.delta_force.formatters",
+            "plugins.delta_force.login",
+            "plugins.delta_force.place_push",
+            "plugins.delta_force.render",
+            "plugins.delta_force.store",
         )
 
     @property

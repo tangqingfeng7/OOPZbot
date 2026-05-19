@@ -16,8 +16,8 @@ from plugin_base import (
     validate_range,
 )
 
-from ._apex_api import ApexApiClient
-from ._apex_formatters import (
+from .api import ApexApiClient
+from .formatters import (
     build_help_text,
     format_crafting_rotation,
     format_map_rotation,
@@ -53,8 +53,8 @@ class ApexPlugin(BotModule):
     @property
     def private_modules(self) -> tuple[str, ...]:
         return (
-            "plugins._apex_api",
-            "plugins._apex_formatters",
+            "plugins.apex.api",
+            "plugins.apex.formatters",
         )
 
     @property

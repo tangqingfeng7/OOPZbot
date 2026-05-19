@@ -1,10 +1,21 @@
 # 插件目录说明
 
-这个目录用于放置单文件插件。Bot 启动时会自动扫描并加载这里的插件。
+这个目录用于放置插件源码。Bot 启动时会自动扫描并加载这里的插件。
+
+推荐结构是一个插件一个目录：
+
+```text
+plugins/
+  demo_plugin/
+    __init__.py
+    service.py
+```
+
+其中 `__init__.py` 是插件入口，其他文件放插件自己的实现。
 
 ## 基本约定
 
-每个插件文件通常需要：
+每个插件入口通常需要：
 
 1. 定义一个继承 `BotModule` 的类
 2. 实现 `metadata`
@@ -12,13 +23,15 @@
 4. 视需要实现 `config_spec`
 5. 实现 `handle_mention` 和/或 `handle_slash`
 
-如果插件依赖私有辅助模块，例如 `plugins/_xxx_service.py`，建议声明 `private_modules`，以便卸载时清理模块缓存。
+如果插件依赖私有辅助模块，例如 `plugins/demo_plugin/service.py`，建议声明 `private_modules`，以便卸载时清理模块缓存。
 
 ## 配置文件
 
 插件运行时配置位于：
 
-- `config/plugins/<插件名>.json`
+- `config/plugins/<插件名>/config.json`
+
+旧路径 `config/plugins/<插件名>.json` 仍可读取；新保存会写入新的目录结构。
 
 插件收到的 `config` 现在是 `PluginConfig` 对象，而不是裸字典。
 它兼容旧写法：
@@ -38,8 +51,8 @@
 
 如果插件实现了 `config_spec`，可以自动导出：
 
-- `config/plugins/<插件名>.example.json`
-- `config/plugins/<插件名>.schema.json`
+- `config/plugins/<插件名>/example.json`
+- `config/plugins/<插件名>/schema.json`
 
 导出命令：
 
@@ -59,7 +72,7 @@ python tools/create_plugin_scaffold.py demo_plugin --description "示例插件" 
 
 脚手架会自动生成：
 
-- 插件源码骨架
+- 插件目录和源码骨架
 - 示例配置
 - 配置结构说明
 
@@ -67,9 +80,9 @@ python tools/create_plugin_scaffold.py demo_plugin --description "示例插件" 
 
 当前可以参考：
 
-- `plugins/lol_ban.py`
-- `plugins/lol_fa8.py`
-- `plugins/delta_force.py`
+- `plugins/lol_ban/__init__.py`
+- `plugins/lol_fa8/__init__.py`
+- `plugins/delta_force/__init__.py`
 
 ## 管理员命令
 

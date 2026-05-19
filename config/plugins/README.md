@@ -4,17 +4,19 @@
 
 ## 文件类型
 
-当前会出现 3 类文件：
+现在按“一个插件一个目录”整理配置文件：
 
-- `<插件名>.json`：真实运行时配置
-- `<插件名>.example.json`：示例配置
-- `<插件名>.schema.json`：配置结构、默认值与约束说明
+- `<插件名>/config.json`：真实运行时配置
+- `<插件名>/example.json`：示例配置
+- `<插件名>/schema.json`：配置结构、默认值与约束说明
 
 例如：
 
-- `lol_ban.json`
-- `lol_ban.example.json`
-- `lol_ban.schema.json`
+- `lol_ban/config.json`
+- `lol_ban/example.json`
+- `lol_ban/schema.json`
+
+兼容旧路径：如果还存在 `lol_ban.json`，程序仍会读取；新保存会写入 `lol_ban/config.json`。
 
 ## 资产刷新
 
@@ -39,9 +41,9 @@ python tools/create_plugin_scaffold.py demo_plugin
 
 建议：
 
-- 提交 `*.example.json`
-- 提交 `*.schema.json`
-- 谨慎提交真实的 `<插件名>.json`
+- 提交 `<插件名>/example.json`
+- 提交 `<插件名>/schema.json`
+- 不提交真实的 `<插件名>/config.json`
 
 如果真实配置包含密钥、令牌或账号信息，部署时应把这些文件加入忽略规则。
 

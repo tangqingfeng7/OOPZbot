@@ -38,12 +38,13 @@ def create_plugin_scaffold(
     root_path = Path(project_root)
     plugins_dir = root_path / "plugins"
     config_dir = root_path / "config" / "plugins"
-    module_path = plugins_dir / f"{normalized_name}.py"
+    module_dir = plugins_dir / normalized_name
+    module_path = module_dir / "__init__.py"
 
     if module_path.exists() and not force:
-        raise FileExistsError(f"插件文件已存在: {module_path}")
+        raise FileExistsError(f"插件入口文件已存在: {module_path}")
 
-    plugins_dir.mkdir(parents=True, exist_ok=True)
+    module_dir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(parents=True, exist_ok=True)
 
     module_path.write_text(

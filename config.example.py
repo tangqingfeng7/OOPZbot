@@ -115,7 +115,7 @@ BILIBILI_MUSIC_CONFIG = {
 }
 
 # LOL 插件配置
-# 已迁移到 config/plugins/lol_ban.json 与 config/plugins/lol_fa8.json（见 config/plugins/README.md）
+# 已迁移到 config/plugins/lol_ban/config.json 与 config/plugins/lol_fa8/config.json（见 config/plugins/README.md）
 
 # 脏话自动禁言配置
 PROFANITY_CONFIG = {

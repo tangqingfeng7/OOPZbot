@@ -4,7 +4,7 @@ from datetime import datetime
 from html import escape
 from typing import Iterable, Optional
 
-from ._delta_force_assets import mode_name, pick_avatar_url, pick_nickname, qq_avatar_url
+from .assets import mode_name, pick_avatar_url, pick_nickname, qq_avatar_url
 
 
 def _num(value: object, default: str = "-") -> str:

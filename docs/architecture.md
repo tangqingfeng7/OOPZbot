@@ -127,23 +127,20 @@ NeteaseCloud API (:3000)
 │           └── system_content.html    / system_script.js
 │
 ├── plugins/                     # 插件目录
-│   ├── delta_force.py           # 三角洲插件入口
-│   ├── _delta_force_api.py      # 三角洲 API 封装
-│   ├── _delta_force_assets.py   # 三角洲静态资源辅助
-│   ├── _delta_force_login.py    # 三角洲登录流程
-│   ├── _delta_force_store.py    # 三角洲本地状态存储
-│   ├── _delta_force_render.py   # 三角洲海报渲染（单 base.html + CSS 变量主题映射）
-│   ├── _delta_force_formatters.py # 三角洲文案格式化
-│   ├── _delta_force_daily_push.py # 三角洲每日密码推送
-│   ├── _delta_force_place_push.py # 三角洲特勤处推送
-│   ├── _lol_common.py           # LOL 插件公共逻辑（关键词提取）
-│   ├── lol_ban.py               # LOL 封号查询插件入口
-│   ├── lol_fa8.py               # LOL 战绩查询插件入口
-│   ├── _lol_query_service.py    # 封号查询实现（插件私有）
-│   ├── _lol_fa8_service.py      # 战绩查询实现（插件私有）
-│   ├── champion_names.json      # 英雄名英→中映射数据
-│   ├── delta_force_assets/      # 三角洲静态资源
-│   │   └── templates/base.html  # 三角洲海报统一模板（CSS 变量主题）
+│   ├── delta_force/             # 三角洲插件
+│   │   ├── __init__.py          # 插件入口
+│   │   ├── api.py               # API 封装
+│   │   ├── assets.py            # 静态资源辅助
+│   │   ├── login.py             # 登录流程
+│   │   ├── store.py             # 本地状态存储
+│   │   ├── render.py            # 海报渲染
+│   │   ├── formatters.py        # 文案格式化
+│   │   ├── daily_push.py        # 每日密码推送
+│   │   ├── place_push.py        # 特勤处推送
+│   │   └── assets/              # 静态资源
+│   ├── lol_ban/                 # LOL 封号查询插件
+│   ├── lol_fa8/                 # LOL 战绩查询插件
+│   ├── _shared/                 # 插件间共用的小工具
 │   └── README.md                # 插件说明
 │
 ├── tools/                       # 独立工具

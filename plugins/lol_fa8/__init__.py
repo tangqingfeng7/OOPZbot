@@ -5,7 +5,7 @@ from plugin_base import (
     PluginConfigSpec,
     PluginMetadata,
 )
-from ._lol_common import extract_keyword_from_mention
+from .._shared.lol_common import extract_keyword_from_mention
 
 
 class LolFa8Plugin(BotModule):
@@ -32,7 +32,7 @@ class LolFa8Plugin(BotModule):
 
     @property
     def private_modules(self) -> tuple[str, ...]:
-        return ("plugins._lol_fa8_service",)
+        return ("plugins.lol_fa8.service",)
 
     @property
     def config_spec(self) -> PluginConfigSpec:
@@ -59,7 +59,7 @@ class LolFa8Plugin(BotModule):
 
     def _service(self):
         if self._handler is None:
-            from ._lol_fa8_service import FA8Handler
+            from .service import FA8Handler
             self._handler = FA8Handler(self._config)
         return self._handler
 

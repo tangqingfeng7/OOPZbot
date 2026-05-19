@@ -32,7 +32,7 @@
 - `PluginConfig`
 - `PluginConfigSpec`
 
-如果插件依赖私有辅助模块，例如 `plugins/_xxx_service.py`，建议声明 `private_modules`，方便卸载时清理模块缓存。
+如果插件依赖私有辅助模块，例如 `plugins/demo_plugin/service.py`，建议声明 `private_modules`，方便卸载时清理模块缓存。
 
 ## 配置规范
 
@@ -66,8 +66,8 @@
 
 如果插件实现了 `config_spec`，就可以自动导出两类配置资产：
 
-- `config/plugins/<插件名>.example.json`
-- `config/plugins/<插件名>.schema.json`
+- `config/plugins/<插件名>/example.json`
+- `config/plugins/<插件名>/schema.json`
 
 它们的作用分别是：
 
@@ -93,9 +93,9 @@ python tools/create_plugin_scaffold.py admin_demo --admin-only
 
 脚手架会自动生成：
 
-- `plugins/<插件名>.py`
-- `config/plugins/<插件名>.example.json`
-- `config/plugins/<插件名>.schema.json`
+- `plugins/<插件名>/__init__.py`
+- `config/plugins/<插件名>/example.json`
+- `config/plugins/<插件名>/schema.json`
 
 默认骨架会带上：
 
@@ -125,5 +125,5 @@ python -m unittest tests.test_plugin_contract_behavior tests.test_plugin_config_
 
 ## 现状说明
 
-当前仓库里 `lol_ban`、`lol_fa8`、`delta_force` 已经开始按这套流程收口。
+当前仓库里的插件已经按“一插件一目录”的方式收口。
 后续新增插件，建议默认遵守这份文档，而不是继续复制历史插件文件再手工删改。

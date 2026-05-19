@@ -3002,12 +3002,18 @@ def admin_plugin_reload_config(name: str):
 
 @admin_router.get("/admin/api/plugins/{name}/config")
 def admin_plugin_config_get(name: str):
-    from app.infrastructure.plugin_runtime.loader import DEFAULT_PLUGIN_CONFIG_DIR
+    from app.infrastructure.plugin_runtime.loader import (
+        DEFAULT_PLUGIN_CONFIG_DIR,
+        plugin_config_path,
+        plugin_config_schema_path,
+        resolve_plugin_config_path,
+    )
     config_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         DEFAULT_PLUGIN_CONFIG_DIR,
     )
-    config_path = os.path.join(config_dir, f"{name}.json")
+    config_path = resolve_plugin_config_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
+    preferred_config_path = plugin_config_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
     config_data = {}
     if os.path.isfile(config_path):
         try:
@@ -3016,7 +3022,7 @@ def admin_plugin_config_get(name: str):
         except Exception as exc:
             return JSONResponse({"ok": False, "error": f"读取配置失败: {exc}"})
 
-    schema_path = os.path.join(config_dir, f"{name}.schema.json")
+    schema_path = plugin_config_schema_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
     schema_data = None
     if os.path.isfile(schema_path):
         try:
@@ -3030,18 +3036,20 @@ def admin_plugin_config_get(name: str):
         "name": name,
         "config": config_data,
         "config_exists": os.path.isfile(config_path),
+        "config_path": os.path.relpath(config_path, config_dir),
+        "preferred_config_path": os.path.relpath(preferred_config_path, config_dir),
         "schema": schema_data,
     })
 
 
 @admin_router.post("/admin/api/plugins/{name}/config")
 async def admin_plugin_config_save(name: str, request: Request):
-    from app.infrastructure.plugin_runtime.loader import DEFAULT_PLUGIN_CONFIG_DIR
+    from app.infrastructure.plugin_runtime.loader import DEFAULT_PLUGIN_CONFIG_DIR, plugin_config_path
     config_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         DEFAULT_PLUGIN_CONFIG_DIR,
     )
-    config_path = os.path.join(config_dir, f"{name}.json")
+    config_path = plugin_config_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
 
     try:
         body = await request.json()
@@ -3049,7 +3057,7 @@ async def admin_plugin_config_save(name: str, request: Request):
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"解析请求体失败: {exc}"}, status_code=400)
 
-    os.makedirs(config_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
     try:
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config_data, f, ensure_ascii=False, indent=2)

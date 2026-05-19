@@ -5,7 +5,7 @@ from plugin_base import (
     PluginConfigSpec,
     PluginMetadata,
 )
-from ._lol_common import extract_keyword_from_mention
+from .._shared.lol_common import extract_keyword_from_mention
 
 
 class LolBanPlugin(BotModule):
@@ -32,7 +32,7 @@ class LolBanPlugin(BotModule):
 
     @property
     def private_modules(self) -> tuple[str, ...]:
-        return ("plugins._lol_query_service",)
+        return ("plugins.lol_ban.query_service",)
 
     @property
     def config_spec(self) -> PluginConfigSpec:
@@ -51,7 +51,7 @@ class LolBanPlugin(BotModule):
 
     def on_load(self, handler, config=None):
         self._config = (config or {}).copy()
-        from ._lol_query_service import LolQueryHandler
+        from .query_service import LolQueryHandler
         self._handler = LolQueryHandler(self._config)
 
     def _keyword(self, text: str) -> str:

@@ -42,10 +42,10 @@ npm install
 
 LOL 功能使用插件配置文件：
 
-- `config/plugins/lol_ban.json`
-- `config/plugins/lol_fa8.json`
+- `config/plugins/lol_ban/config.json`
+- `config/plugins/lol_fa8/config.json`
 
-可从同目录下 `*.example.json` 复制后修改，其中 `enabled` 设为 `true` 才会启用对应查询功能。
+可从对应插件目录下的 `example.json` 复制为 `config.json` 后修改，其中 `enabled` 设为 `true` 才会启用对应查询功能。
 
 ## 4. 启动
 

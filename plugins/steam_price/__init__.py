@@ -16,9 +16,9 @@ from plugin_base import (
     validate_range,
 )
 
-from ._steam_price_api import SteamPriceApiClient
-from ._steam_price_monitor import SteamPriceMonitor
-from ._steam_price_store import SteamPriceStore
+from .api import SteamPriceApiClient
+from .monitor import SteamPriceMonitor
+from .store import SteamPriceStore
 
 logger = get_logger("SteamPricePlugin")
 
@@ -176,9 +176,9 @@ class SteamPricePlugin(BotModule):
     @property
     def private_modules(self) -> tuple[str, ...]:
         return (
-            "plugins._steam_price_api",
-            "plugins._steam_price_store",
-            "plugins._steam_price_monitor",
+            "plugins.steam_price.api",
+            "plugins.steam_price.store",
+            "plugins.steam_price.monitor",
         )
 
     @property

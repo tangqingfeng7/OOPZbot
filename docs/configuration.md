@@ -75,7 +75,7 @@ copy private_key.example.py private_key.py
 | `model` | Seedream 模型名称 |
 | `size` | 图片尺寸（默认 `1920x1920`） |
 
-### LOL 封号查询插件 (`config/plugins/lol_ban.json`)
+### LOL 封号查询插件 (`config/plugins/lol_ban/config.json`)
 
 | 配置项 | 说明 |
 |--------|------|
@@ -84,7 +84,7 @@ copy private_key.example.py private_key.py
 | `token` | API 认证令牌 |
 | `proxy` | 代理地址，留空走系统代理 |
 
-### FA8 战绩查询插件 (`config/plugins/lol_fa8.json`)
+### FA8 战绩查询插件 (`config/plugins/lol_fa8/config.json`)
 
 | 配置项 | 说明 |
 |--------|------|
@@ -93,7 +93,7 @@ copy private_key.example.py private_key.py
 | `password` | FA8 登录密码 |
 | `default_area` | 默认大区 ID（`1`=艾欧尼亚） |
 
-### 三角洲插件 (`config/plugins/delta_force.json`)
+### 三角洲插件 (`config/plugins/delta_force/config.json`)
 
 | 配置项 | 说明 |
 |--------|------|
@@ -233,7 +233,7 @@ Docker 环境下可通过环境变量覆盖部分配置，无需修改 `config.p
 
 ## 插件配置
 
-插件配置位于 `config/plugins/` 目录，每个插件提供 `*.example.json`（示例）和 `*.schema.json`（结构定义），复制示例文件并修改即可。
+插件配置位于 `config/plugins/` 目录。现在每个插件一个子目录，例如 `config/plugins/delta_force/config.json`、`config/plugins/delta_force/example.json`、`config/plugins/delta_force/schema.json`。复制 `example.json` 为 `config.json` 后修改即可。
 
 ## private_key.py
 

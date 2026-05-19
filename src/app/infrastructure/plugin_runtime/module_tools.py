@@ -34,7 +34,11 @@ def plugin_file_path(
     project_root: str = PROJECT_ROOT,
 ) -> str:
     """返回插件源码文件路径。"""
-    return os.path.join(project_root, plugins_dir, f"{plugin_name}.py")
+    plugins_path = os.path.join(project_root, plugins_dir)
+    flat_path = os.path.join(plugins_path, f"{plugin_name}.py")
+    if os.path.isfile(flat_path):
+        return flat_path
+    return os.path.join(plugins_path, plugin_name, "__init__.py")
 
 
 def discover_plugin_names(
@@ -48,10 +52,14 @@ def discover_plugin_names(
 
     names: list[str] = []
     for name in sorted(os.listdir(path)):
-        if name.startswith("_") or not name.endswith(".py"):
+        if name.startswith("_"):
             continue
-        if os.path.isfile(os.path.join(path, name)):
+        item_path = os.path.join(path, name)
+        if name.endswith(".py") and os.path.isfile(item_path):
             names.append(name[:-3])
+            continue
+        if os.path.isdir(item_path) and os.path.isfile(os.path.join(item_path, "__init__.py")):
+            names.append(name)
     return names
 
 
@@ -67,7 +75,10 @@ def load_plugin_module(
         raise FileNotFoundError(f"插件不存在: {plugin_name}")
 
     module_name = f"plugins.{plugin_name}"
-    spec = importlib.util.spec_from_file_location(module_name, filepath)
+    spec_kwargs: dict[str, Any] = {}
+    if os.path.basename(filepath) == "__init__.py":
+        spec_kwargs["submodule_search_locations"] = [os.path.dirname(filepath)]
+    spec = importlib.util.spec_from_file_location(module_name, filepath, **spec_kwargs)
     if not spec or not spec.loader:
         raise ImportError(f"无法创建模块 spec: {plugin_name}")
 

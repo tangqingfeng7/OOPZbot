@@ -7,8 +7,8 @@ from typing import Optional
 
 from logger_config import get_logger
 
-from ._steam_price_api import SteamPriceApiClient
-from ._steam_price_store import SteamPriceStore
+from .api import SteamPriceApiClient
+from .store import SteamPriceStore
 
 logger = get_logger("SteamPriceMonitor")
 

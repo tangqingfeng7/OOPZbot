@@ -4,6 +4,7 @@
 config/plugins/*.json
 !config/plugins/*.example.json
 !config/plugins/*.schema.json
+config/plugins/*/config.json
 data/credentials.txt
 .oopz_capture_credentials
 capture_recall_result.json

@@ -369,7 +369,7 @@ class FA8Handler:
     def query_and_format(self, raw_input: str) -> str:
         """查询召唤师战绩并格式化为消息文本"""
         if not self._config.get("enabled", False):
-            return "战绩查询功能未启用，请在 config/plugins/lol_fa8.json 中配置"
+            return "战绩查询功能未启用，请在 config/plugins/lol_fa8/config.json 中配置"
 
         name, areas = self._resolve_area(raw_input)
         if not name:

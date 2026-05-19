@@ -184,7 +184,7 @@ class ArcRaidersPlugin(BotModule):
             if not self._config.get("enabled", False):
                 self._send(
                     handler,
-                    "arc_raiders 插件当前未启用，请在 config/plugins/arc_raiders.json 中设置 enabled=true 后重载插件配置。",
+                    "arc_raiders 插件当前未启用，请在 config/plugins/arc_raiders/config.json 中设置 enabled=true 后重载插件配置。",
                     channel,
                     area,
                 )
@@ -219,7 +219,7 @@ class ArcRaidersPlugin(BotModule):
         if not self._config.get("enabled", False):
             self._send(
                 handler,
-                "arc_raiders 插件当前未启用，请在 config/plugins/arc_raiders.json 中设置 enabled=true 后重载插件配置。",
+                "arc_raiders 插件当前未启用，请在 config/plugins/arc_raiders/config.json 中设置 enabled=true 后重载插件配置。",
                 channel,
                 area,
             )

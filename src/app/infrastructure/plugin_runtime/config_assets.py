@@ -22,12 +22,12 @@ def build_plugin_config_schema(module: BotModule) -> dict:
 
 def write_plugin_config_assets(module: BotModule, output_dir: str | Path) -> tuple[Path, Path]:
     """把示例配置和结构描述写入目标目录。"""
-    output_path = Path(output_dir)
+    plugin_name = module.metadata.name
+    output_path = Path(output_dir) / plugin_name
     output_path.mkdir(parents=True, exist_ok=True)
 
-    plugin_name = module.metadata.name
-    example_path = output_path / f"{plugin_name}.example.json"
-    schema_path = output_path / f"{plugin_name}.schema.json"
+    example_path = output_path / "example.json"
+    schema_path = output_path / "schema.json"
 
     example_path.write_text(
         json.dumps(build_plugin_config_example(module), ensure_ascii=False, indent=2) + "\n",

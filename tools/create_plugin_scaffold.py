@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="如果指定，则覆盖已存在的同名插件文件。",
+        help="如果指定，则覆盖已存在的同名插件入口文件。",
     )
     parser.add_argument(
         "--project-root",
