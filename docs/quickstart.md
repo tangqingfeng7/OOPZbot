@@ -30,7 +30,11 @@ npm install
 
 ## 3. 配置
 
-推荐使用凭据获取工具自动完成配置，详见 [凭据获取工具](credential-tool.md)。
+账号密码登录是主要登录方式。推荐先在 `config.py` 的 `OOPZ_CONFIG` 里填写 `login_phone` 和 `login_password`，Bot 启动时会自动刷新 Oopz 凭据，并写入 `device_id`、`person_uid`、`jwt_token` 和 `private_key.py`。
+
+也可以先启动 Bot，再进管理后台的配置页，在“OOPZ 与网易云”里填写 Oopz 账号和密码并点击“登录并获取”。后台会优先调用 Oopz 登录接口直接获取凭据，失败时再回退到浏览器登录方式，并自动写入 `config.py` 和 `private_key.py`。
+
+如果后台登录不可用，也可以使用命令行凭据工具从网页端抓取，详见 [凭据获取工具](credential-tool.md)。
 
 也可以手动配置，详见 [配置说明](configuration.md)。
 

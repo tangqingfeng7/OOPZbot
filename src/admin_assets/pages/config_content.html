@@ -147,10 +147,10 @@
               </div>
               <div class="field-grid">
                 <div class="field field--wide">
-                  <label>OOPZ 账号登录</label>
+                  <label>OOPZ 账号密码登录（主要方式）</label>
                   <div class="secret-input">
-                    <input id="cfg_oopz_login_phone" type="text" inputmode="tel" autocomplete="username" placeholder="手机号" />
-                    <input id="cfg_oopz_login_password" type="password" autocomplete="current-password" placeholder="密码" />
+                    <input id="cfg_oopz_login_phone" type="text" inputmode="tel" autocomplete="username" placeholder="手机号；留空则用配置" />
+                    <input id="cfg_oopz_login_password" type="password" autocomplete="current-password" placeholder="密码；留空则用配置" />
                     <button id="cfg_oopz_login_btn" class="btn btn-sm btn-primary" type="button" onclick="loginOopzAccount()">登录并获取</button>
                   </div>
                   <div id="cfg_oopz_login_status" class="msg">等待登录</div>

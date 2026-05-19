@@ -12,10 +12,14 @@ OOPZ_CONFIG = {
     "web": True,
     "base_url": "https://gateway.oopz.cn",
 
-    # === 以下需要手动填写 ===
-    "device_id": "",       # 设备 ID
-    "person_uid": "",      # 用户 UID
-    "jwt_token": "",       # JWT Token（从 Oopz 客户端获取）
+    # === 账号密码登录是主要方式 ===
+    # 填下面两项后，启动时会先用账号密码刷新登录凭据，并自动写入 device_id/person_uid/jwt_token 和 private_key.py。
+    # 也可以留空，在管理后台“OOPZ 与网易云”里临时输入账号密码并点击“登录并获取”。
+    "login_phone": "",     # OOPZ 登录手机号 / 账号
+    "login_password": "",  # OOPZ 登录密码
+    "device_id": "",       # 设备 ID（账号密码登录成功后自动写入）
+    "person_uid": "",      # 用户 UID（账号密码登录成功后自动写入）
+    "jwt_token": "",       # JWT Token（账号密码登录成功后自动写入）
 
     "default_area": "",    # 默认区域 ID
     "default_channel": "", # 默认频道 ID

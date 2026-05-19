@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import re
 import time
+import uuid
+import zlib
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
+
+import requests
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from logger_config import get_logger
 
@@ -23,9 +30,75 @@ BROWSER_DATA_DIR = os.path.join(PROJECT_ROOT, "data", "oopz_admin_login_profile"
 CHROMIUM_RUNTIME_DIR = os.path.join(PROJECT_ROOT, "data", "chromium_runtime")
 OOPZ_WEB_URL = "https://web.oopz.cn/#/login"
 LOGIN_RESPONSE_PATH = "/client/v1/login/v2/login"
+LOGIN_API_URL = "https://gateway.oopz.cn" + LOGIN_RESPONSE_PATH
+CLIENT_VERSION = "0.73.817"
+APP_VERSION_NUMBER = "73817"
+OOPZ_PLATFORM = "windows"
+OOPZ_CHANNEL = "Web"
+PUBLIC_E = "AQAB"
 WS_EVENT_AUTH = 253
 OOPZ_CONFIG_CREDENTIAL_FIELDS = ("app_version", "device_id", "person_uid", "jwt_token")
 REQUIRED_CAPTURE_FIELDS = ("person_uid", "device_id", "jwt_token", "private_key_pem")
+_CLIENT_SIGNING_KEY_DATA = {
+    "salt": "oopz-login-sign-v2",
+    "chunks": [
+        "EyUuwmTGEeJbeNkxZehfuaIgd7YE9MHWWbQQeuyu3eE",
+        "ioy4VMPfyzki7dfbBprgpkxbH6bEQRpPFiNog",
+        "qEyhGhTKdcKsur7ajOzgm2kD9p9jOfrqe3bQi9-U8zf8XZrr1xa9urG4_uY",
+        "oVG1ecUomzo5oPhE_AtLqLscdhvHFqQ",
+        "PHVLGc-wkQ-8bLL7u1eN-K3PSxv5ovrzV5XnjF0QguiZneX",
+        "JuahbpjKw-2W1THpbzDN7FiFRmcZbl7h8KoBzUUNoP7QQcGoqrq8F",
+        "0S0n3TzPsw4eyrvs-dFc5f8OW3bjKb2RQbf1x5S9ZC8",
+        "8xuGTG-UxDXcDgjxjoDqR2uU57_93_DDGa1mg",
+        "-WiRh8DK2hIs7JmqQI1lsH3lbS4x9hw3PKFMmY_Xe-0-BCqzLyqUPbQcSOC",
+        "suHnqHzHdCv1MFu-6g-zIcJEZ7HFYP9",
+        "hNUIwAdtPLhUH-knkVi4PW41Pl0nuoFuugaNmfD3UUNWH7V",
+        "BlQIWuClDCHvwCk-YKZTDlT6F7ihaFb50Y2Z8voYY8uyIN-5bvTr6",
+        "r7FTo-nP0Vgrhoqinta5qbpJA8UAM_KNARHEGx4uA8J",
+        "DrU9F-l8eibgxfygpyrvwX6ANoaTc0UZ7aefC",
+        "V9y3Kvwsn8Hm10pHpPfzyrdNMQoAd3vTjvAQbfRDStjlL9w-5z5hm-OSg37",
+        "X21Z8_httNQve8xgCCpUkG7Pe3ncVnR",
+        "DBfqVmmud-UBr6FWm9y2gISNxW-8ywSY0_G2szpIpNtb3Ir",
+        "V866RDdEKoST3WEyQUAhSmfLbARvksR7h7e0OTAmXmyVan26ZT-zS",
+        "FEpZgFv0FF8tfKcrDtxkCJ-4WB_cEg_bzMyczH_VtcD",
+        "fi3E30olZp7Dc2rSimgNWBwHsXZJJaTSPuIFC",
+        "7ZGGAhRY5DeU82es60470wFl3sUoWOahT2aMEBBS_V_GAkt0rT-nOxjDi2Q",
+        "7bqOIOAdy5Fv7VZdIUEeLY5UX8OGrlr",
+        "LKfQ8OWZfgwYvoQJLYtOIMAxIhLkI75O_MSc9tJCN6Xu9sy",
+        "oeXvK9jEX8vdw_yz7TISVzw-lNCIoXINDy3fAxq5_mMXlXzBZB2Db",
+        "DVRNJPOLI8EBxOrGORnsgAYO-SN5ciu1tC_JaPflwij",
+        "MlnGF85PoO5ib6TcYAP-QxhaiuJRoukQub8aF",
+        "ypDDJHjA3mXlSCprfvpgzRr83icEr8v5qbZSc5gZRR7uea3UbUfrBK69YR1",
+        "16lPf1HB9DARry1M9WXk3ahZ61jTnsy",
+        "N9IQ5gXDkPdTuVckPT5bWnPeosMFlYwZSRj1YZ3wIVlGnFT",
+        "0IdisLbeBo9KLbX72uYNqly3lH2bjdb7cf56qgwXBogrYS8nvA4Nr",
+        "ZUsUev8D8Wzx-Vc0zPWSUmKcAQx2Jy3cr22uLqU04dN",
+        "rBBERTNCRh21JB4CCy1THqu0TyH3gsusAq1jZ",
+        "p4RWorzhXAH0UsZbfejzKATZxOyZq8Izv4Kg-58RqDSP4pyaoE0reahJKH3",
+        "0xhL4Xk5hG1V7zHAlSDTXPRwJ9kFWw-",
+        "rUoSh6niRDqN8YiCTgqoSDPAEeGJGAGAp6ngK91Ov_TduGU",
+        "oH8i9eKW_iA5DHBduJhTijv1Fq0Jb9Pqeuumff_LApeF6X1lHEEqm",
+        "C9IGQbkjBpqO7EwlzD1USp60ZH9tgbk9JyhtWvemkGa",
+        "n5C5U6nDuUip2xcvviRKtcEipEQ1oEGhD6-J6",
+        "-f5jkU-B2N_h3-Ba1WS3Tr-GefyHM8-vL2wbmXh8XpYlF_6yDOLX60rLq_2",
+        "QHu-BSof7vXcQJqOcV3",
+    ],
+}
+
+_CLIENT_PASSWORD_MODULUS_DATA = {
+    "salt": "oopz-login-pass-v2",
+    "chunks": [
+        "t8TUm1XdqQ86p9BhsKCpD-ug5pMhBHyeQTPqqx6EL4v",
+        "mJIpoNx0_v6bFaaJ6VB883HryJHQHXKRt7A6c",
+        "s_c8-M0ab407dTEJHUnoQQbN57xTh3J_DgCCY0nxNAzU_srh8brFr0ONXr9",
+        "XdmhJT9pT30dbcBONFS0VWGC2q_VP3M",
+        "8qG6Nx4g3ySNaixtE5qyKXcEcT9Lie9qE5mFwPT9wuNMy2w",
+        "NAwwzS0EkU8_U0SUwgBRy_ZLC1AEk4FvK5MD4P0k7-BjJ826Ehiv-",
+        "PntTxWcLdWPHMdSSBvsua24gx_8AfJLjKtLAzcn-4O2",
+        "EWPNNQkHB1Vv2sW--IHa-d5ZI5iblAmzSQORc",
+        "He1Lzkc-hXsljr4MJdX1N4Zjw8YPz1oWA_ZVTg0MUFTjjXN_a9NYeU",
+    ],
+}
 
 try:
     from voice_client import _BROWSER_ARGS as _VOICE_BROWSER_ARGS
@@ -112,6 +185,72 @@ def _missing_required_credentials(credentials: dict[str, Any]) -> list[str]:
 
 class OopzPasswordLoginError(RuntimeError):
     """OOPZ 自动登录失败。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int | str | None = None,
+        payload: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.payload = payload
+
+
+def _bundle_stream(length: int, salt: bytes, label: str) -> bytes:
+    output = bytearray()
+    counter = 0
+    seed = hashlib.sha256(salt + b":" + label.encode("ascii")).digest()
+    while len(output) < length:
+        output.extend(hashlib.sha256(seed + counter.to_bytes(4, "big") + salt).digest())
+        counter += 1
+    return bytes(output[:length])
+
+
+def _rotate_right(value: int, bits: int) -> int:
+    return ((value >> bits) | (value << (8 - bits))) & 0xFF
+
+
+def _restore_builtin_value(bundle: Mapping[str, Any], label: str) -> str:
+    salt_text = str(bundle.get("salt") or "")
+    chunks = bundle.get("chunks") or []
+    if not salt_text or not isinstance(chunks, list):
+        raise OopzPasswordLoginError("内置登录素材格式错误")
+
+    encoded = "".join(str(chunk)[::-1] for chunk in chunks)
+    encoded += "=" * ((4 - len(encoded) % 4) % 4)
+    try:
+        mixed = base64.urlsafe_b64decode(encoded.encode("ascii"))
+    except Exception as exc:
+        raise OopzPasswordLoginError("内置登录素材解码失败") from exc
+
+    salt = salt_text.encode("ascii")
+    stream = _bundle_stream(len(mixed), salt, label)
+    payload = bytearray()
+    for index, byte in enumerate(mixed):
+        shift = ((salt[index % len(salt)] + index) % 7) + 1
+        payload.append(_rotate_right(byte, shift) ^ stream[index])
+
+    if len(payload) <= 12:
+        raise OopzPasswordLoginError("内置登录素材长度异常")
+    checksum = bytes(payload[:12])
+    compressed = bytes(payload[12:])
+    try:
+        raw = zlib.decompress(compressed)
+    except Exception as exc:
+        raise OopzPasswordLoginError("内置登录素材解压失败") from exc
+    if hashlib.sha256(raw).digest()[:12] != checksum:
+        raise OopzPasswordLoginError("内置登录素材校验失败")
+    return raw.decode("utf-8")
+
+
+def get_client_signing_key() -> str:
+    return _restore_builtin_value(_CLIENT_SIGNING_KEY_DATA, "signing")
+
+
+def get_client_password_modulus() -> str:
+    return _restore_builtin_value(_CLIENT_PASSWORD_MODULUS_DATA, "password")
 
 
 # 页面加载前注入：让 OOPZ Web 端生成/导入的签名私钥可导出。
@@ -247,20 +386,313 @@ def _jwt_exp_info(token: str) -> dict[str, Any]:
     }
 
 
+def _extract_error_code(payload: Any) -> int | str | None:
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("code")
+    if code in (None, ""):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            code = data.get("code")
+    if code in (None, ""):
+        return None
+    return code
+
+
 def _safe_response_error(payload: Any) -> str:
     if not isinstance(payload, dict):
         return "登录接口返回异常"
-    data = payload.get("data")
-    for key in ("message", "msg", "error", "code"):
-        value = payload.get(key)
-        if value:
-            return str(value)
-    if isinstance(data, dict):
-        for key in ("message", "msg", "error", "code"):
-            value = data.get(key)
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    for source in (payload, data):
+        for key in ("message", "msg", "error", "errorMessage", "reason"):
+            value = source.get(key)
             if value:
                 return str(value)
+    code = _extract_error_code(payload)
+    if code not in (None, ""):
+        return f"登录失败，错误码：{code}"
     return "登录失败，请检查账号密码或风控验证"
+
+
+def _compact_json(data: Mapping[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _now_ms() -> str:
+    return str(int(time.time() * 1000))
+
+
+def _normalize_private_key(pem: str) -> str:
+    pem = pem.strip()
+    if (pem.startswith("'") and pem.endswith("'")) or (
+        pem.startswith('"') and pem.endswith('"')
+    ):
+        pem = pem[1:-1]
+    pem = pem.replace("\\r\\n", "\n")
+    pem = pem.replace("\\n", "\n")
+    pem = pem.replace("\r\n", "\n")
+    return pem.strip()
+
+
+def _load_signing_private_key(private_key_pem: str):
+    private_key_pem = _normalize_private_key(private_key_pem)
+    if not private_key_pem.startswith("-----BEGIN PRIVATE KEY-----"):
+        raise OopzPasswordLoginError("内置登录签名私钥格式错误")
+    if "-----END PRIVATE KEY-----" not in private_key_pem:
+        raise OopzPasswordLoginError("内置登录签名私钥缺少 END PRIVATE KEY")
+    try:
+        return serialization.load_pem_private_key(
+            private_key_pem.encode("utf-8"),
+            password=None,
+        )
+    except Exception as exc:
+        raise OopzPasswordLoginError(f"无法加载内置登录签名私钥: {exc}") from exc
+
+
+def _b64url_decode_int(value: str) -> int:
+    value += "=" * ((4 - len(value) % 4) % 4)
+    raw = base64.urlsafe_b64decode(value.encode("utf-8"))
+    return int.from_bytes(raw, "big")
+
+
+def _load_rsa_public_key_from_jwk(n: str, e: str = PUBLIC_E):
+    return rsa.RSAPublicNumbers(
+        e=_b64url_decode_int(e),
+        n=_b64url_decode_int(n),
+    ).public_key()
+
+
+def _encrypt_password_code(password: str, public_n: str) -> str:
+    public_key = _load_rsa_public_key_from_jwk(public_n, PUBLIC_E)
+    encrypted = public_key.encrypt(
+        password.encode("utf-8"),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+def _build_oopz_sign(*, path: str, body: str, oopz_time: str, private_key_pem: str) -> str:
+    digest = hashlib.md5((path + body).encode("utf-8")).hexdigest()
+    sign_input = (digest + oopz_time).encode("utf-8")
+    private_key = _load_signing_private_key(private_key_pem)
+    signature = private_key.sign(sign_input, padding.PKCS1v15(), hashes.SHA256())
+    return base64.b64encode(signature).decode("utf-8")
+
+
+def _build_password_login_body(
+    *,
+    phone: str,
+    password: str,
+    device_id: str,
+    public_n: str,
+) -> str:
+    payload = {
+        "auto": True,
+        "code": _encrypt_password_code(password, public_n),
+        "loginType": "PASSWORD",
+        "phone": phone,
+        "autoRegister": True,
+        "deviceId": device_id,
+        "deviceRam": "TBD",
+        "deviceProcessor": "0",
+        "loggedIn": device_id,
+        "osEdition": "web",
+        "osVersion": "web/BrowserName.chrome",
+        "resolution": "TBD",
+        "graphics": "TBD",
+        "clientVersion": CLIENT_VERSION,
+    }
+    return _compact_json(payload)
+
+
+def _build_password_login_headers(
+    *,
+    device_id: str,
+    body: str,
+    private_key_pem: str,
+) -> dict[str, str]:
+    oopz_time = _now_ms()
+    return {
+        "Accept": "*/*",
+        "Content-Type": "application/json;charset=utf-8",
+        "Oopz-App-Version-Number": APP_VERSION_NUMBER,
+        "Oopz-Channel": OOPZ_CHANNEL,
+        "Oopz-Device-Id": device_id,
+        "Oopz-Platform": OOPZ_PLATFORM,
+        "Oopz-Request-Id": str(uuid.uuid4()),
+        "Oopz-Time": oopz_time,
+        "Oopz-Web": "true",
+        "Origin": "https://web.oopz.cn",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/147.0.0.0 Safari/537.36"
+        ),
+        "Oopz-Sign": _build_oopz_sign(
+            path=LOGIN_RESPONSE_PATH,
+            body=body,
+            oopz_time=oopz_time,
+            private_key_pem=private_key_pem,
+        ),
+    }
+
+
+def _resolve_login_device_id(device_id: str | None = None) -> str:
+    if device_id and str(device_id).strip():
+        return str(device_id).strip()
+    try:
+        import config as runtime_config
+
+        current = str(getattr(runtime_config, "OOPZ_CONFIG", {}).get("device_id") or "").strip()
+        if current:
+            return current
+    except Exception:
+        logger.debug("读取当前 OOPZ device_id 失败，登录时生成新设备 ID", exc_info=True)
+    return str(uuid.uuid4())
+
+
+def login_with_api_password(
+    phone: str,
+    password: str,
+    *,
+    device_id: str | None = None,
+    timeout: float = 20,
+) -> dict[str, Any]:
+    """使用 OOPZ 登录接口直接换取本项目运行所需凭据。"""
+    phone = str(phone or "").strip()
+    password = str(password or "")
+    if not phone or not password:
+        raise OopzPasswordLoginError("账号和密码不能为空")
+
+    resolved_device_id = _resolve_login_device_id(device_id)
+    private_key_pem = get_client_signing_key()
+    body = _build_password_login_body(
+        phone=phone,
+        password=password,
+        device_id=resolved_device_id,
+        public_n=get_client_password_modulus(),
+    )
+    headers = _build_password_login_headers(
+        device_id=resolved_device_id,
+        body=body,
+        private_key_pem=private_key_pem,
+    )
+
+    try:
+        response = requests.post(
+            LOGIN_API_URL,
+            data=body.encode("utf-8"),
+            headers=headers,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise OopzPasswordLoginError(f"OOPZ 登录请求失败: {exc}") from exc
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise OopzPasswordLoginError(
+            f"OOPZ 登录接口返回非 JSON 响应: HTTP {response.status_code}"
+        ) from exc
+
+    if response.status_code >= 400 or not isinstance(payload, dict) or not payload.get("status"):
+        raise OopzPasswordLoginError(
+            _safe_response_error(payload),
+            code=_extract_error_code(payload) or response.status_code,
+            payload=payload,
+        )
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise OopzPasswordLoginError("登录成功但响应 data 格式异常", payload=payload)
+
+    person_uid = data.get("uid")
+    jwt_token = data.get("signature")
+    if not person_uid:
+        raise OopzPasswordLoginError("登录成功但未返回 uid", payload=payload)
+    if not jwt_token:
+        raise OopzPasswordLoginError("登录成功但未返回 signature", payload=payload)
+
+    return {
+        "person_uid": str(person_uid),
+        "device_id": resolved_device_id,
+        "jwt_token": str(jwt_token),
+        "private_key_pem": private_key_pem,
+        "app_version": APP_VERSION_NUMBER,
+    }
+
+
+def _config_login_account(oopz_config: Mapping[str, Any]) -> tuple[str, str]:
+    phone = (
+        os.environ.get("OOPZ_PHONE")
+        or oopz_config.get("login_phone")
+        or oopz_config.get("phone")
+        or ""
+    )
+    password = (
+        os.environ.get("OOPZ_PASSWORD")
+        or oopz_config.get("login_password")
+        or oopz_config.get("password")
+        or ""
+    )
+    return str(phone).strip(), str(password or "")
+
+
+def refresh_credentials_from_config_password(
+    *,
+    timeout: float = 20,
+    save: bool = True,
+) -> dict[str, Any] | None:
+    """配置里有 OOPZ 账号密码时，启动前用直接 API 刷新登录凭据。"""
+    try:
+        import config as runtime_config
+    except Exception as exc:
+        raise OopzPasswordLoginError(f"读取 config.py 失败: {exc}") from exc
+
+    oopz_config = getattr(runtime_config, "OOPZ_CONFIG", {}) or {}
+    phone, password = _config_login_account(oopz_config)
+    if not phone or not password:
+        return None
+
+    credentials = login_with_api_password(phone, password, timeout=timeout)
+    if save:
+        save_credentials(credentials)
+    return credentials
+
+
+def _should_fallback_to_browser(exc: OopzPasswordLoginError) -> bool:
+    if exc.code in (401, 403):
+        return False
+    message = str(exc)
+    fatal_markers = ("该手机号尚未注册", "密码错误")
+    if any(marker in message for marker in fatal_markers):
+        return False
+    text = message.lower()
+    network_markers = ("请求失败", "超时", "timeout", "连接", "network", "json", "响应")
+    if any(marker in text for marker in network_markers):
+        return True
+    return True
+
+
+def _build_login_result(credentials: dict[str, Any], save: bool) -> dict[str, Any]:
+    missing = _missing_required_credentials(credentials)
+    if missing:
+        raise OopzPasswordLoginError("登录成功但未捕获完整凭据: " + ", ".join(missing))
+
+    saved: list[str] = []
+    if save:
+        saved = save_credentials(credentials)
+    return {
+        "ok": True,
+        "saved": saved,
+        "credentials": _sanitize_credentials(credentials),
+        "raw": credentials,
+        "restart_required": True,
+    }
 
 
 def _sanitize_credentials(credentials: dict[str, Any]) -> dict[str, Any]:
@@ -387,6 +819,42 @@ async def login_with_password(
     headless: bool = True,
     save: bool = True,
 ) -> dict[str, Any]:
+    """统一登录入口：先用 OOPZ 登录接口，失败时回退到浏览器登录。"""
+    phone = str(phone or "").strip()
+    password = str(password or "")
+    if not phone or not password:
+        raise OopzPasswordLoginError("账号和密码不能为空")
+
+    try:
+        api_credentials = await asyncio.to_thread(
+            login_with_api_password,
+            phone,
+            password,
+            timeout=min(max(float(timeout), 1.0), 20.0),
+        )
+        return _build_login_result(api_credentials, save)
+    except OopzPasswordLoginError as exc:
+        if not _should_fallback_to_browser(exc):
+            raise
+        logger.info("OOPZ API 登录失败，回退到浏览器登录: %s", exc)
+
+    return await login_with_playwright_password(
+        phone,
+        password,
+        timeout=timeout,
+        headless=headless,
+        save=save,
+    )
+
+
+async def login_with_playwright_password(
+    phone: str,
+    password: str,
+    *,
+    timeout: float = 90,
+    headless: bool = True,
+    save: bool = True,
+) -> dict[str, Any]:
     """通过无头 Chromium 登录 OOPZ，并返回已脱敏的凭据摘要。"""
     phone = str(phone or "").strip()
     password = str(password or "")
@@ -475,24 +943,10 @@ async def login_with_password(
             await _poll_private_key(page, credentials, 10)
             if not credentials.get("private_key_pem"):
                 await _clear_cached_keys_and_retry(page, credentials)
-
-            missing = _missing_required_credentials(credentials)
-            if missing:
-                raise OopzPasswordLoginError("登录成功但未捕获完整凭据: " + ", ".join(missing))
         finally:
             await context.close()
 
-    saved: list[str] = []
-    if save:
-        saved = save_credentials(credentials)
-
-    return {
-        "ok": True,
-        "saved": saved,
-        "credentials": _sanitize_credentials(credentials),
-        "raw": credentials,
-        "restart_required": True,
-    }
+    return _build_login_result(credentials, save)
 
 
 def _read_config_template() -> str:

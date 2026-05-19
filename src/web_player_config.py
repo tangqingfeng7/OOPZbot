@@ -129,6 +129,8 @@ CONFIG_GROUPS: dict[str, dict] = {
     "oopz": {
         "target": OOPZ_CONFIG,
         "fields": {
+            "login_phone": {"type": "str", "max_len": 128, "sensitive": True, "expose_in_admin": True},
+            "login_password": {"type": "str", "max_len": 256, "sensitive": True},
             "default_area": {"type": "str", "max_len": 128},
             "default_channel": {"type": "str", "max_len": 128},
             "proxy": {"type": "str", "max_len": 300},
@@ -623,6 +625,10 @@ def config_snapshot() -> dict:
         for field, meta in fields.items():
             if meta.get("sensitive"):
                 value = target.get(field, "")
+                if group_name == "oopz" and field == "login_phone" and not value:
+                    value = target.get("phone", "")
+                if group_name == "oopz" and field == "login_password" and not value:
+                    value = target.get("password", "")
                 section[field] = value if meta.get("expose_in_admin") else ""
                 section[f"{field}_configured"] = bool(value)
             else:

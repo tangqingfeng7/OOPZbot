@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/readme/oopz-icon.png" alt="Oopz" width="72" />
+</p>
+
 <h1 align="center">Oopz Bot</h1>
 
 <p align="center">
@@ -7,7 +11,11 @@
 </p>
 
 <p align="center">
-  <a href="https://oopz.cn/i/YncsR0">开发交流</a> ·
+  <strong>开发交流：</strong>
+  <a href="https://oopz.cn/i/YncsR0"><strong>加入 Oopz 交流频道</strong></a>
+</p>
+
+<p align="center">
   <a href="docs/quickstart.md">快速开始</a> ·
   <a href="#主要能力">功能特性</a> ·
   <a href="docs/commands.md">命令列表</a> ·
@@ -98,20 +106,22 @@ cp private_key.example.py private_key.py
 
 ### 获取 Oopz 凭据
 
-项目里有两种获取方式。
+账号密码登录是主要登录方式。
 
-**方法一：管理后台登录获取**
+**主要方式：管理后台账号密码登录**
 
-这个方式适合先把 Bot 跑起来，再在后台里补齐 Oopz 凭据。打开管理后台的配置页，在“OOPZ 与网易云”里填写 Oopz 账号和密码，点击“登录并获取”。后台会自动获取并保存：
+可以直接在 `config.py` 的 `OOPZ_CONFIG` 里填写 `login_phone` 和 `login_password`。Bot 启动时会先用这两项刷新 Oopz 凭据，再继续连接 Oopz。
+
+也可以先把 Bot 跑起来，再在后台里补齐 Oopz 凭据。打开管理后台的配置页，在“OOPZ 与网易云”里填写 Oopz 账号和密码，点击“登录并获取”。后台会先调用 Oopz 登录接口直接获取凭据；如果接口登录遇到网络或响应异常，会自动回退到浏览器登录方式。成功后会自动保存：
 
 - `config.py`：写入 `app_version`、`device_id`、`person_uid`、`jwt_token`
 - `private_key.py`：写入 RSA 私钥
 
-这个方式对应项目里的 `src/oopz_password_login.py` 和 `/admin/api/oopz/login`。
+这个方式对应项目里的 `src/oopz_password_login.py` 和 `/admin/api/oopz/login`，返回给页面的 Token 和私钥只展示脱敏状态。
 
-**方法二：命令行凭据工具获取**
+**备用方式：命令行网页抓取**
 
-也可以用工具打开 Oopz 网页端，登录后自动抓取凭据：
+如果后台登录不可用，或者需要手动从网页端抓取凭据，也可以用工具打开 Oopz 网页端，登录后自动抓取：
 
 ```powershell
 python tools/credential_tool.py

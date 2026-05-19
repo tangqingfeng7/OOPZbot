@@ -6,7 +6,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +17,20 @@ if str(SRC_ROOT) not in sys.path:
 
 
 import oopz_password_login as password_login
+
+
+PRIVATE_KEY_PEM = "-----BEGIN PRIVATE KEY-----\nunit-test-key\n-----END PRIVATE KEY-----"
+
+
+class _Response:
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        if isinstance(self._payload, BaseException):
+            raise self._payload
+        return self._payload
 
 
 def _jwt_with_payload(payload: dict) -> str:
@@ -97,6 +111,203 @@ class OopzPasswordLoginHelpersTest(unittest.TestCase):
             self.assertIn('"person_uid": "person-new"', config_text)
             self.assertIn('"jwt_token": "jwt-new"', config_text)
             self.assertIn("PRIVATE_KEY_PEM", private_key_path.read_text(encoding="utf-8"))
+
+    def test_builtin_login_bundle_restores_expected_material_shapes(self) -> None:
+        signing_key = password_login.get_client_signing_key()
+        password_modulus = password_login.get_client_password_modulus()
+
+        self.assertIn("BEGIN PRIVATE KEY", signing_key)
+        self.assertIn("END PRIVATE KEY", signing_key)
+        self.assertGreater(len(password_modulus), 100)
+
+    def test_builtin_login_bundle_rejects_tampering(self) -> None:
+        bundle = {
+            "salt": password_login._CLIENT_SIGNING_KEY_DATA["salt"],
+            "chunks": list(password_login._CLIENT_SIGNING_KEY_DATA["chunks"]),
+        }
+        bundle["chunks"][0] = "A" + bundle["chunks"][0][1:]
+
+        with self.assertRaises(password_login.OopzPasswordLoginError):
+            password_login._restore_builtin_value(bundle, "signing")
+
+
+class OopzApiPasswordLoginTest(unittest.TestCase):
+    def test_build_password_login_body_uses_encrypted_password(self) -> None:
+        with patch.object(password_login, "_encrypt_password_code", return_value="encrypted-code"):
+            body = password_login._build_password_login_body(
+                phone="13800138000",
+                password="plain-password",
+                device_id="device-1",
+                public_n="public-modulus",
+            )
+
+        payload = json.loads(body)
+        self.assertEqual(payload["loginType"], "PASSWORD")
+        self.assertEqual(payload["phone"], "13800138000")
+        self.assertEqual(payload["deviceId"], "device-1")
+        self.assertEqual(payload["code"], "encrypted-code")
+        self.assertNotIn("plain-password", body)
+
+    def test_build_password_login_headers_contains_oopz_signing_fields(self) -> None:
+        with patch.object(password_login, "_build_oopz_sign", return_value="signed-value"):
+            headers = password_login._build_password_login_headers(
+                device_id="device-1",
+                body="{}",
+                private_key_pem=PRIVATE_KEY_PEM,
+            )
+
+        self.assertEqual(headers["Oopz-Sign"], "signed-value")
+        self.assertEqual(headers["Oopz-App-Version-Number"], "73817")
+        self.assertEqual(headers["Oopz-Device-Id"], "device-1")
+        self.assertIn("Oopz-Time", headers)
+        self.assertIn("Oopz-Request-Id", headers)
+
+    def test_login_with_api_password_returns_project_credentials(self) -> None:
+        response = _Response(
+            200,
+            {
+                "status": True,
+                "data": {"uid": "person-1", "signature": "jwt-1"},
+            },
+        )
+
+        with (
+            patch.object(password_login, "_resolve_login_device_id", return_value="device-1"),
+            patch.object(password_login, "get_client_signing_key", return_value=PRIVATE_KEY_PEM),
+            patch.object(password_login, "get_client_password_modulus", return_value="public-modulus"),
+            patch.object(password_login, "_encrypt_password_code", return_value="encrypted-code"),
+            patch.object(password_login, "_build_oopz_sign", return_value="signed-value"),
+            patch.object(password_login.requests, "post", return_value=response) as post,
+        ):
+            credentials = password_login.login_with_api_password(
+                "13800138000",
+                "plain-password",
+                timeout=3,
+            )
+
+        self.assertEqual(credentials["person_uid"], "person-1")
+        self.assertEqual(credentials["device_id"], "device-1")
+        self.assertEqual(credentials["jwt_token"], "jwt-1")
+        self.assertEqual(credentials["private_key_pem"], PRIVATE_KEY_PEM)
+        self.assertEqual(credentials["app_version"], "73817")
+
+        sent_body = post.call_args.kwargs["data"].decode("utf-8")
+        sent_headers = post.call_args.kwargs["headers"]
+        self.assertIn('"loginType":"PASSWORD"', sent_body)
+        self.assertNotIn("plain-password", sent_body)
+        self.assertEqual(sent_headers["Oopz-Sign"], "signed-value")
+        self.assertEqual(post.call_args.kwargs["timeout"], 3)
+
+    def test_login_with_api_password_reports_readable_failure(self) -> None:
+        response = _Response(
+            200,
+            {
+                "status": False,
+                "data": {"msg": "密码错误"},
+            },
+        )
+
+        with (
+            patch.object(password_login, "_resolve_login_device_id", return_value="device-1"),
+            patch.object(password_login, "get_client_signing_key", return_value=PRIVATE_KEY_PEM),
+            patch.object(password_login, "get_client_password_modulus", return_value="public-modulus"),
+            patch.object(password_login, "_encrypt_password_code", return_value="encrypted-code"),
+            patch.object(password_login, "_build_oopz_sign", return_value="signed-value"),
+            patch.object(password_login.requests, "post", return_value=response),
+        ):
+            with self.assertRaises(password_login.OopzPasswordLoginError) as ctx:
+                password_login.login_with_api_password("13800138000", "bad-password")
+
+        self.assertIn("密码错误", str(ctx.exception))
+
+    def test_refresh_credentials_from_config_password_uses_config_login(self) -> None:
+        config = types.ModuleType("config")
+        config.OOPZ_CONFIG = {
+            "login_phone": "13800138000",
+            "login_password": "plain-password",
+        }
+        credentials = {
+            "person_uid": "person-1",
+            "device_id": "device-1",
+            "jwt_token": "jwt-1",
+            "private_key_pem": PRIVATE_KEY_PEM,
+            "app_version": "73817",
+        }
+
+        with (
+            patch.dict(sys.modules, {"config": config}),
+            patch.object(password_login, "login_with_api_password", return_value=credentials) as api_login,
+            patch.object(password_login, "save_credentials") as save_credentials,
+        ):
+            result = password_login.refresh_credentials_from_config_password(timeout=5)
+
+        self.assertIs(result, credentials)
+        api_login.assert_called_once_with("13800138000", "plain-password", timeout=5)
+        save_credentials.assert_called_once_with(credentials)
+
+    def test_refresh_credentials_from_config_password_accepts_legacy_config_keys(self) -> None:
+        config = types.ModuleType("config")
+        config.OOPZ_CONFIG = {"phone": "13800138000", "password": "plain-password"}
+
+        with (
+            patch.dict(sys.modules, {"config": config}),
+            patch.object(password_login, "login_with_api_password", return_value={"ok": True}) as api_login,
+            patch.object(password_login, "save_credentials"),
+        ):
+            password_login.refresh_credentials_from_config_password(save=False)
+
+        api_login.assert_called_once_with("13800138000", "plain-password", timeout=20)
+
+    def test_refresh_credentials_from_config_password_skips_when_missing_config_login(self) -> None:
+        config = types.ModuleType("config")
+        config.OOPZ_CONFIG = {}
+
+        with (
+            patch.dict(sys.modules, {"config": config}),
+            patch.object(password_login, "login_with_api_password") as api_login,
+        ):
+            result = password_login.refresh_credentials_from_config_password()
+
+        self.assertIsNone(result)
+        api_login.assert_not_called()
+
+
+class OopzPasswordLoginFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_login_with_password_falls_back_to_browser_when_api_is_retryable(self) -> None:
+        browser_result = {"ok": True, "saved": [], "credentials": {}, "raw": {}}
+
+        with (
+            patch.object(
+                password_login,
+                "login_with_api_password",
+                side_effect=password_login.OopzPasswordLoginError("OOPZ 登录请求失败: timeout"),
+            ),
+            patch.object(
+                password_login,
+                "login_with_playwright_password",
+                new=AsyncMock(return_value=browser_result),
+            ) as browser_login,
+        ):
+            result = await password_login.login_with_password("13800138000", "pw", save=False)
+
+        self.assertIs(result, browser_result)
+        browser_login.assert_awaited_once()
+
+    async def test_login_with_password_does_not_fallback_for_bad_password(self) -> None:
+        browser_login = AsyncMock(return_value={"ok": True})
+
+        with (
+            patch.object(
+                password_login,
+                "login_with_api_password",
+                side_effect=password_login.OopzPasswordLoginError("密码错误"),
+            ),
+            patch.object(password_login, "login_with_playwright_password", new=browser_login),
+        ):
+            with self.assertRaises(password_login.OopzPasswordLoginError):
+                await password_login.login_with_password("13800138000", "bad-password", save=False)
+
+        browser_login.assert_not_called()
 
 
 class OopzClientCredentialsTest(unittest.TestCase):

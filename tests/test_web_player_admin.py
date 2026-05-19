@@ -141,6 +141,20 @@ class WebPlayerAdminTest(unittest.TestCase):
                 web_player_admin.cfg.WEB_PLAYER_CONFIG.clear()
                 web_player_admin.cfg.WEB_PLAYER_CONFIG.update(copy.deepcopy(baseline))
 
+    def test_oopz_login_payload_falls_back_to_config_account(self) -> None:
+        import web_player_admin
+
+        with patch.object(
+            web_player_admin.cfg,
+            "OOPZ_CONFIG",
+            {"login_phone": "13800138000", "login_password": "plain-password"},
+        ):
+            phone, password, timeout = web_player_admin._parse_oopz_login_payload({})
+
+        self.assertEqual(phone, "13800138000")
+        self.assertEqual(password, "plain-password")
+        self.assertEqual(timeout, 90.0)
+
     def test_netease_qr_login_returns_qr_image_when_logged_in(self) -> None:
         calls = []
 

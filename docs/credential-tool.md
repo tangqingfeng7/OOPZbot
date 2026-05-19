@@ -2,6 +2,8 @@
 
 `tools/credential_tool.py` 用于自动从 Oopz 网页端提取 Bot 运行所需的全部凭据。
 
+账号密码登录是主要登录方式：日常请先在 `config.py` 的 `OOPZ_CONFIG.login_phone` / `OOPZ_CONFIG.login_password` 里填写账号密码，或用管理后台配置页里的“OOPZ 账号密码登录”。后台会优先调用 Oopz 登录接口直接获取凭据，失败时再回退到浏览器登录方式。本工具只作为备用方案，适合后台登录不可用、需要手动网页登录抓取，或需要排查凭据问题时使用。
+
 ## 安装
 
 ```shell
@@ -38,7 +40,6 @@ python tools/credential_tool.py --save
 4. 捕获完成后，凭据保存到：
    - `config.py` — 写入 `person_uid`、`device_id`、`jwt_token`
    - `private_key.py` — 写入 RSA 私钥 PEM
-   - `data/credentials.txt` — 所有凭据的纯文本备份
 
 ## RSA 私钥提取说明
 
@@ -59,4 +60,4 @@ Oopz 网页端使用 Web Crypto API 生成 RSA 密钥对，默认以不可导出
 ## 注意事项
 
 - 浏览器数据保存在 `.oopz_capture_credentials/` 目录（已 gitignore），登录状态可跨次复用
-- 生成的 `config.py`、`private_key.py`、`data/credentials.txt` 均已在 `.gitignore` 中排除，不会被提交到 Git
+- 生成的 `config.py`、`private_key.py` 均已在 `.gitignore` 中排除，不会被提交到 Git

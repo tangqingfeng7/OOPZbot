@@ -601,13 +601,9 @@
       const phone = val("cfg_oopz_login_phone");
       const passwordElement = AdminShell.byId("cfg_oopz_login_password");
       const password = passwordElement ? passwordElement.value : "";
-      if (!phone || !password) {
-        setOopzLoginStatus("请输入 OOPZ 账号和密码", "error");
-        return;
-      }
 
       setOopzLoginButtonLoading(true);
-      setOopzLoginStatus("正在登录 OOPZ...", "neutral");
+      setOopzLoginStatus((!phone && !password) ? "正在使用配置中的 OOPZ 账号密码登录..." : "正在登录 OOPZ...", "neutral");
       setPageState("OOPZ 登录中", "warning");
 
       try {
@@ -670,6 +666,7 @@
       setVal("cfg_oopz_default_area", config.oopz?.default_area || "");
       setVal("cfg_oopz_default_channel", config.oopz?.default_channel || "");
       setVal("cfg_oopz_proxy", config.oopz?.proxy || "");
+      setVal("cfg_oopz_login_phone", config.oopz?.login_phone || "");
       setVal("cfg_agora_app_id", config.oopz?.agora_app_id || "");
       setVal("cfg_agora_timeout", config.oopz?.agora_init_timeout || 1800);
 
@@ -724,6 +721,7 @@
       setVal("cfg_notify_leave_tpl", config.area_join_notify?.message_template_leave || "");
 
       setSecretState("cfg_admin_password", config.web_player?.admin_password_configured);
+      setSecretState("cfg_oopz_login_password", config.oopz?.login_password_configured);
       setSecretValue("cfg_netease_cookie", config.netease?.cookie || "", config.netease?.cookie_configured);
       setSecretState("cfg_redis_password", config.redis?.password_configured);
       setSecretValue("cfg_doubao_api_key", config.doubao_chat?.api_key || "", config.doubao_chat?.api_key_configured);
@@ -784,6 +782,8 @@
           ai_min_length: getInt("cfg_ai_min_length"),
         },
         oopz: {
+          login_phone: val("cfg_oopz_login_phone"),
+          login_password: val("cfg_oopz_login_password"),
           default_area: val("cfg_oopz_default_area"),
           default_channel: val("cfg_oopz_default_channel"),
           proxy: val("cfg_oopz_proxy"),

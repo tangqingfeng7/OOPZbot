@@ -1615,6 +1615,11 @@ def _parse_oopz_login_payload(body: dict[str, Any]) -> tuple[str, str, float]:
         body = {}
     phone = str(body.get("phone", "") or "").strip()
     password = str(body.get("password", "") or "")
+    oopz_config = getattr(cfg, "OOPZ_CONFIG", {}) or {}
+    if not phone:
+        phone = str(oopz_config.get("login_phone") or oopz_config.get("phone") or "").strip()
+    if not password:
+        password = str(oopz_config.get("login_password") or oopz_config.get("password") or "")
     try:
         timeout = float(body.get("timeout", 90) or 90)
     except (TypeError, ValueError):

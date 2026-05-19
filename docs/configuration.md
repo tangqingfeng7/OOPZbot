@@ -7,7 +7,7 @@ copy config.example.py config.py
 copy private_key.example.py private_key.py
 ```
 
-> 也可以通过 [凭据获取工具](credential-tool.md) 自动生成 `config.py` 和 `private_key.py`。
+> 主要登录方式是管理后台账号密码登录；命令行 [凭据获取工具](credential-tool.md) 只作为后台登录不可用时的备用方案。
 
 ## config.py 配置项
 
@@ -15,6 +15,8 @@ copy private_key.example.py private_key.py
 
 | 配置项 | 说明 |
 |--------|------|
+| `login_phone` | Oopz 登录手机号 / 账号。填了以后，启动时会用账号密码刷新凭据 |
+| `login_password` | Oopz 登录密码。留空时仍可在管理后台临时输入 |
 | `person_uid` | Oopz 用户 UID |
 | `device_id` | 设备 ID |
 | `jwt_token` | JWT Token |
@@ -25,6 +27,10 @@ copy private_key.example.py private_key.py
 | `proxy` | 代理配置：留空走系统代理；`False` / `"direct"` 表示直连 |
 | `agora_app_id` | Oopz 语音频道使用的 Agora App ID |
 | `agora_init_timeout` | 语音浏览器初始化等待秒数 |
+
+`login_phone`、`login_password` 是主要登录配置。程序启动时如果这两项有值，会先用账号密码直接登录并刷新 `person_uid`、`device_id`、`jwt_token` 和 `private_key.py`。
+
+管理后台的“OOPZ 账号密码登录”使用同一套入口：页面里填了账号密码就用页面输入；页面留空时会改用 `config.py` 里的账号密码。后台会优先调用 Oopz 登录接口，遇到可重试问题时再回退到浏览器登录。
 
 ### Redis 配置 (`REDIS_CONFIG`)
 
@@ -231,4 +237,4 @@ Docker 环境下可通过环境变量覆盖部分配置，无需修改 `config.p
 
 ## private_key.py
 
-粘贴 RSA 私钥（PEM 格式），用于 Oopz API 请求签名。支持 PKCS#1（`-----BEGIN RSA PRIVATE KEY-----`）和 PKCS#8（`-----BEGIN PRIVATE KEY-----`）两种格式。
+RSA 私钥（PEM 格式）用于 Oopz API 请求签名。推荐通过管理后台登录自动写入；手动填写时支持 PKCS#1（`-----BEGIN RSA PRIVATE KEY-----`）和 PKCS#8（`-----BEGIN PRIVATE KEY-----`）两种格式。

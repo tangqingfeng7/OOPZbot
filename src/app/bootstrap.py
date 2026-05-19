@@ -2,6 +2,7 @@ import signal
 from typing import Optional
 
 from logger_config import setup_logger
+from oopz_password_login import OopzPasswordLoginError, refresh_credentials_from_config_password
 
 from app.lifecycle import (
     AppContext,
@@ -48,6 +49,7 @@ class BotApplication:
         self._install_signal_handlers()
         try:
             self._netease_runtime.start()
+            self._refresh_oopz_credentials_from_config()
             self._context = self._build_context()
             self._background_services.start(self._context)
             self._context.client.start()
@@ -60,6 +62,18 @@ class BotApplication:
 
     def stop(self) -> None:
         self._shutdown.stop(self._context, self._netease_runtime)
+
+    def _refresh_oopz_credentials_from_config(self) -> None:
+        try:
+            credentials = refresh_credentials_from_config_password()
+        except OopzPasswordLoginError as exc:
+            logger.warning("OOPZ 账号密码登录刷新失败，继续使用现有凭据: %s", exc)
+            return
+        except Exception as exc:
+            logger.warning("OOPZ 账号密码登录刷新异常，继续使用现有凭据: %s", exc, exc_info=True)
+            return
+        if credentials:
+            logger.info("已通过 OOPZ 账号密码刷新登录凭据")
 
     def _build_context(self) -> AppContext:
         resources = self._startup_resources.build()
