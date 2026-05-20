@@ -81,7 +81,7 @@ def setup_logger(name: str, level=logging.DEBUG) -> logging.Logger:
         file_handler.setLevel(file_level)
         file_handler.setFormatter(formatter)
 
-        if sys.platform == "win32":
+        if sys.platform == "win32" and sys.stdout is sys.__stdout__ and sys.stderr is sys.__stderr__:
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 

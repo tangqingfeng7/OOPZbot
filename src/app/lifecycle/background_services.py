@@ -13,9 +13,16 @@ class BackgroundServiceRunner:
     """负责启动命令链路依赖的后台线程与监听器。"""
 
     def start(self, context: AppContext) -> None:
+        self._start_onebot_v11(context)
         self._start_music_services(context)
         self._start_web_player(context)
         self._start_scheduler_services(context)
+
+    def _start_onebot_v11(self, context: AppContext) -> None:
+        if not context.onebot_v11:
+            return
+        context.onebot_v11.start()
+        logger.info("OneBot v11 旁路服务已启动。")
 
     def _start_music_services(self, context: AppContext) -> None:
         music = context.handler.infrastructure.music

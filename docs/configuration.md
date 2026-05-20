@@ -162,6 +162,35 @@ copy private_key.example.py private_key.py
 
 > **注意**：长期配置只认 `config.py`。管理后台 `/admin` -> 配置页面保存时会写回 `config.py`，并同步更新当前进程，不需要重启。
 
+### OneBot v11 旁路服务 (`ONEBOT_V11_CONFIG`)
+
+OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照常运行，同时额外提供 OneBot v11 HTTP / WebSocket 接口，适合接 NoneBot、AstrBot、Hoshino 等外部程序。
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用（默认 `False`） |
+| `host` | 监听地址（默认 `127.0.0.1`） |
+| `port` | 监听端口（默认 `6700`） |
+| `access_token` | OneBot 鉴权 token，留空则不鉴权 |
+| `secret` | HTTP POST 上报签名密钥 |
+| `db_path` | OneBot 数字 ID 与消息映射库，默认 `data/onebot_v11.sqlite3` |
+| `enable_http` | 是否启用 HTTP action 接口 |
+| `enable_ws` | 是否启用正向 WebSocket |
+| `enable_http_post` | 是否启用 HTTP POST 事件上报 |
+| `http_post_urls` | HTTP POST 上报地址列表 |
+| `http_post_timeout` | HTTP POST 上报超时秒数，`0` 表示使用默认超时 |
+| `enable_ws_reverse` | 是否启用反向 WebSocket |
+| `ws_reverse_url` | 反向 WebSocket Universal 地址 |
+| `ws_reverse_api_url` | 反向 WebSocket API 地址 |
+| `ws_reverse_event_url` | 反向 WebSocket Event 地址 |
+| `ws_reverse_reconnect_interval` | 反向 WebSocket 断线重连间隔秒数 |
+| `send_connect_event` | WebSocket 连接建立后是否发送生命周期事件 |
+| `enable_area_scoped_group_ban` | 是否启用 `set_group_ban`，会映射为 Oopz 域成员禁言 |
+| `enable_set_group_kick_as_area_kick` | 是否启用 `set_group_kick`，会映射为移出域或封禁 |
+| `enable_set_group_leave_as_area_leave` | 是否启用 `set_group_leave`，会映射为离开对应 Oopz 域 |
+
+详细使用方式见 [OneBot v11 旁路适配](onebot-v11.md)。
+
 ### 自动撤回 (`AUTO_RECALL_CONFIG`)
 
 | 配置项 | 说明 |

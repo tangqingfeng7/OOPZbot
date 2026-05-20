@@ -44,12 +44,14 @@ class OopzClient:
         self,
         on_chat_message: Optional[Callable[[dict], None]] = None,
         on_other_event: Optional[Callable[[int, dict], None]] = None,
+        on_raw_event: Optional[Callable[[dict], None]] = None,
         reconnect_interval: float = 2.0,
         max_reconnect_interval: float = 120.0,
         heartbeat_interval: float = 10.0,
     ):
         self.on_chat_message = on_chat_message
         self.on_other_event = on_other_event
+        self.on_raw_event = on_raw_event
         self._base_reconnect = reconnect_interval
         self._max_reconnect = max_reconnect_interval
         self.heartbeat_interval = heartbeat_interval
@@ -163,6 +165,11 @@ class OopzClient:
             return
 
         event = data.get("event")
+        if self.on_raw_event:
+            try:
+                self.on_raw_event(data)
+            except Exception as e:
+                logger.debug("on_raw_event 处理异常: %s", e)
 
         if _DEBUG_WS_EVENTS and event != EVENT_HEARTBEAT:
             try:

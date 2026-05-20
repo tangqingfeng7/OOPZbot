@@ -21,6 +21,7 @@
   <a href="docs/commands.md">命令列表</a> ·
   <a href="docs/configuration.md">配置说明</a> ·
   <a href="docs/web-player.md">Web 播放器</a> ·
+  <a href="docs/onebot-v11.md">OneBot v11</a> ·
   <a href="docs/plugin-development.md">插件开发</a>
 </p>
 
@@ -76,6 +77,7 @@
 | 提醒统计 | 定时提醒、活跃排行、频道统计、点歌排行、最近播放 |
 | 插件系统 | 支持目录化插件，已有三角洲、LOL、Steam 等插件 |
 | 管理后台 | 提供 `/admin` 页面，方便查看状态、改配置、控音乐 |
+| OneBot v11 | 可作为旁路服务接入 NoneBot、AstrBot、Hoshino 等外部程序 |
 
 ## 启动方式
 
@@ -187,6 +189,8 @@ http://localhost:8080/health
 ```
 
 默认情况下，Web 播放器和管理后台也由 `8080` 端口提供。
+
+如果要接 OneBot v11 生态，在 `config.py` 中启用 `ONEBOT_V11_CONFIG["enabled"] = True` 后重启，默认监听 `127.0.0.1:6700`。详见 [OneBot v11 旁路适配](docs/onebot-v11.md)。
 
 ## Docker 部署
 

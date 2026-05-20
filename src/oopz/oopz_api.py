@@ -706,6 +706,34 @@ class OopzApiMixin:
             logger.error(f"获取域详情异常: {e}")
             return {"error": str(e)}
 
+    def leave_area(self, area: str) -> dict:
+        """
+        离开指定域。
+
+        API: DELETE /client/v1/area/v1/quit
+        """
+        area = str(area or "").strip()
+        if not area:
+            return {"error": "缺少 area"}
+        url_path = "/client/v1/area/v1/quit"
+        body = {"area": area}
+        try:
+            resp = self._delete(url_path, body)
+        except Exception as e:
+            logger.error("离开域请求异常: %s", e)
+            return {"error": str(e)}
+        raw = resp.text or ""
+        logger.info("离开域 DELETE %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
+        if resp.status_code != 200:
+            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
+        try:
+            result = resp.json()
+        except Exception:
+            return {"error": f"响应非 JSON: {raw[:200]}"}
+        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
+            return {"status": True, "message": result.get("message") or "已离开域"}
+        return {"error": result.get("message") or result.get("error") or str(result)}
+
     # ---- 启动时自动填充域/频道名称 ----
 
     def populate_names(self):
@@ -774,6 +802,93 @@ class OopzApiMixin:
             except Exception as e:
                 logger.debug(f"批量获取用户信息部分失败: {e}")
         return result_map
+
+    # ---- 好友 / 好友请求 ----
+
+    def get_friendship(self) -> list[dict]:
+        """获取好友列表。API: GET /client/v1/list/v1/friendship"""
+        url_path = "/client/v1/list/v1/friendship"
+        try:
+            resp = self._get(url_path)
+            if resp.status_code != 200:
+                logger.error("获取好友列表失败: HTTP %s", resp.status_code)
+                return []
+            result = resp.json()
+            if not result.get("status"):
+                logger.error("获取好友列表失败: %s", result.get("message") or result.get("error"))
+                return []
+            data = result.get("data", [])
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.error("获取好友列表异常: %s", e)
+            return []
+
+    def get_friendship_requests(self) -> list[dict]:
+        """获取好友请求列表。API: GET /client/v1/friendship/v1/requests"""
+        url_path = "/client/v1/friendship/v1/requests"
+        try:
+            resp = self._get(url_path)
+            if resp.status_code != 200:
+                logger.error("获取好友请求失败: HTTP %s", resp.status_code)
+                return []
+            result = resp.json()
+            if not result.get("status"):
+                logger.error("获取好友请求失败: %s", result.get("message") or result.get("error"))
+                return []
+            data = result.get("data", {})
+            requests = data.get("requests") if isinstance(data, dict) else []
+            return requests if isinstance(requests, list) else []
+        except Exception as e:
+            logger.error("获取好友请求异常: %s", e)
+            return []
+
+    def post_friendship_response(self, target: str, friend_request_id: int, agree: bool) -> dict:
+        """接受或拒绝好友请求。API: POST /client/v1/friendship/v1/response"""
+        target = str(target or "").strip()
+        if not target:
+            return {"error": "缺少 target"}
+        url_path = "/client/v1/friendship/v1/response"
+        body = {"agree": bool(agree), "friendRequestId": int(friend_request_id), "target": target}
+        try:
+            resp = self._post(url_path, body)
+        except Exception as e:
+            logger.error("处理好友请求异常: %s", e)
+            return {"error": str(e)}
+        raw = resp.text or ""
+        logger.info("处理好友请求 POST %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
+        if resp.status_code != 200:
+            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
+        try:
+            result = resp.json()
+        except Exception:
+            return {"error": f"响应非 JSON: {raw[:200]}"}
+        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
+            return {"status": True, "message": result.get("message") or "好友请求已处理"}
+        return {"error": result.get("message") or result.get("error") or str(result)}
+
+    def set_user_remark_name(self, uid: str, remark_name: str = "") -> dict:
+        """设置好友备注名。API: POST /person/v1/remarkName/setUserRemarkName"""
+        uid = str(uid or "").strip()
+        if not uid:
+            return {"error": "缺少 uid"}
+        url_path = "/person/v1/remarkName/setUserRemarkName"
+        body = {"remarkUid": uid, "remarkName": str(remark_name or "")}
+        try:
+            resp = self._post(url_path, body)
+        except Exception as e:
+            logger.error("设置好友备注异常: %s", e)
+            return {"error": str(e)}
+        raw = resp.text or ""
+        logger.info("设置好友备注 POST %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
+        if resp.status_code != 200:
+            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
+        try:
+            result = resp.json()
+        except Exception:
+            return {"error": f"响应非 JSON: {raw[:200]}"}
+        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
+            return {"status": True, "message": result.get("message") or "备注已更新"}
+        return {"error": result.get("message") or result.get("error") or str(result)}
 
     # ---- 个人详细信息 ----
 
@@ -1604,3 +1719,58 @@ class OopzApiMixin:
         err = result.get("message") or result.get("error") or str(result)
         logger.error(f"撤回消息失败: {err}")
         return {"error": err}
+
+    def recall_private_message(
+        self,
+        message_id: str,
+        *,
+        channel: str = "",
+        target: str = "",
+        area: Optional[str] = None,
+        timestamp: Optional[str] = None,
+    ) -> dict:
+        """
+        撤回私信消息。
+
+        API: POST /im/session/v1/recallIm
+        """
+        message_id = str(message_id or "").strip()
+        target = str(target or "").strip()
+        channel = str(channel or "").strip()
+        if not message_id:
+            return {"error": "缺少 message_id"}
+        if not target:
+            return {"error": "缺少 target"}
+        if not channel:
+            opened = self.open_private_session(target)
+            if "error" in opened:
+                return opened
+            channel = str(opened.get("channel") or "")
+        if not channel:
+            return {"error": "私信 channel 不可用"}
+
+        timestamp = timestamp or self.signer.timestamp_us()
+        url_path = "/im/session/v1/recallIm"
+        body = {
+            "area": area,
+            "channel": channel,
+            "messageId": message_id,
+            "timestamp": timestamp,
+            "target": target,
+        }
+        try:
+            resp = self._post(url_path, body)
+        except Exception as e:
+            logger.error("撤回私信请求异常: %s", e)
+            return {"error": str(e)}
+        raw_text = resp.text or ""
+        logger.info("撤回私信 POST %s -> HTTP %s, body: %s", url_path, resp.status_code, raw_text[:300])
+        if resp.status_code != 200:
+            return {"error": f"HTTP {resp.status_code}" + (f" | {raw_text[:200]}" if raw_text else "")}
+        try:
+            result = resp.json()
+        except Exception:
+            return {"error": f"响应非 JSON: {raw_text[:200]}"}
+        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
+            return {"status": True, "message": result.get("message") or "撤回成功"}
+        return {"error": result.get("message") or result.get("error") or str(result)}

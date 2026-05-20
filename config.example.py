@@ -229,6 +229,40 @@ WEB_PLAYER_CONFIG = {
     "admin_cookie_secure": False,  # 后台 cookie 是否仅 HTTPS 发送；使用 Nginx + SSL 时应设为 True
 }
 
+# OneBot v11 旁路服务配置
+# 默认关闭。启用后，当前 Oopz Bot 会继续照常运行，同时额外提供 OneBot v11 HTTP / WebSocket 接口。
+ONEBOT_V11_CONFIG = {
+    "enabled": False,
+    "host": "127.0.0.1",
+    "port": 6700,
+    "access_token": "",
+    "secret": "",
+    "db_path": "data/onebot_v11.sqlite3",
+
+    # HTTP action: /send_msg、/get_status 等
+    "enable_http": True,
+    # 正向 WebSocket: /api、/event、/
+    "enable_ws": True,
+
+    # HTTP POST 事件上报
+    "enable_http_post": False,
+    "http_post_urls": [],
+    "http_post_timeout": 0.0,
+
+    # 反向 WebSocket
+    "enable_ws_reverse": False,
+    "ws_reverse_url": "",
+    "ws_reverse_api_url": "",
+    "ws_reverse_event_url": "",
+    "ws_reverse_reconnect_interval": 3.0,
+    "send_connect_event": True,
+
+    # 高风险群管理动作默认关闭；开启后会映射到 Oopz 域级操作
+    "enable_area_scoped_group_ban": False,
+    "enable_set_group_kick_as_area_kick": False,
+    "enable_set_group_leave_as_area_leave": False,
+}
+
 # Bot 消息自动撤回配置
 AUTO_RECALL_CONFIG = {
     "enabled": False,

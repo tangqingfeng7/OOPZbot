@@ -13,6 +13,11 @@ class ShutdownCoordinator:
         netease_runtime.stop()
 
         if context:
+            if context.onebot_v11:
+                try:
+                    context.onebot_v11.stop()
+                except Exception as exc:
+                    logger.warning("停止 OneBot v11 服务时出现异常: %s", exc)
             try:
                 scheduler = context.handler.services.scheduler
                 scheduler.scheduled.stop()

@@ -15,4 +15,5 @@ class AppContext:
     handler: CommandHandler
     client: OopzClient
     notifier_callback: Optional[Any] = None
+    onebot_v11: Optional[Any] = None
     voice: Optional[VoiceClient] = None
