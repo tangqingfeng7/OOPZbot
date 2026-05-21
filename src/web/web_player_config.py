@@ -494,6 +494,14 @@ def _dict_assignments(tree: ast.AST) -> dict[str, ast.Dict]:
     return assignments
 
 
+def _format_config_assignment(source_name: str, values: dict) -> str:
+    lines = ["\n\n", f"{source_name} = {{\n"]
+    for key, value in values.items():
+        lines.append(f"    {_python_literal(str(key))}: {_python_literal(value)},\n")
+    lines.append("}\n")
+    return "".join(lines)
+
+
 def persist_config_updates(updates: dict, path: str | None = None) -> None:
     """把后台保存的配置写回 config.py；内存生效由 apply_config_updates 负责。"""
     if not updates:
@@ -523,7 +531,12 @@ def persist_config_updates(updates: dict, path: str | None = None) -> None:
             continue
         dict_node = assignments.get(source_name)
         if dict_node is None:
-            raise RuntimeError(f"config.py 中找不到 {source_name}")
+            new_values = copy.deepcopy(CONFIG_BASELINES.get(group_name, {}))
+            new_values.update(values)
+            insertions.setdefault(len(text), []).append(
+                _format_config_assignment(source_name, new_values)
+            )
+            continue
 
         existing_keys: dict[str, ast.AST] = {}
         for key_node, value_node in zip(dict_node.keys, dict_node.values):
