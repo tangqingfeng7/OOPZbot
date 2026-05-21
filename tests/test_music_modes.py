@@ -211,6 +211,7 @@ class MusicModeTest(unittest.TestCase):
         self.handler.voice.agora_uid = "123456"
         self.handler.voice.join.return_value = False
         self.handler.sender = Mock()
+        self.handler.sender.get_self_detail.return_value = {"pid": "123456"}
         self.handler.sender.enter_channel.return_value = {
             "supplierSign": "token",
             "roomId": "room",
@@ -224,6 +225,14 @@ class MusicModeTest(unittest.TestCase):
         result = self.handler._do_enter_voice("voice-2", "area-1")
 
         self.assertEqual(result, {"error": "agora_join_failed"})
+        self.handler.sender.enter_channel.assert_called_once_with(
+            channel="voice-2",
+            area="area-1",
+            channel_type="VOICE",
+            from_channel="",
+            from_area="",
+            pid="123456",
+        )
         self.handler.sender.leave_voice_channel.assert_called_once_with(
             channel="voice-2",
             area="area-1",
@@ -239,6 +248,7 @@ class MusicModeTest(unittest.TestCase):
         self.handler.voice.available = True
         self.handler.voice.agora_uid = "123456"
         self.handler.sender = Mock()
+        self.handler.sender.get_self_detail.return_value = {"pid": "123456"}
         self.handler.sender.enter_channel.return_value = {"supplier": "agora"}
         self.handler.sender.leave_voice_channel.return_value = {"status": True}
         self.handler.names = Mock()
@@ -253,6 +263,21 @@ class MusicModeTest(unittest.TestCase):
             channel="voice-2",
             area="area-1",
         )
+
+    def test_enter_voice_requires_numeric_self_pid(self) -> None:
+        self.handler._voice_channel_id = None
+        self.handler._voice_channel_area = None
+        self.handler.voice = Mock()
+        self.handler.voice.available = True
+        self.handler.sender = Mock()
+        self.handler.sender.get_self_detail.return_value = {"pid": ""}
+        self.handler.names = Mock()
+        self.handler._cleanup_stale_voice_membership = Mock()
+
+        result = self.handler._do_enter_voice("voice-2", "area-1")
+
+        self.assertEqual(result, {"error": "missing_voice_pid"})
+        self.handler.sender.enter_channel.assert_not_called()
 
 
 if __name__ == "__main__":

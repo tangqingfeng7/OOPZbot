@@ -23,6 +23,10 @@ let client = null;
 let audioTrack = null;
 let _state = "idle";
 let _playGen = 0;
+let currentAgoraUid = null;
+let currentOopzUid = null;
+let currentMicMuted = false;
+let currentSpeakerMuted = false;
 // 跨 audioTrack 持久化的音量（0-100）。每次创建新 track 后会自动应用，
 // 避免每首歌切换后用户都得重新拖一次音量条。
 let _currentVolume = 100;
@@ -32,13 +36,82 @@ window.agoraReady = () => typeof AgoraRTC !== "undefined";
 window.agoraJoin = async (appId, token, channelName, uid) => {
   try {
     if (client) await window.agoraLeave();
-    client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+    client = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
+    if (typeof client.setClientRole === "function") {
+      await client.setClientRole("host");
+    }
     const assignedUid = await client.join(appId, channelName, token, uid || null);
+    currentAgoraUid = Number(assignedUid || uid);
     _state = "joined";
     return { ok: true, uid: assignedUid };
   } catch (e) {
     return { ok: false, error: e.message };
   }
+};
+
+function getAgoraSignalWs() {
+  const edgeWs = _wsInstances.find(w =>
+    w.readyState === 1 &&
+    typeof w.url === "string" &&
+    w.url.includes("edge.sd-rtn.com")
+  );
+  return edgeWs || _wsInstances.find(w => w.readyState === 1) || null;
+}
+
+async function waitForAgoraSignalWs(timeoutMs = 3000) {
+  const start = performance.now();
+  while (performance.now() - start < timeoutMs) {
+    const ws = getAgoraSignalWs();
+    if (ws) return ws;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  return null;
+}
+
+function shortId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+async function sendCurrentVoiceState(repeat = 2) {
+  const ws = await waitForAgoraSignalWs(3000);
+  if (!ws) return { ok: false, error: "no open agora ws" };
+  if (!currentOopzUid || currentAgoraUid === null || currentAgoraUid === undefined) {
+    return { ok: false, error: "voice identity is not ready" };
+  }
+  try {
+    const statePayload = {
+      m: currentMicMuted ? 1 : 0,
+      uid: String(currentOopzUid),
+      cid: Number(currentAgoraUid),
+      hm: currentSpeakerMuted ? 1 : 0,
+    };
+    const payload = btoa(JSON.stringify(statePayload));
+    const sendTs = Math.floor(performance.now());
+    for (let i = 0; i < repeat; i++) {
+      ws.send(JSON.stringify({
+        _id: shortId(),
+        _type: "data_stream",
+        _message: { payload, syncWithAudio: false, sendTs: sendTs + i * 2 }
+      }));
+    }
+    return { ok: true, payload: statePayload, ws: ws.url };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+window.agoraSetVoiceIdentity = async (oopzUid, agoraUid = currentAgoraUid) => {
+  currentOopzUid = oopzUid || currentOopzUid;
+  if (agoraUid !== undefined && agoraUid !== null) {
+    currentAgoraUid = Number(agoraUid);
+  }
+  return await sendCurrentVoiceState(2);
+};
+
+window.agoraSetVoiceState = async (micMuted, speakerMuted = currentSpeakerMuted) => {
+  currentMicMuted = !!micMuted;
+  currentSpeakerMuted = !!speakerMuted;
+  return await sendCurrentVoiceState(2);
 };
 
 window.agoraPlayAudio = async (url) => {
@@ -61,8 +134,9 @@ window.agoraPlayAudio = async (url) => {
     });
     audioTrack.startProcessAudioBuffer({ loop: false });
     await client.publish([audioTrack]);
+    await sendCurrentVoiceState(2);
     _state = "playing";
-    return { ok: true, duration: audioTrack.duration };
+    return { ok: true, duration: audioTrack.duration, agoraUid: currentAgoraUid };
   } catch (e) {
     if (gen !== _playGen) return { ok: false, error: "superseded" };
     return { ok: false, error: e.message };
@@ -87,31 +161,27 @@ window.agoraPlayLocal = async (base64Data, mimeType) => {
     });
     audioTrack.startProcessAudioBuffer({ loop: false });
     await client.publish([audioTrack]);
+    await sendCurrentVoiceState(2);
     URL.revokeObjectURL(objectUrl);
     _state = "playing";
-    return { ok: true, duration: audioTrack.duration };
+    return { ok: true, duration: audioTrack.duration, agoraUid: currentAgoraUid };
   } catch (e) {
     return { ok: false, error: e.message };
   }
 };
 
-window.agoraSendIdentity = (oopzUid, agoraUid) => {
-  const ws = _wsInstances.find(w => w.readyState === 1);
-  if (!ws) return { ok: false, error: "no open ws" };
-  try {
-    const payload = btoa(JSON.stringify({ m: 1, uid: oopzUid, cid: agoraUid, hm: 1 }));
-    const sendTs = Math.floor(performance.now());
-    for (let i = 0; i < 3; i++) {
-      ws.send(JSON.stringify({
-        _type: "data_stream",
-        _message: { payload, syncWithAudio: false, sendTs: sendTs + i }
-      }));
-    }
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+window.agoraSendIdentity = async (oopzUid, agoraUid = currentAgoraUid) => {
+  return await window.agoraSetVoiceIdentity(oopzUid, agoraUid);
 };
+
+window.agoraVoiceDebug = () => ({
+  state: _state,
+  currentOopzUid,
+  currentAgoraUid,
+  currentMicMuted,
+  currentSpeakerMuted,
+  ws: _wsInstances.map(w => ({ url: w.url, readyState: w.readyState })),
+});
 
 window.agoraPause = () => {
   if (!audioTrack || _state !== "playing") return { ok: false, error: "not playing" };

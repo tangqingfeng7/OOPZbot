@@ -1,7 +1,6 @@
 import asyncio as _asyncio
 import os
 import queue
-import random
 import tempfile
 import threading
 import time
@@ -74,7 +73,9 @@ class VoiceClient:
         _ensure_agora_sdk()
         self._app_id = app_id
         self._oopz_uid = oopz_uid
-        self._agora_uid = str(random.randint(100_000_000, 999_999_999))
+        # 不能随机生成 uid。Oopz 语音成员展示依赖自身 detail.pid，
+        # join 时由 MusicHandler 传入该 pid。
+        self._agora_uid = ""
         self._available = False
         self._playing = False
         self._play_thread: Optional[threading.Thread] = None
@@ -107,7 +108,7 @@ class VoiceClient:
             return
 
         self._available = True
-        logger.info(f"Agora 浏览器播放器已就绪 (uid={self._agora_uid}, 后端={self._backend})")
+        logger.info(f"Agora 浏览器播放器已就绪 (后端={self._backend})")
 
     # ------------------------------------------------------------------
     # 浏览器线程：先尝试 Playwright，失败则回退 Selenium（避免 greenlet DLL 问题）
@@ -351,7 +352,7 @@ class VoiceClient:
         if not self._available:
             return False
         if uid is None:
-            uid = int(self._agora_uid)
+            uid = self._agora_uid
         try:
             uid = int(uid)
         except (TypeError, ValueError):
@@ -365,10 +366,12 @@ class VoiceClient:
             if result and result.get("ok"):
                 logger.info(f"已加入 Agora 房间: {room_id} (uid={result.get('uid')})")
                 self._current_agora_uid = int(uid)
+                self._agora_uid = str(uid)
                 if not self._send_identity():
                     logger.warning("首次 Agora 身份标识发送失败，退出当前语音房间")
                     self.leave()
                     return False
+                self.set_voice_state(mic_muted=False, speaker_muted=False)
                 self._start_identity_heartbeat()
                 return True
             err = result.get("error", "未知") if result else "无响应"
@@ -478,6 +481,8 @@ class VoiceClient:
         if not self._available:
             return
         try:
+            if self._current_agora_uid is not None:
+                self.set_voice_state(mic_muted=True, speaker_muted=False)
             self._run_on_browser("agoraLeave")
             logger.info("已离开 Agora 房间")
         except Exception as e:
@@ -519,7 +524,7 @@ class VoiceClient:
             agora_uid = self._current_agora_uid if self._current_agora_uid is not None else self._agora_uid
             agora_uid_int = int(agora_uid)
             result = self._run_on_browser(
-                "agoraSendIdentity", self._oopz_uid, agora_uid_int,
+                "agoraSetVoiceIdentity", self._oopz_uid, agora_uid_int,
             )
             if result and result.get("ok"):
                 logger.debug("已发送 Agora 身份标识")
@@ -529,6 +534,21 @@ class VoiceClient:
         except Exception as e:
             logger.warning(f"发送 Agora 身份标识异常: {e}")
         return False
+
+    def set_voice_state(self, *, mic_muted: bool, speaker_muted: bool = False) -> bool:
+        """发送 Oopz 语音状态。m=0/hm=0 才是正常显示状态。"""
+        if not self._available:
+            return False
+        try:
+            result = self._run_on_browser(
+                "agoraSetVoiceState",
+                bool(mic_muted),
+                bool(speaker_muted),
+            )
+            return bool(result and result.get("ok"))
+        except Exception as e:
+            logger.debug(f"发送 Agora 语音状态失败: {e}")
+            return False
 
     def _start_identity_heartbeat(self):
         """启动后台线程，定期重发身份标识。"""

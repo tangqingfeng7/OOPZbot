@@ -91,8 +91,10 @@ class VoiceClientPlaybackTest(unittest.TestCase):
         def _run(method, *args, **kwargs):
             if method == "agoraJoin":
                 return {"ok": True, "uid": args[3]}
-            if method == "agoraSendIdentity":
+            if method == "agoraSetVoiceIdentity":
                 return {"ok": False, "error": "bridge missing"}
+            if method == "agoraSetVoiceState":
+                return {"ok": True}
             if method == "agoraLeave":
                 return {"ok": True}
             raise AssertionError(f"unexpected browser call: {method}")
@@ -103,7 +105,7 @@ class VoiceClientPlaybackTest(unittest.TestCase):
 
         self.assertFalse(ok)
         methods = [call.args[0] for call in self.client._run_on_browser.call_args_list]
-        self.assertIn("agoraSendIdentity", methods)
+        self.assertIn("agoraSetVoiceIdentity", methods)
         self.assertIn("agoraLeave", methods)
         self.assertIsNone(self.client._current_agora_uid)
 

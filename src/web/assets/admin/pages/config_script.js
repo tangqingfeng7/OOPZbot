@@ -879,14 +879,14 @@
       try {
         const data = await AdminShell.req("/admin/api/config", {
           method: "POST",
-          body: JSON.stringify({ updates: build(), persist: true }),
+          body: JSON.stringify({ updates: build(), persist: !!persist }),
         });
         if (Array.isArray(data.errors) && data.errors.length > 0) {
           AdminShell.showMessage("msg", "部分失败：" + data.errors.join(" | "), true);
           setPageState("配置保存有错误", "error");
         } else {
-          AdminShell.showMessage("msg", data.message || "配置已应用到当前进程");
-          setPageState("配置已应用", "success");
+          AdminShell.showMessage("msg", data.message || (data.persisted ? "配置已保存到 config.py" : "配置已应用到当前进程"));
+          setPageState(data.persisted ? "配置已保存" : "配置已应用", "success");
         }
         await loadConfig();
       } catch (error) {

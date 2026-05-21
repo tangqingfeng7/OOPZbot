@@ -233,7 +233,10 @@ class MusicHandler(PlaybackMixin):
         if not self._voice_channel_id:
             self._cleanup_stale_voice_membership(area)
 
-        agora_pid = self.voice.agora_uid if self.voice and self.voice.available else ""
+        agora_pid, pid_error = self._resolve_voice_rtc_uid()
+        if not agora_pid:
+            logger.warning(f"Bot 进入语音频道失败: {pid_error}")
+            return {"error": pid_error}
         self.sender.enter_area(area=area)
         data = self.sender.enter_channel(
             channel=voice_channel_id, area=area,
@@ -247,7 +250,7 @@ class MusicHandler(PlaybackMixin):
             return data
 
         logger.info(f"Bot 已进入语音频道: {self.names.channel(voice_channel_id)}")
-        ok, error = self._join_agora_room(data)
+        ok, error = self._join_agora_room(data, agora_pid)
         if not ok:
             self._cleanup_failed_voice_join(area, voice_channel_id)
             return {"error": error}
@@ -256,6 +259,26 @@ class MusicHandler(PlaybackMixin):
         self._voice_channel_area = area
         self._voice_enter_time = time.time()
         return data
+
+    def _resolve_voice_rtc_uid(self) -> tuple[str, str]:
+        """获取 Oopz 自身 pid，作为 Agora RTC uid 使用。"""
+        try:
+            detail = self.sender.get_self_detail()
+        except Exception as e:
+            logger.warning(f"获取自身 pid 失败: {e}")
+            return "", "missing_voice_pid"
+        if isinstance(detail, dict) and detail.get("error"):
+            logger.warning(f"获取自身 pid 失败: {detail['error']}")
+            return "", "missing_voice_pid"
+        pid = str((detail or {}).get("pid") or "").strip()
+        if not pid:
+            return "", "missing_voice_pid"
+        try:
+            int(pid)
+        except (TypeError, ValueError):
+            logger.warning(f"自身 pid 不是数字，无法作为 Agora uid: {pid!r}")
+            return "", "invalid_voice_pid"
+        return pid, ""
 
     def _check_and_enter_voice_channel(self, user: str, channel: str, area: str) -> bool:
         """
@@ -314,7 +337,7 @@ class MusicHandler(PlaybackMixin):
 
         return self._do_enter_voice(voice_channel_id, area)
 
-    def _join_agora_room(self, channel_data: dict) -> tuple[bool, str]:
+    def _join_agora_room(self, channel_data: dict, rtc_uid: str = "") -> tuple[bool, str]:
         """使用 enter_channel 返回的凭证连接 Agora RTC。"""
         if not self.voice or not self.voice.available:
             return False, "voice_unavailable"
@@ -328,7 +351,7 @@ class MusicHandler(PlaybackMixin):
             logger.warning("enter_channel 未返回 Agora 凭证，跳过 RTC 连接")
             return False, "missing_agora_credentials"
 
-        uid = int(self.voice.agora_uid)
+        uid = int(channel_data.get("agoraSignPid") or channel_data.get("pid") or rtc_uid)
         ok = self.voice.join(token=token, room_id=room_id, uid=uid)
         if ok:
             logger.info(f"Agora RTC 已连接: room={room_id}, uid={uid}")

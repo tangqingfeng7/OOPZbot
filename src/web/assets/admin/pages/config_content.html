@@ -357,9 +357,9 @@
             <div id="railState" class="micro-status is-warning">等待操作</div>
             <h3 class="rail-block__title">保存操作</h3>
             <div class="action-row">
-              <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存并立即生效</button>
-              <button class="btn btn-ghost" type="button" onclick="loadConfig()">刷新页面数据</button>
-              <button class="btn btn-ghost" type="button" onclick="resetOverrides()">从 config.py 重新加载</button>
+              <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存到 config.py</button>
+              <button class="btn btn-ghost" type="button" onclick="loadConfig()">放弃页面修改</button>
+              <button class="btn btn-ghost" type="button" onclick="resetOverrides()">按 config.py 恢复运行配置</button>
             </div>
             <div id="msg" class="msg"></div>
           </div>
