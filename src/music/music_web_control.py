@@ -104,7 +104,9 @@ class WebControlExecutor:
             next_song["area"] = next_song.get("area") or area
             next_song["play_uuid"] = str(uuid.uuid4())
 
-            h._start_playing(next_song.get("duration_ms", 0))
+            if hasattr(h, "_mark_web_active_area"):
+                h._mark_web_active_area(next_song["area"])
+            h._start_playing(next_song.get("duration_ms", 0), area=next_song["area"])
             h.queue.set_current(next_song)
 
             try:

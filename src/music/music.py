@@ -137,6 +137,16 @@ class MusicHandler(PlaybackMixin):
         """兼容测试注入 mock queue 的旧写法。"""
         self._queue_override = value
 
+    def _mark_web_active_area(self, area: str = "", queue: QueueManager | None = None) -> None:
+        """让 Web 播放器跟随当前真正播放的域。"""
+        area = (area or "").strip()
+        try:
+            q = queue or self._get_queue(area)
+            set_active_area(area, redis_client=getattr(q, "redis", None))
+            self._web_link_released_due_to_idle = False
+        except Exception as e:
+            logger.debug(f"写入 Web 播放器活跃域失败: {e}")
+
     def _init_extra_platforms(self) -> None:
         """初始化并注册 QQ 音乐和 B 站平台（仅在配置启用时）。"""
         try:
@@ -172,10 +182,10 @@ class MusicHandler(PlaybackMixin):
         """获取 Web 播放器链接（按需生成随机访问令牌）。"""
         q = self._get_queue(area)
         redis_client = getattr(q, "redis", None)
+        self._mark_web_active_area(area, queue=q)
         link = _web_player_link(redis_client=redis_client)
         if link:
             self._web_link_released_due_to_idle = False
-            set_active_area(area, redis_client=redis_client)
         return link
 
     def _release_web_link_if_needed(self):
@@ -614,7 +624,8 @@ class MusicHandler(PlaybackMixin):
 
             play_uuid = str(uuid.uuid4())
             next_song["play_uuid"] = play_uuid
-            self._start_playing(next_song.get("duration_ms", 0))
+            self._mark_web_active_area(area, queue=q)
+            self._start_playing(next_song.get("duration_ms", 0), area=area)
             q.set_current(next_song)
 
             SongCache.record_play(
@@ -1242,7 +1253,9 @@ class MusicHandler(PlaybackMixin):
         """将已准备好的歌曲请求正式提交为播放或排队。prefix 用于自定义通知前缀。"""
         song_data = dict(song_data)
 
-        q = self._get_queue(song_data.get("area", ""))
+        area = song_data.get("area", "")
+        q = self._get_queue(area)
+        self._mark_web_active_area(area, queue=q)
         direct_play = False
 
         with self._playback_lock:
@@ -1259,7 +1272,7 @@ class MusicHandler(PlaybackMixin):
                 song_data = dict(song_data)
                 play_uuid = str(uuid.uuid4())
                 song_data["play_uuid"] = play_uuid
-                self._start_playing(song_data.get("duration_ms", 0))
+                self._start_playing(song_data.get("duration_ms", 0), area=area)
                 q.set_current(song_data)
 
                 threading.Thread(

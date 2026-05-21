@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -145,6 +145,43 @@ class MusicModeTest(unittest.TestCase):
         self.assertIsNone(next_song)
         self.assertEqual(source, PLAY_MODE_LIST)
         self.handler.netease.get_user_id.assert_not_called()
+
+    def test_mark_web_active_area_updates_without_generating_link(self) -> None:
+        q = Mock()
+        q.redis = object()
+        self.handler._web_link_released_due_to_idle = True
+
+        with patch("music.music.set_active_area") as set_active_area:
+            self.handler._mark_web_active_area("area-2", queue=q)
+
+        set_active_area.assert_called_once_with("area-2", redis_client=q.redis)
+        self.assertFalse(self.handler._web_link_released_due_to_idle)
+
+    def test_get_web_link_marks_active_area_even_when_link_is_empty(self) -> None:
+        q = Mock()
+        q.redis = object()
+        self.handler._get_queue = Mock(return_value=q)
+        self.handler._web_link_released_due_to_idle = True
+
+        with (
+            patch("music.music._web_player_link", return_value=""),
+            patch("music.music.set_active_area") as set_active_area,
+        ):
+            link = self.handler._get_web_link(area="area-2")
+
+        self.assertEqual(link, "")
+        set_active_area.assert_called_once_with("area-2", redis_client=q.redis)
+        self.assertFalse(self.handler._web_link_released_due_to_idle)
+
+    def test_start_playing_uses_explicit_area_queue(self) -> None:
+        area_queue = Mock()
+        self.handler._get_queue = Mock(return_value=area_queue)
+
+        self.handler._start_playing(120000, area="area-2")
+
+        self.handler._get_queue.assert_called_once_with("area-2")
+        area_queue.set_play_state.assert_called_once()
+        self.handler.queue.set_play_state.assert_not_called()
 
     def test_play_song_choice_reuses_search_result_without_fetching_detail(self) -> None:
         platform = Mock()

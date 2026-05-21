@@ -194,7 +194,9 @@ class PlaybackMixin:
 
                                 play_uuid = str(uuid.uuid4())
                                 next_song["play_uuid"] = play_uuid
-                                self._start_playing(next_song.get("duration_ms", 0))
+                                if hasattr(self, "_mark_web_active_area"):
+                                    self._mark_web_active_area(ar)
+                                self._start_playing(next_song.get("duration_ms", 0), area=ar)
                                 self.queue.set_current(next_song)
 
                                 SongCache.record_play(
@@ -254,13 +256,14 @@ class PlaybackMixin:
     def _stream_to_voice_channel(self, url: str, name: str, channel: str, area: str,
                                  song_id: str = None, duration_ms: int = 0):
         """后台线程：通过 Agora 推流到语音频道"""
+        q = self._get_queue(area) if hasattr(self, "_get_queue") else self.queue
         if not self.voice or not self.voice.available or not self._voice_channel_id:
             logger.warning("语音频道未连接，无法推流")
             self._play_start_time = 0
             self._play_duration = 0
-            self.queue.clear_current()
+            q.clear_current()
             try:
-                self.queue.clear_play_state()
+                q.clear_play_state()
             except Exception as e:
                 logger.debug(f"推流前清理 play_state 失败: {e}")
             return
@@ -268,7 +271,7 @@ class PlaybackMixin:
         def _on_audio_started():
             self._play_start_time = time.time()
             try:
-                self.queue.set_play_state({
+                q.set_play_state({
                     "start_time": self._play_start_time,
                     "duration": self._play_duration,
                     "loading": False,
@@ -284,7 +287,7 @@ class PlaybackMixin:
             if song_id:
                 logger.info(f"推流失败，尝试重新获取音频URL: {name}")
                 try:
-                    current = self.queue.get_current() or {}
+                    current = q.get_current() or {}
                     platform_name = current.get("platform", "netease")
                     p = self.platforms.get(platform_name) if hasattr(self, "platforms") else None
                     refetch = p or self.netease
@@ -299,18 +302,19 @@ class PlaybackMixin:
 
             self._play_start_time = 0
             self._play_duration = 0
-            self.queue.clear_current()
+            q.clear_current()
             try:
-                self.queue.clear_play_state()
+                q.clear_play_state()
             except Exception as clear_e:
                 logger.debug(f"推流失败后清理 play_state 失败: {clear_e}")
 
-    def _start_playing(self, duration_ms: int):
+    def _start_playing(self, duration_ms: int, area: str | None = None):
         """记录播放开始时间和时长，同步到 Redis 供 Web 播放器读取"""
         self._play_start_time = time.time()
         self._play_duration = duration_ms / 1000 if duration_ms else _DEFAULT_PLAY_DURATION
         try:
-            self.queue.set_play_state({
+            q = self._get_queue(area) if area is not None and hasattr(self, "_get_queue") else self.queue
+            q.set_play_state({
                 "start_time": self._play_start_time,
                 "duration": self._play_duration,
                 "loading": True,

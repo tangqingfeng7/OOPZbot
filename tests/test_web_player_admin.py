@@ -1,4 +1,5 @@
 import copy
+import json
 import sys
 import tempfile
 import unittest
@@ -68,6 +69,34 @@ class _FakeNeteaseResponse:
         return self._payload
 
 
+class _FakeRedisPipeline:
+    def __init__(self, redis):
+        self.redis = redis
+        self.keys = []
+
+    def get(self, key):
+        self.keys.append(key)
+        return self
+
+    def execute(self):
+        return [self.redis.get(key) for key in self.keys]
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, *args, **kwargs):
+        self.store[key] = value
+        return True
+
+    def pipeline(self, transaction=False):
+        return _FakeRedisPipeline(self)
+
+
 class WebPlayerAdminTest(unittest.TestCase):
     def setUp(self) -> None:
         if TestClient is None:
@@ -112,6 +141,93 @@ class WebPlayerAdminTest(unittest.TestCase):
         data = response.json()
         self.assertFalse(data["ok"])
         self.assertIn("插件名不合法", data["error"])
+
+    def test_player_page_does_not_pin_stale_active_area(self) -> None:
+        r = _FakeRedis()
+        r.set("music:web_access_token", "token-1")
+        r.set("music:web_active_area", "old-area")
+
+        with patch.object(self.module, "get_redis", return_value=r):
+            response = self.client.get("/w/token-1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('window.__OOPZ_AREA__=""', response.text)
+        self.assertNotIn("old-area", response.text)
+
+    def test_player_page_can_pin_area_when_query_says_so(self) -> None:
+        r = _FakeRedis()
+        r.set("music:web_access_token", "token-1")
+        r.set("music:web_active_area", "old-area")
+
+        with patch.object(self.module, "get_redis", return_value=r):
+            response = self.client.get("/w/token-1?area=area-2")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('window.__OOPZ_AREA__="area-2"', response.text)
+
+    def test_player_cookie_is_not_secure_on_plain_http(self) -> None:
+        r = _FakeRedis()
+        r.set("music:web_access_token", "token-1")
+
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module.cfg, "cookie_secure", return_value=True),
+        ):
+            response = self.client.get("/w/token-1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("web_token=token-1", response.headers["set-cookie"])
+        self.assertNotIn("Secure", response.headers["set-cookie"])
+
+    def test_player_cookie_stays_secure_behind_https_proxy(self) -> None:
+        r = _FakeRedis()
+        r.set("music:web_access_token", "token-1")
+
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module.cfg, "cookie_secure", return_value=True),
+        ):
+            response = self.client.get("/w/token-1", headers={"x-forwarded-proto": "https"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("web_token=token-1", response.headers["set-cookie"])
+        self.assertIn("Secure", response.headers["set-cookie"])
+
+    def test_status_without_area_follows_active_area(self) -> None:
+        r = _FakeRedis()
+        r.set("music:web_access_token", "token-1")
+        r.set("music:web_active_area", "area-2")
+        r.set(
+            self.module._area_key(self.module.KEY_CURRENT, "area-2"),
+            json.dumps({"name": "稻香", "duration_ms": 222000}, ensure_ascii=False),
+        )
+
+        self.client.cookies.set("web_token", "token-1")
+        with patch.object(self.module, "get_redis", return_value=r):
+            response = self.client.get("/api/status")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["playing"])
+        self.assertEqual(data["name"], "稻香")
+
+    def test_control_without_area_follows_active_area(self) -> None:
+        r = _FakeRedis()
+        r.set("music:web_access_token", "token-1")
+        r.set("music:web_active_area", "area-2")
+
+        def fake_control(action, body, redis_client, area=""):
+            return {"ok": True, "area": area, "action": action}
+
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "execute_control_action", side_effect=fake_control),
+        ):
+            self.client.cookies.set("web_token", "token-1")
+            response = self.client.post("/api/control", json={"action": "volume", "volume": 50})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["area"], "area-2")
 
     def test_config_update_writes_config_py(self) -> None:
         import web.web_player_admin as web_player_admin

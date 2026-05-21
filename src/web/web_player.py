@@ -153,6 +153,14 @@ def reset_redis(force: bool = False) -> None:
     _redis = get_redis_client(force_reset=True) if force else None
 
 
+def _resolve_area(redis_client: redis.Redis, area: str = "") -> str:
+    """未显式指定区域时，跟随当前活跃播放区域。"""
+    area = (area or "").strip()
+    if area:
+        return area
+    return (get_active_area(redis_client=redis_client) or "").strip()
+
+
 def get_netease() -> NeteaseCloud:
     global _netease
     if _netease is None:
@@ -252,6 +260,18 @@ def _client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return (request.client.host if request.client else "unknown")
+
+
+def _request_is_https(request: Request) -> bool:
+    proto = request.headers.get("x-forwarded-proto", "")
+    if proto:
+        return proto.split(",")[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
+def _player_cookie_secure(request: Request) -> bool:
+    """HTTP 访问时不能设置 Secure，否则浏览器后续不会带 web_token。"""
+    return cfg.cookie_secure() and _request_is_https(request)
 
 
 @app.middleware("http")
@@ -458,8 +478,7 @@ def _filter_songs_by_keyword(songs: list, keyword: str) -> list:
 def api_status(area: str = Query("", description="域 ID，用于多域隔离")):
     try:
         r = get_redis()
-        if not area:
-            area = get_active_area(redis_client=r)
+        area = _resolve_area(r, area)
         current_key = _area_key(KEY_CURRENT, area)
         ps_key = _area_key(KEY_PLAY_STATE, area)
 
@@ -568,8 +587,7 @@ def api_lyric(id: str = Query(...), platform: str = Query("netease")):
 def api_queue(area: str = Query("", description="域 ID，用于多域隔离")):
     try:
         r = get_redis()
-        if not area:
-            area = get_active_area(redis_client=r)
+        area = _resolve_area(r, area)
         queue_key = _area_key(KEY_QUEUE, area)
         items = r.lrange(queue_key, 0, -1)
         queue: list[dict] = []
@@ -691,6 +709,7 @@ async def api_add(request: Request, area: str = Query("", description="域 ID"))
     """通过歌曲 ID 添加到播放队列"""
     try:
         body = await request.json()
+        area = _resolve_area(get_redis(), area)
         return JSONResponse(add_song_to_queue(body=body, area=area))
     except Exception as e:
         logger.error(f"/api/add 异常: {e}")
@@ -703,7 +722,9 @@ async def api_control(request: Request, area: str = Query("", description="域 I
     try:
         body = await request.json()
         action = body.get("action", "")
-        result = execute_control_action(action=action, body=body, redis_client=get_redis(), area=area)
+        r = get_redis()
+        area = _resolve_area(r, area)
+        result = execute_control_action(action=action, body=body, redis_client=r, area=area)
         return JSONResponse(result)
     except Exception as e:
         logger.error(f"/api/control 异常: {e}")
@@ -717,7 +738,9 @@ async def api_queue_action(request: Request, area: str = Query("", description="
         body = await request.json()
         action = body.get("action", "")
         index = body.get("index", -1)
-        return JSONResponse(execute_queue_action(action=action, index=index, redis_client=get_redis(), area=area))
+        r = get_redis()
+        area = _resolve_area(r, area)
+        return JSONResponse(execute_queue_action(action=action, index=index, redis_client=r, area=area))
     except Exception as e:
         logger.error(f"/api/queue/action 异常: {e}")
         return JSONResponse({"ok": False, "error": str(e)})
@@ -793,24 +816,28 @@ def index():
 
 
 @app.get("/w/{token}", response_class=HTMLResponse)
-def index_with_token(token: str):
+def index_with_token(token: str, request: Request):
     r = get_redis()
     active = get_token(redis_client=r)
     if not active or not secrets.compare_digest(token, active):
         return HTMLResponse("播放器链接无效或已失效，请重新让 Bot 发送最新链接。", status_code=403)
     set_token(token, redis_client=r, ttl_seconds=cfg.token_ttl_seconds())
-    area = get_active_area(redis_client=r)
+    area = (request.query_params.get("area") or "").strip()
     html_path = os.path.join(_WEB_ASSETS_DIR, "player.html")
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
-    html = html.replace("</head>", f'<script>window.__OOPZ_AREA__="{area}";</script></head>', 1)
+    html = html.replace(
+        "</head>",
+        f"<script>window.__OOPZ_AREA__={json.dumps(area)};</script></head>",
+        1,
+    )
     resp = HTMLResponse(html)
     resp.set_cookie(
         key="web_token",
         value=token,
         httponly=True,
         samesite="lax",
-        secure=cfg.cookie_secure(),
+        secure=_player_cookie_secure(request),
         max_age=cfg.cookie_max_age_seconds(),
     )
     return resp
