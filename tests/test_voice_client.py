@@ -23,6 +23,7 @@ class VoiceClientPlaybackTest(unittest.TestCase):
         self.client._on_play_start_callback = None
         self.client._remote_last_fail = 0
         self.client._temp_audio_path = None
+        self.client._current_agora_uid = None
         self.client.get_state = Mock(return_value="finished")
 
     def test_do_play_prefers_remote_url_before_local_download(self) -> None:
@@ -75,6 +76,36 @@ class VoiceClientPlaybackTest(unittest.TestCase):
         remote_calls = [u for u in play_urls if u.startswith("http")]
         self.assertEqual(len(remote_calls), 0, "Should skip remote when recently failed")
         self.client._download_audio_with_retry.assert_called_once()
+
+    def test_join_rolls_back_when_initial_identity_fails(self) -> None:
+        self.client._available = True
+        self.client._app_id = "app-id"
+        self.client._agora_uid = "123456"
+        self.client._oopz_uid = "oopz-user"
+        self.client._identity_stop = threading.Event()
+        self.client._identity_thread = None
+        self.client._play_thread = None
+        self.client._stop_identity_heartbeat = Mock()
+        self.client.stop_audio = Mock()
+
+        def _run(method, *args, **kwargs):
+            if method == "agoraJoin":
+                return {"ok": True, "uid": args[3]}
+            if method == "agoraSendIdentity":
+                return {"ok": False, "error": "bridge missing"}
+            if method == "agoraLeave":
+                return {"ok": True}
+            raise AssertionError(f"unexpected browser call: {method}")
+
+        self.client._run_on_browser = Mock(side_effect=_run)
+
+        ok = self.client.join(token="token", room_id="room", uid=123456)
+
+        self.assertFalse(ok)
+        methods = [call.args[0] for call in self.client._run_on_browser.call_args_list]
+        self.assertIn("agoraSendIdentity", methods)
+        self.assertIn("agoraLeave", methods)
+        self.assertIsNone(self.client._current_agora_uid)
 
 
 if __name__ == "__main__":

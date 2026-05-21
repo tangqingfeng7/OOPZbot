@@ -247,7 +247,11 @@ class MusicHandler(PlaybackMixin):
             return data
 
         logger.info(f"Bot 已进入语音频道: {self.names.channel(voice_channel_id)}")
-        self._join_agora_room(data)
+        ok, error = self._join_agora_room(data)
+        if not ok:
+            self._cleanup_failed_voice_join(area, voice_channel_id)
+            return {"error": error}
+
         self._voice_channel_id = voice_channel_id
         self._voice_channel_area = area
         self._voice_enter_time = time.time()
@@ -310,10 +314,10 @@ class MusicHandler(PlaybackMixin):
 
         return self._do_enter_voice(voice_channel_id, area)
 
-    def _join_agora_room(self, channel_data: dict):
+    def _join_agora_room(self, channel_data: dict) -> tuple[bool, str]:
         """使用 enter_channel 返回的凭证连接 Agora RTC。"""
         if not self.voice or not self.voice.available:
-            return
+            return False, "voice_unavailable"
 
         token = channel_data.get("supplierSign", "")
         room_id = channel_data.get("roomId", "")
@@ -322,15 +326,31 @@ class MusicHandler(PlaybackMixin):
                      f"roomId={room_id}, supplierSign={'有' if token else '空'}")
         if not token or not room_id:
             logger.warning("enter_channel 未返回 Agora 凭证，跳过 RTC 连接")
-            return
+            return False, "missing_agora_credentials"
 
         uid = int(self.voice.agora_uid)
         ok = self.voice.join(token=token, room_id=room_id, uid=uid)
         if ok:
             logger.info(f"Agora RTC 已连接: room={room_id}, uid={uid}")
             self._restore_volume_from_redis()
+            return True, ""
         else:
             logger.warning("Agora RTC 连接失败")
+            return False, "agora_join_failed"
+
+    def _cleanup_failed_voice_join(self, area: str, channel: str) -> None:
+        """进入 Oopz 语音频道后若 RTC 未连上，立即清掉服务端语音状态。"""
+        if self.voice and self.voice.available:
+            try:
+                self.voice.leave()
+            except Exception as e:
+                logger.debug(f"清理失败语音连接时断开 Agora 异常: {e}")
+        try:
+            result = self.sender.leave_voice_channel(channel=channel, area=area)
+            if isinstance(result, dict) and result.get("error"):
+                logger.warning(f"清理失败语音频道状态失败: {result['error']}")
+        except Exception as e:
+            logger.warning(f"清理失败语音频道状态异常: {e}")
 
     def _restore_volume_from_redis(self) -> None:
         """从 Redis 恢复用户上次设置的播放音量。

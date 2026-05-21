@@ -84,6 +84,7 @@ class VoiceClient:
         self._preloaded: dict = {}
         self._preload_lock = threading.Lock()
         self._identity_thread: Optional[threading.Thread] = None
+        self._current_agora_uid: Optional[int] = None
         self._on_play_start_callback = None
         self._remote_last_fail: float = 0
         self._temp_audio_path: Optional[str] = None
@@ -352,13 +353,22 @@ class VoiceClient:
         if uid is None:
             uid = int(self._agora_uid)
         try:
+            uid = int(uid)
+        except (TypeError, ValueError):
+            logger.warning(f"加入 Agora 房间失败: uid 非数字 ({uid!r})")
+            return False
+        try:
             logger.info(f"正在加入 Agora 房间: room={room_id}, uid={uid}")
             result = self._run_on_browser(
                 "agoraJoin", self._app_id, token, room_id, uid,
             )
             if result and result.get("ok"):
                 logger.info(f"已加入 Agora 房间: {room_id} (uid={result.get('uid')})")
-                self._send_identity()
+                self._current_agora_uid = int(uid)
+                if not self._send_identity():
+                    logger.warning("首次 Agora 身份标识发送失败，退出当前语音房间")
+                    self.leave()
+                    return False
                 self._start_identity_heartbeat()
                 return True
             err = result.get("error", "未知") if result else "无响应"
@@ -472,6 +482,8 @@ class VoiceClient:
             logger.info("已离开 Agora 房间")
         except Exception as e:
             logger.warning(f"离开 Agora 房间异常: {e}")
+        finally:
+            self._current_agora_uid = None
 
     def destroy(self):
         """释放浏览器资源（进程退出时调用）。"""
@@ -499,22 +511,24 @@ class VoiceClient:
     # 内部实现
     # ------------------------------------------------------------------
 
-    def _send_identity(self):
+    def _send_identity(self) -> bool:
         """通过 Agora data stream 发送身份标识，让服务端关联 Oopz uid ↔ Agora uid。"""
         if not self._available or not self._oopz_uid:
-            return
+            return False
         try:
-            agora_uid_int = int(self._agora_uid)
+            agora_uid = self._current_agora_uid if self._current_agora_uid is not None else self._agora_uid
+            agora_uid_int = int(agora_uid)
             result = self._run_on_browser(
                 "agoraSendIdentity", self._oopz_uid, agora_uid_int,
             )
             if result and result.get("ok"):
                 logger.debug("已发送 Agora 身份标识")
-            else:
-                err = result.get("error", "未知") if result else "无响应"
-                logger.warning(f"发送 Agora 身份标识失败: {err}")
+                return True
+            err = result.get("error", "未知") if result else "无响应"
+            logger.warning(f"发送 Agora 身份标识失败: {err}")
         except Exception as e:
             logger.warning(f"发送 Agora 身份标识异常: {e}")
+        return False
 
     def _start_identity_heartbeat(self):
         """启动后台线程，定期重发身份标识。"""
