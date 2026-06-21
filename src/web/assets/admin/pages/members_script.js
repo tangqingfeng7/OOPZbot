@@ -1,8 +1,16 @@
     var currentOffset = 0;
     var pageSize = 50;
     var totalMembers = 0;
-    var _modalResolve = null;
     var currentArea = "";
+
+    var MUTE_PRESETS = [
+      { min: 1, val: "1", unit: "分钟" },
+      { min: 5, val: "5", unit: "分钟" },
+      { min: 60, val: "1", unit: "小时" },
+      { min: 1440, val: "1", unit: "天" },
+      { min: 4320, val: "3", unit: "天" },
+      { min: 10080, val: "7", unit: "天" },
+    ];
 
     function getArea() { return currentArea; }
 
@@ -48,64 +56,42 @@
 
     /* ========= 自定义弹窗 ========= */
 
-    function openModal(title, bodyHtml, footerHtml) {
-      AdminShell.byId("modalTitle").textContent = title;
-      AdminShell.byId("modalBody").innerHTML = bodyHtml;
-      AdminShell.byId("modalFooter").innerHTML = footerHtml || "";
-      AdminShell.byId("modalOverlay").classList.add("is-open");
-      AdminShell.byId("modalDialog").classList.add("is-open");
-    }
-
-    function closeModal() {
-      var dialog = AdminShell.byId("modalDialog");
-      var overlay = AdminShell.byId("modalOverlay");
-      dialog.classList.remove("is-open");
-      overlay.classList.remove("is-open");
-      if (_modalResolve) { _modalResolve(null); _modalResolve = null; }
-    }
-
     function pickDuration(type) {
       var label = type === "mic" ? "禁麦" : "禁言";
-      var options = [
-        { min: 1, val: "1", unit: "分钟" },
-        { min: 5, val: "5", unit: "分钟" },
-        { min: 60, val: "1", unit: "小时" },
-        { min: 1440, val: "1", unit: "天" },
-        { min: 4320, val: "3", unit: "天" },
-        { min: 10080, val: "7", unit: "天" },
-      ];
-      var grid = '<div class="m-duration-grid">' + options.map(function (o) {
-        return '<button class="m-duration-btn" onclick="_modalResolve(' + o.min + ');closeModal()">' +
-          '<span class="m-duration-btn__val">' + o.val + '</span>' +
-          '<span class="m-duration-btn__unit">' + o.unit + '</span>' +
-          '</button>';
-      }).join("") + '</div>';
-
       return new Promise(function (resolve) {
-        _modalResolve = resolve;
-        openModal(label + "时长", grid, '<button class="btn btn-ghost" onclick="closeModal()">取消</button>');
-      });
-    }
+        var settled = false;
+        function done(value) {
+          if (settled) return;
+          settled = true;
+          AdminShell.closeModal();
+          resolve(value);
+        }
+        var grid = document.createElement("div");
+        grid.className = "m-duration-grid";
+        MUTE_PRESETS.forEach(function (preset) {
+          var btn = document.createElement("button");
+          btn.className = "m-duration-btn";
+          btn.innerHTML =
+            '<span class="m-duration-btn__val">' + preset.val + "</span>" +
+            '<span class="m-duration-btn__unit">' + preset.unit + "</span>";
+          btn.addEventListener("click", function () { done(preset.min); });
+          grid.appendChild(btn);
+        });
 
-    function confirmAction(title, message) {
-      return new Promise(function (resolve) {
-        _modalResolve = function () { resolve(false); };
-        var body = '<div class="m-confirm-text">' + message + '</div>';
-        var foot =
-          '<button class="btn btn-ghost" onclick="closeModal()">取消</button>' +
-          '<button class="btn btn-danger" onclick="_modalResolve=null;closeModal();(' + resolve.name + ' || arguments.callee).__cb(true)">确认</button>';
-        openModal(title, body, '');
-        AdminShell.byId("modalFooter").innerHTML = "";
-        var cancelBtn = document.createElement("button");
-        cancelBtn.className = "btn btn-ghost";
-        cancelBtn.textContent = "取消";
-        cancelBtn.onclick = function () { closeModal(); resolve(false); };
-        var okBtn = document.createElement("button");
-        okBtn.className = "btn btn-danger";
-        okBtn.textContent = "确认";
-        okBtn.onclick = function () { _modalResolve = null; closeModal(); resolve(true); };
-        AdminShell.byId("modalFooter").appendChild(cancelBtn);
-        AdminShell.byId("modalFooter").appendChild(okBtn);
+        AdminShell.openModal(label + "时长", "", null, function () {
+          if (!settled) { settled = true; resolve(0); }
+        });
+        var bodyEl = AdminShell.byId("modalBody");
+        if (bodyEl) { bodyEl.innerHTML = ""; bodyEl.appendChild(grid); }
+        var footEl = AdminShell.byId("modalFooter");
+        if (footEl) {
+          footEl.innerHTML = "";
+          var cancelBtn = document.createElement("button");
+          cancelBtn.className = "btn btn-ghost";
+          cancelBtn.textContent = "取消";
+          cancelBtn.addEventListener("click", function () { done(0); });
+          footEl.appendChild(cancelBtn);
+        }
       });
     }
 
@@ -406,7 +392,7 @@
     }
 
     async function doKick(uid) {
-      var ok = await confirmAction("踢出用户", "确认将该用户<strong>踢出域</strong>？此操作不可撤销。");
+      var ok = await AdminShell.confirm("踢出用户", "确认将该用户<strong>踢出域</strong>？此操作不可撤销。");
       if (!ok) return;
       try {
         await AdminShell.req("/admin/api/members/" + uid + "/kick", { method: "POST", body: JSON.stringify({ area: getArea() }) });
@@ -417,7 +403,7 @@
     }
 
     async function doBlock(uid) {
-      var ok = await confirmAction("封禁用户", "确认<strong>封禁</strong>该用户？封禁后将被踢出域且无法再加入。");
+      var ok = await AdminShell.confirm("封禁用户", "确认<strong>封禁</strong>该用户？封禁后将被踢出域且无法再加入。");
       if (!ok) return;
       try {
         await AdminShell.req("/admin/api/members/" + uid + "/block", { method: "POST", body: JSON.stringify({ area: getArea() }) });
@@ -460,7 +446,7 @@
     /* ========= Bot 管理员操作 ========= */
 
     async function doGrantAdmin(uid) {
-      var ok = await confirmAction("设为管理员", "确认将该用户设为 <strong>Bot 管理员</strong>？管理员可执行所有管理命令。");
+      var ok = await AdminShell.confirm("设为管理员", "确认将该用户设为 <strong>Bot 管理员</strong>？管理员可执行所有管理命令。");
       if (!ok) return;
       try {
         await AdminShell.req("/admin/api/bot-admins", {
@@ -473,7 +459,7 @@
     }
 
     async function doRemoveAdmin(uid) {
-      var ok = await confirmAction("撤销管理员", "确认<strong>撤销</strong>该用户的 Bot 管理员权限？");
+      var ok = await AdminShell.confirm("撤销管理员", "确认<strong>撤销</strong>该用户的 Bot 管理员权限？");
       if (!ok) return;
       try {
         await AdminShell.req("/admin/api/bot-admins/" + uid, { method: "DELETE" });
@@ -662,5 +648,8 @@
       await check();
     }
 
+    AdminShell.registerActions({
+      "refresh-members": () => loadMembers(),
+    });
     AdminShell.init({ page: "members", passwordHandler: login });
     check();

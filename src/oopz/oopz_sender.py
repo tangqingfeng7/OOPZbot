@@ -124,6 +124,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
     # 全局速率限制: 最小请求间隔 (秒), 即 1/max_rps
     _RATE_LIMIT_INTERVAL = 0.35  # ~3 req/s
+    _AUTH_REFRESH_STATUSES = {401, 403, 428}
 
     def __init__(self):
         self.signer = Signer()
@@ -134,6 +135,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         self._area_members_stale_ttl = 300.0
         self._cache_max_entries = 200
         self._rate_lock = threading.Lock()
+        self._auth_refresh_lock = threading.Lock()
         self._last_request_time = 0.0
         # 代理：留空/不设=使用系统代理(HTTP_PROXY/HTTPS_PROXY)；False 或 "direct"=直连；或 "http://ip:port"
         proxy_settings = configure_requests_session(self.session, OOPZ_CONFIG.get("proxy"))
@@ -159,7 +161,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
     # ---- 内部 ----
 
-    def _request(self, method: str, url_path: str, body: dict | None = None) -> requests.Response:
+    def _signed_request_once(self, method: str, url_path: str, body: dict | None = None) -> requests.Response:
         """统一处理带签名的 HTTP 请求（POST/PUT/DELETE）。"""
         self._throttle()
         if body is not None:
@@ -176,6 +178,51 @@ class OopzSender(UploadMixin, OopzApiMixin):
         url = OOPZ_CONFIG["base_url"] + url_path
         return self.session.request(method, url, headers=headers, data=data)
 
+    def _refresh_credentials_after_auth_failure(self, status_code: int) -> bool:
+        with self._auth_refresh_lock:
+            try:
+                from oopz.oopz_password_login import (
+                    OopzPasswordLoginError,
+                    load_private_key_from_pem,
+                    refresh_credentials_from_config_password,
+                )
+
+                credentials = refresh_credentials_from_config_password(timeout=20, save=True)
+            except OopzPasswordLoginError as exc:
+                logger.warning("OOPZ 登录态失效，自动刷新失败，继续使用现有凭据: HTTP %s, %s", status_code, exc)
+                return False
+            except Exception as exc:
+                logger.warning("OOPZ 登录态失效，自动刷新异常，继续使用现有凭据: HTTP %s, %s", status_code, exc, exc_info=True)
+                return False
+
+            if not credentials:
+                logger.warning(
+                    "OOPZ 登录态失效: HTTP %s。未配置 login_phone/login_password 或 phone/password，无法自动刷新凭据。",
+                    status_code,
+                )
+                return False
+
+            pem = str(credentials.get("private_key_pem") or "").strip()
+            if pem:
+                try:
+                    self.signer.private_key = load_private_key_from_pem(pem)
+                except Exception as exc:
+                    logger.warning("OOPZ 登录态已刷新，但更新签名私钥失败: %s", exc, exc_info=True)
+                    return False
+
+            cache = getattr(self, "_area_members_cache", None)
+            if isinstance(cache, dict):
+                cache.clear()
+            logger.info("OOPZ 登录态已自动刷新，正在重试刚才失败的请求")
+            return True
+
+    def _request(self, method: str, url_path: str, body: dict | None = None) -> requests.Response:
+        """统一处理带签名的 HTTP 请求（POST/PUT/DELETE）。"""
+        resp = self._signed_request_once(method, url_path, body)
+        if resp.status_code in self._AUTH_REFRESH_STATUSES and self._refresh_credentials_after_auth_failure(resp.status_code):
+            resp = self._signed_request_once(method, url_path, body)
+        return resp
+
     def _post(self, url_path: str, body: dict) -> requests.Response:
         return self._request("POST", url_path, body)
 
@@ -186,7 +233,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         """DELETE 请求，部分撤回接口可能用 DELETE 方法"""
         return self._request("DELETE", url_path, body)
 
-    def _get(self, url_path: str, params: Optional[dict] = None) -> requests.Response:
+    def _get_once(self, url_path: str, params: Optional[dict] = None) -> requests.Response:
         """GET 请求（签名包含查询参数）。"""
         self._throttle()
         if params:
@@ -198,6 +245,13 @@ class OopzSender(UploadMixin, OopzApiMixin):
         headers = {**self.session.headers, **self.signer.oopz_headers(sign_path, "")}
         url = OOPZ_CONFIG["base_url"] + url_path
         return self.session.get(url, headers=headers, params=params, timeout=10)
+
+    def _get(self, url_path: str, params: Optional[dict] = None) -> requests.Response:
+        """GET 请求（签名包含查询参数）。"""
+        resp = self._get_once(url_path, params=params)
+        if resp.status_code in self._AUTH_REFRESH_STATUSES and self._refresh_credentials_after_auth_failure(resp.status_code):
+            resp = self._get_once(url_path, params=params)
+        return resp
 
     # ---- 发送消息 ----
 

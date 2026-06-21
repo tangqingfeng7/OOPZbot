@@ -99,5 +99,9 @@
       }
     }
 
+    AdminShell.registerActions({
+      "refresh-stats": () => loadTop(),
+      "clear-history": () => clearHistory(),
+    });
     AdminShell.init({ page: "stats", passwordHandler: login });
     check();

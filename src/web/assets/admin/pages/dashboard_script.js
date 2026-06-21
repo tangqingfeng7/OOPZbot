@@ -126,6 +126,9 @@
       await check();
     }
 
+    AdminShell.registerActions({
+      "refresh-overview": () => loadOverview(),
+    });
     AdminShell.init({ page: "dashboard", passwordHandler: login });
     check();
 

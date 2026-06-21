@@ -442,5 +442,8 @@
       }
     }
 
+    AdminShell.registerActions({
+      "refresh-plugins": () => loadPlugins(),
+    });
     AdminShell.init({ page: "plugins", passwordHandler: login });
     check();

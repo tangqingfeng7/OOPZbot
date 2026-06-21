@@ -206,5 +206,8 @@
       await check();
     }
 
+    AdminShell.registerActions({
+      "refresh-activity": () => loadActivity(),
+    });
     AdminShell.init({ page: "activity", passwordHandler: login });
     check();

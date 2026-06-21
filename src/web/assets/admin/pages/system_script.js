@@ -133,6 +133,10 @@
       }
     }
 
+    AdminShell.registerActions({
+      "refresh-system": () => loadSys(),
+      "refresh-logs": () => loadLogs(logTailSize),
+    });
     AdminShell.init({ page: "system", passwordHandler: login });
     check();
 

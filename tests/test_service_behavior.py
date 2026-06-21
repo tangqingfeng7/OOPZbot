@@ -439,6 +439,49 @@ class RecallServiceTest(unittest.TestCase):
         self.assertEqual(self.sender.send_message.call_count, 2)
 
 
+class MessageRecallSchedulerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sender = Mock()
+        self.runtime = SimpleNamespace(infrastructure=SimpleNamespace(sender=self.sender))
+
+    def test_schedules_recall_on_single_worker(self) -> None:
+        import time
+        import app.services.safety.message_recall_scheduler as module
+
+        config = {"enabled": True, "delay": 0.01, "max_pending": 10, "exclude_commands": []}
+        with patch.object(module, "AUTO_RECALL_CONFIG", config):
+            service = module.MessageRecallScheduler(self.runtime)
+            try:
+                service.schedule_user_message_recall("msg-1", "channel-1", "area-1", "ts-1")
+                deadline = time.time() + 1.0
+                while time.time() < deadline and not self.sender.recall_message.called:
+                    time.sleep(0.01)
+
+                self.sender.recall_message.assert_called_once_with(
+                    message_id="msg-1",
+                    area="area-1",
+                    channel="channel-1",
+                    timestamp="ts-1",
+                )
+            finally:
+                service.stop()
+
+    def test_pending_limit_skips_extra_tasks(self) -> None:
+        import app.services.safety.message_recall_scheduler as module
+
+        config = {"enabled": True, "delay": 30, "max_pending": 1, "exclude_commands": []}
+        with patch.object(module, "AUTO_RECALL_CONFIG", config):
+            service = module.MessageRecallScheduler(self.runtime)
+            try:
+                service.schedule_user_message_recall("msg-1", "channel-1", "area-1")
+                service.schedule_user_message_recall("msg-2", "channel-1", "area-1")
+
+                self.assertEqual(service.cancel_all(), 1)
+                self.sender.recall_message.assert_not_called()
+            finally:
+                service.stop()
+
+
 class ModerationServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()

@@ -188,5 +188,8 @@
       await check();
     }
 
+    AdminShell.registerActions({
+      "refresh-diagnostics": () => loadDiagnostics(),
+    });
     AdminShell.init({ page: "setup", passwordHandler: login });
     check();

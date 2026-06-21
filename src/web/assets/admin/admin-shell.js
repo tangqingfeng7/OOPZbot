@@ -36,7 +36,10 @@
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) {
-      throw new Error(data.error || ("HTTP " + response.status));
+      const detail = Array.isArray(data.errors) && data.errors.length > 0
+        ? data.errors.join(" | ")
+        : "";
+      throw new Error(data.error || detail || ("HTTP " + response.status));
     }
     return data;
   }
@@ -311,10 +314,6 @@
     });
   }
 
-  function bindHoverMotion() {
-    return;
-  }
-
   async function copyText(value) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(value);
@@ -335,7 +334,6 @@
     const settings = options || {};
     const currentPage = settings.page || document.body.dataset.adminPage || "";
     renderNav(currentPage);
-    bindHoverMotion();
     animateEnter();
     if (settings.passwordHandler) {
       bindEnterSubmit(settings.passwordId || "pwd", settings.passwordHandler);
@@ -498,15 +496,141 @@
       .replaceAll("'", "&#39;");
   }
 
+  // -------------------------------------------------------------------------
+  // Modal subsystem (shared dialog reused across admin pages)
+  // Pages must provide #modalOverlay / #modalDialog / #modalTitle /
+  // #modalBody / #modalFooter in their markup.
+  // -------------------------------------------------------------------------
+
+  let _modalCloseCb = null;
+
+  function _modalEls() {
+    return {
+      overlay: byId("modalOverlay"),
+      dialog: byId("modalDialog"),
+      title: byId("modalTitle"),
+      body: byId("modalBody"),
+      footer: byId("modalFooter"),
+    };
+  }
+
+  function openModal(title, bodyHtml, footerHtml, onClose) {
+    const els = _modalEls();
+    if (!els.dialog || !els.overlay) {
+      return els;
+    }
+    _modalCloseCb = typeof onClose === "function" ? onClose : null;
+    if (els.title) {
+      els.title.textContent = title || "";
+    }
+    if (els.body) {
+      els.body.innerHTML = bodyHtml || "";
+    }
+    if (els.footer) {
+      els.footer.innerHTML = footerHtml || "";
+    }
+    els.overlay.classList.add("is-open");
+    els.dialog.classList.add("is-open");
+    return els;
+  }
+
+  function closeModal() {
+    const els = _modalEls();
+    if (els.dialog) {
+      els.dialog.classList.remove("is-open");
+    }
+    if (els.overlay) {
+      els.overlay.classList.remove("is-open");
+    }
+    const cb = _modalCloseCb;
+    _modalCloseCb = null;
+    if (cb) {
+      cb();
+    }
+  }
+
+  function confirm(title, message, options) {
+    const opts = options || {};
+    return new Promise((resolve) => {
+      const els = _modalEls();
+      if (!els.dialog || !els.footer) {
+        resolve(false);
+        return;
+      }
+      let settled = false;
+      const done = (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        closeModal();
+        resolve(value);
+      };
+      openModal(
+        title,
+        '<div class="m-confirm-text">' + (message || "") + "</div>",
+        null,
+        () => {
+          if (!settled) {
+            settled = true;
+            resolve(false);
+          }
+        }
+      );
+      els.footer.innerHTML = "";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-ghost";
+      cancelBtn.textContent = opts.cancelText || "取消";
+      cancelBtn.addEventListener("click", () => done(false));
+      const okBtn = document.createElement("button");
+      okBtn.className = "btn " + (opts.danger === false ? "btn-primary" : "btn-danger");
+      okBtn.textContent = opts.okText || "确认";
+      okBtn.addEventListener("click", () => done(true));
+      els.footer.appendChild(cancelBtn);
+      els.footer.appendChild(okBtn);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Action registry (data-action + event delegation)
+  // Pages register handlers by action key; topbar/page buttons carry only
+  // data-action so behavior stays in JS instead of inline onclick markup.
+  // -------------------------------------------------------------------------
+
+  const _actionHandlers = Object.create(null);
+
+  function registerActions(handlers) {
+    Object.assign(_actionHandlers, handlers || {});
+  }
+
+  document.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-action]");
+    if (!trigger) {
+      return;
+    }
+    const handler = _actionHandlers[trigger.dataset.action];
+    if (!handler) {
+      return;
+    }
+    event.preventDefault();
+    Promise.resolve()
+      .then(() => handler(trigger, event))
+      .catch(() => {});
+  });
+
   window.AdminShell = {
     animateNumber,
     animatePanel,
     byId,
+    closeModal,
+    confirm,
     copyText,
     escapeHtml,
     flashUpdate,
     init,
+    openModal,
     refreshCustomSelect,
+    registerActions,
     req,
     setAuthState,
     setMicroStatus,

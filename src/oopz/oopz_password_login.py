@@ -628,8 +628,18 @@ def login_with_api_password(
 
 
 def _config_login_account(oopz_config: Mapping[str, Any]) -> tuple[str, str]:
-    phone = os.environ.get("OOPZ_PHONE") or oopz_config.get("login_phone") or ""
-    password = os.environ.get("OOPZ_PASSWORD") or oopz_config.get("login_password") or ""
+    phone = (
+        os.environ.get("OOPZ_PHONE")
+        or oopz_config.get("login_phone")
+        or oopz_config.get("phone")
+        or ""
+    )
+    password = (
+        os.environ.get("OOPZ_PASSWORD")
+        or oopz_config.get("login_password")
+        or oopz_config.get("password")
+        or ""
+    )
     return str(phone).strip(), str(password or "")
 
 

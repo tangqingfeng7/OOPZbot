@@ -549,6 +549,9 @@
       }
     }
 
+    AdminShell.registerActions({
+      "refresh-areas": () => loadAreaManager(),
+    });
     AdminShell.init({ page: "areas", passwordHandler: login });
     AdminShell.upgradeSelect("ac_default_channel_select");
     AdminShell.upgradeSelect("ac_auto_role_select");

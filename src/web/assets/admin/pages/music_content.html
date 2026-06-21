@@ -2,11 +2,11 @@
         <article class="surface-card">
           <div class="action-row">
             <span id="ctlState" class="micro-status is-neutral">等待操作</span>
-            <button class="btn" type="button" onclick="control('pause')">暂停</button>
-            <button class="btn" type="button" onclick="control('resume')">恢复</button>
-            <button class="btn" type="button" onclick="control('next')">下一首</button>
-            <button class="btn btn-danger" type="button" onclick="control('stop')">停止</button>
-            <button class="btn btn-danger" type="button" onclick="clearQueue()">清空队列</button>
+            <button class="btn" type="button" data-action="control" data-control="pause">暂停</button>
+            <button class="btn" type="button" data-action="control" data-control="resume">恢复</button>
+            <button class="btn" type="button" data-action="control" data-control="next">下一首</button>
+            <button class="btn btn-danger" type="button" data-action="control" data-control="stop">停止</button>
+            <button class="btn btn-danger" type="button" data-action="clear-queue">清空队列</button>
           </div>
           <div class="action-row" style="margin-top: 12px;">
             <span id="musicAreaState" class="micro-status is-warning">域未解析</span>
@@ -26,7 +26,7 @@
             </div>
             <div class="action-row">
               <input id="kw" type="text" placeholder="输入关键词搜索歌曲" />
-              <button class="btn btn-primary" type="button" onclick="searchSongs(true)">搜索</button>
+              <button class="btn btn-primary" type="button" data-action="search-songs">搜索</button>
             </div>
             <div class="table-shell" style="margin-top: 18px;">
               <table>
@@ -46,8 +46,8 @@
               </table>
             </div>
             <div class="action-row" style="margin-top: 14px;">
-              <button class="btn btn-sm btn-ghost" type="button" onclick="changeSearch(-1)">上一页</button>
-              <button class="btn btn-sm btn-ghost" type="button" onclick="changeSearch(1)">下一页</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-action="change-search" data-delta="-1">上一页</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-action="change-search" data-delta="1">下一页</button>
               <span id="searchInfo" class="mono"></span>
             </div>
             <div id="searchMsg" class="msg"></div>
@@ -78,8 +78,8 @@
               </table>
             </div>
             <div class="action-row" style="margin-top: 14px;">
-              <button class="btn btn-sm btn-ghost" type="button" onclick="changeQueue(-1)">上一页</button>
-              <button class="btn btn-sm btn-ghost" type="button" onclick="changeQueue(1)">下一页</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-action="change-queue" data-delta="-1">上一页</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-action="change-queue" data-delta="1">下一页</button>
               <span id="queueInfo" class="mono"></span>
             </div>
             <div id="queueMsg" class="msg"></div>

@@ -24,6 +24,11 @@ class ShutdownCoordinator:
                 scheduler.reminder.stop()
             except Exception as exc:
                 logger.warning("停止定时服务时出现异常: %s", exc)
+            try:
+                recall_scheduler = context.handler.services.safety.recall_scheduler
+                recall_scheduler.stop()
+            except Exception as exc:
+                logger.warning("停止自动撤回调度时出现异常: %s", exc)
 
         try:
             from core.database import MessageStatsDB

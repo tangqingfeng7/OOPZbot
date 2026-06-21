@@ -1,4 +1,4 @@
-      <section id="panel" class="hidden config-layout">
+      <section id="panel" class="hidden config-layout config-layout--single">
         <div class="surface-card">
           <div class="cfg-tabs" role="tablist">
             <button class="cfg-tab is-active" data-tab="basic" type="button">基础设置</button>
@@ -7,6 +7,7 @@
             <button class="cfg-tab" data-tab="ai" type="button">AI 服务</button>
             <button class="cfg-tab" data-tab="schedule" type="button">定时与通知</button>
           </div>
+          <div id="msg" class="msg config-message" aria-live="polite"></div>
 
           <!-- Tab: 基础设置 -->
           <div class="cfg-panel is-active" data-panel="basic">
@@ -351,17 +352,4 @@
             </section>
           </div>
         </div>
-
-        <aside class="sticky-rail">
-          <div class="rail-block">
-            <div id="railState" class="micro-status is-warning">等待操作</div>
-            <h3 class="rail-block__title">保存操作</h3>
-            <div class="action-row">
-              <button class="btn btn-primary" type="button" onclick="saveConfig(true)">保存到 config.py</button>
-              <button class="btn btn-ghost" type="button" onclick="loadConfig()">放弃页面修改</button>
-              <button class="btn btn-ghost" type="button" onclick="resetOverrides()">按 config.py 恢复运行配置</button>
-            </div>
-            <div id="msg" class="msg"></div>
-          </div>
-        </aside>
       </section>

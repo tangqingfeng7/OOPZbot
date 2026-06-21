@@ -256,5 +256,8 @@
       await check();
     }
 
+    AdminShell.registerActions({
+      "refresh-scheduler": () => loadScheduler(),
+    });
     AdminShell.init({ page: "scheduler", passwordHandler: login });
     check();

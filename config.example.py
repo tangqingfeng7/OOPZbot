@@ -267,6 +267,7 @@ ONEBOT_V11_CONFIG = {
 AUTO_RECALL_CONFIG = {
     "enabled": False,
     "delay": 30,                   # 自动撤回延迟（秒）
+    "max_pending": 1000,           # 最多等待撤回的消息数，防止刷屏时占用过多内存
     "exclude_commands": [          # 不自动撤回的命令类型
         "ai_chat",                 # AI 聊天回复
         "ai_image",                # AI 生成图片
