@@ -2,7 +2,7 @@
         <article class="surface-card">
           <div class="action-row" style="flex-wrap:wrap">
             <span id="areaState" class="micro-status is-warning">等待同步</span>
-            <select id="areaPicker" class="m-area-select" onchange="onAreaChange()">
+            <select id="areaPicker" class="m-area-select" data-change="area-change">
               <option value="">加载中...</option>
             </select>
             <button class="btn btn-ghost" type="button" data-action="refresh-areas">刷新</button>
@@ -22,13 +22,13 @@
             <div class="field field--wide"><label for="ac_name">域名称</label><input id="ac_name" type="text" placeholder="仅日志显示" /></div>
             <div class="field field--wide">
               <label for="ac_default_channel_select">默认频道</label>
-              <select id="ac_default_channel_select" onchange="onDefaultChannelSelectChange()">
+              <select id="ac_default_channel_select" data-change="default-channel-change">
                 <option value="">先选择域后加载频道</option>
               </select>
             </div>
             <div class="field field--wide">
               <label for="ac_auto_role_select">自动分配身份组</label>
-              <select id="ac_auto_role_select" onchange="onAutoRoleSelectChange()">
+              <select id="ac_auto_role_select" data-change="auto-role-change">
                 <option value="">先选择域后加载身份组</option>
               </select>
             </div>
@@ -153,10 +153,10 @@
                 </select>
               </div>
               <div class="field field--check">
-                <label><input id="editChSecret" type="checkbox" onchange="toggleSecretPanel()" /> 私密频道</label>
+                <label><input id="editChSecret" type="checkbox" data-change="toggle-secret-panel" /> 私密频道</label>
               </div>
               <div class="field field--check">
-                <label><input id="editChHasPassword" type="checkbox" onchange="toggleEditPwd()" /> 启用密码</label>
+                <label><input id="editChHasPassword" type="checkbox" data-change="toggle-edit-pwd" /> 启用密码</label>
               </div>
               <div class="field field--wide" id="editChPwdWrap" style="display:none">
                 <label for="editChPassword">频道密码</label>

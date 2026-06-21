@@ -669,6 +669,8 @@
       "remove-admin": (el) => doRemoveAdmin(el.dataset.uid),
       "role-add": (el) => doRoleAdd(el.dataset.uid, Number(el.dataset.rid)),
       "role-remove": (el) => doRoleRemove(el.dataset.uid, Number(el.dataset.rid)),
+      "area-change": () => onAreaChange(),
+      "send-area-change": () => onSendAreaChange(),
     });
     AdminShell.init({ page: "members", passwordHandler: login });
     check();

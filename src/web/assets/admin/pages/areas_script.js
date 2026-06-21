@@ -446,7 +446,7 @@
       el.innerHTML = _onlineMembers.map(function(m) {
         var checked = _selectedUids.has(m.uid) ? " checked" : "";
         return '<label class="a-am-item">'
-          + '<input type="checkbox" onchange="toggleAccessMember(\'' + esc(m.uid) + '\', this.checked)"' + checked + ' />'
+          + '<input type="checkbox" data-change="access-member" data-uid="' + esc(m.uid) + '"' + checked + ' />'
           + '<span class="a-am-dot"></span>'
           + '<span class="a-am-name">' + esc(m.name) + '</span>'
           + '</label>';
@@ -561,6 +561,12 @@
       "do-save-channel-settings": () => doSaveChannelSettings(),
       "show-edit-channel": (el) => showEditChannel(el.dataset.chId, el.dataset.chType),
       "do-delete-channel": (el) => doDeleteChannel(el.dataset.chId, el.dataset.chName),
+      "area-change": () => onAreaChange(),
+      "default-channel-change": () => onDefaultChannelSelectChange(),
+      "auto-role-change": () => onAutoRoleSelectChange(),
+      "toggle-secret-panel": () => toggleSecretPanel(),
+      "toggle-edit-pwd": () => toggleEditPwd(),
+      "access-member": (el) => toggleAccessMember(el.dataset.uid, el.checked),
     });
     AdminShell.init({ page: "areas", passwordHandler: login });
     AdminShell.upgradeSelect("ac_default_channel_select");

@@ -616,19 +616,46 @@
     Object.assign(_actionHandlers, handlers || {});
   }
 
+  function _dispatch(trigger, key, event) {
+    const handler = _actionHandlers[key];
+    if (!handler) {
+      return;
+    }
+    Promise.resolve()
+      .then(() => handler(trigger, event))
+      .catch(() => {});
+  }
+
   document.addEventListener("click", (event) => {
     const trigger = event.target.closest("[data-action]");
     if (!trigger) {
       return;
     }
-    const handler = _actionHandlers[trigger.dataset.action];
-    if (!handler) {
+    event.preventDefault();
+    _dispatch(trigger, trigger.dataset.action, event);
+  });
+
+  // 委托 change 事件：select / checkbox 用 data-change 指定动作键，
+  // 处理函数从入参 el 读取 .value / .checked。
+  document.addEventListener("change", (event) => {
+    const trigger = event.target.closest("[data-change]");
+    if (!trigger) {
+      return;
+    }
+    _dispatch(trigger, trigger.dataset.change, event);
+  });
+
+  // 委托 Enter 键：输入框用 data-enter 指定动作键，仅在按下回车时触发。
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    const trigger = event.target.closest("[data-enter]");
+    if (!trigger) {
       return;
     }
     event.preventDefault();
-    Promise.resolve()
-      .then(() => handler(trigger, event))
-      .catch(() => {});
+    _dispatch(trigger, trigger.dataset.enter, event);
   });
 
   window.AdminShell = {

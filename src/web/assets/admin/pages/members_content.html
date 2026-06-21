@@ -2,10 +2,10 @@
         <article class="surface-card">
           <div class="action-row" style="flex-wrap:wrap">
             <span id="membersState" class="micro-status is-warning">等待同步</span>
-            <select id="areaPicker" class="m-area-select" onchange="onAreaChange()">
+            <select id="areaPicker" class="m-area-select" data-change="area-change">
               <option value="">加载中...</option>
             </select>
-            <input id="memberSearch" type="text" class="input" placeholder="搜索成员..." style="width:180px" onkeydown="if(event.key==='Enter')loadMembers()">
+            <input id="memberSearch" type="text" class="input" placeholder="搜索成员..." style="width:180px" data-enter="refresh-members">
             <button class="btn btn-ghost" type="button" data-action="refresh-members">搜索</button>
             <button class="btn btn-ghost" type="button" data-action="load-blocks">封禁列表</button>
           </div>
@@ -83,7 +83,7 @@
               <div class="m-send-field">
                 <label class="m-send-field__label">目标域</label>
                 <div class="m-select-wrap">
-                  <select id="sendAreaPicker" class="m-select" onchange="onSendAreaChange()">
+                  <select id="sendAreaPicker" class="m-select" data-change="send-area-change">
                     <option value="">加载中...</option>
                   </select>
                   <span class="m-select-arrow"></span>
