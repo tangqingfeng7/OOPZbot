@@ -64,6 +64,71 @@
       return !!AdminShell.byId(id).checked;
     }
 
+    // ---- OOPZ 代理：单字符串配置 <-> 「开关 + 协议 + 地址 + 端口」 ----
+    // oopz.proxy 语义：""=系统/未启用、"direct"/false=直连、url 或别名(clash...)=启用。
+    const PROXY_DEFAULT_HOST = "127.0.0.1";
+    const PROXY_HTTP_PORT = 7890;
+    const PROXY_SOCKS_PORT = 7891;
+    const PROXY_ALIASES = {
+      "clash": "http://127.0.0.1:7890",
+      "clash-http": "http://127.0.0.1:7890",
+      "clash-mixed": "http://127.0.0.1:7890",
+      "clash-socks": "socks5://127.0.0.1:7891",
+      "mihomo": "http://127.0.0.1:7890",
+      "mihomo-socks": "socks5://127.0.0.1:7891",
+    };
+
+    function _parseProxyValue(raw) {
+      const out = { enabled: false, scheme: "http", host: PROXY_DEFAULT_HOST, port: PROXY_HTTP_PORT };
+      if (raw === false) {
+        return out;
+      }
+      const value = (raw == null ? "" : String(raw)).trim();
+      if (value === "" || value.toLowerCase() === "direct") {
+        return out;
+      }
+      let urlStr = PROXY_ALIASES[value.toLowerCase()] || value;
+      if (urlStr.indexOf("://") === -1) {
+        urlStr = "http://" + urlStr;
+      }
+      const m = urlStr.match(/^([a-zA-Z0-9]+):\/\/(?:[^@/]*@)?([^:/\s]+)(?::(\d+))?/);
+      if (!m) {
+        return out;
+      }
+      out.enabled = true;
+      out.scheme = m[1].toLowerCase().indexOf("socks") === 0 ? "socks5" : "http";
+      out.host = m[2] || PROXY_DEFAULT_HOST;
+      out.port = m[3] ? Number(m[3]) : (out.scheme === "socks5" ? PROXY_SOCKS_PORT : PROXY_HTTP_PORT);
+      return out;
+    }
+
+    function _applyProxyEnabledState() {
+      const on = chk("cfg_proxy_enabled");
+      document.querySelectorAll(".js-proxy-detail").forEach(function (el) {
+        el.style.opacity = on ? "" : "0.45";
+      });
+    }
+
+    function _loadProxy(config) {
+      const p = _parseProxyValue(config && config.oopz ? config.oopz.proxy : "");
+      setVal("cfg_proxy_enabled", p.enabled);
+      setVal("cfg_proxy_scheme", p.scheme);
+      setVal("cfg_proxy_host", p.host);
+      setVal("cfg_proxy_port", p.port);
+      AdminShell.refreshCustomSelect("cfg_proxy_scheme");
+      _applyProxyEnabledState();
+    }
+
+    function _buildProxyValue() {
+      if (!chk("cfg_proxy_enabled")) {
+        return "direct";
+      }
+      const scheme = val("cfg_proxy_scheme") || "http";
+      const host = val("cfg_proxy_host") || PROXY_DEFAULT_HOST;
+      const port = getInt("cfg_proxy_port") || (scheme === "socks5" ? PROXY_SOCKS_PORT : PROXY_HTTP_PORT);
+      return scheme + "://" + host + ":" + port;
+    }
+
     function setPageState(text, variant) {
       AdminShell.setStatus(text, variant, "topStatus");
       AdminShell.setStatus(text, variant, "mobileStatus");
@@ -591,7 +656,6 @@
 
       { id: "cfg_oopz_default_area", path: "oopz.default_area", type: "text", loadDef: "" },
       { id: "cfg_oopz_default_channel", path: "oopz.default_channel", type: "text", loadDef: "" },
-      { id: "cfg_oopz_proxy", path: "oopz.proxy", type: "text", loadDef: "" },
       { id: "cfg_oopz_login_phone", path: "oopz.login_phone", type: "text", loadDef: "" },
       { id: "cfg_agora_app_id", path: "oopz.agora_app_id", type: "text", loadDef: "" },
       { id: "cfg_agora_timeout", path: "oopz.agora_init_timeout", type: "int", loadDef: 1800, buildDef: 1800 },
@@ -681,9 +745,10 @@
         _loadField(config, field);
       });
 
-      // 特殊字段：撤回排除命令以逗号串展示，关键词回复用键值编辑器渲染。
+      // 特殊字段：撤回排除命令以逗号串展示，关键词回复用键值编辑器渲染，代理拆成开关组。
       setVal("cfg_auto_recall_exclude", (config.auto_recall?.exclude_commands || []).join(", "));
       window._kwRender(config.chat?.keyword_replies || {});
+      _loadProxy(config);
 
       // 密钥字段：仅展示是否已配置，不回填明文（Cookie 类回填便于复用）。
       setSecretState("cfg_admin_password", config.web_player?.admin_password_configured);
@@ -714,6 +779,7 @@
       _cfgSet(updates, "auto_recall.exclude_commands", val("cfg_auto_recall_exclude"));
       _cfgSet(updates, "chat.keyword_replies", window._kwCollect());
       _cfgSet(updates, "oopz.login_password", val("cfg_oopz_login_password"));
+      _cfgSet(updates, "oopz.proxy", _buildProxyValue());
 
       const adminPassword = val("cfg_admin_password");
       const neteaseCookie = val("cfg_netease_cookie");
@@ -803,7 +869,9 @@
       "netease-qr-save": () => saveNeteaseQrCookie(true),
       "bilibili-qr-refresh": () => refreshBilibiliQr(),
       "bilibili-qr-save": () => saveBilibiliQrCookie(true),
+      "proxy-toggle": () => _applyProxyEnabledState(),
     });
     AdminShell.init({ page: "config", passwordHandler: login });
     initTabs();
+    AdminShell.upgradeSelect("cfg_proxy_scheme");
     check();
