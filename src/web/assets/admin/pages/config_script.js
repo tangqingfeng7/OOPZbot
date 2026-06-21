@@ -476,10 +476,7 @@
       element.type = "password";
       element.value = "";
       element.placeholder = configured ? "已配置，留空表示不修改" : "未配置";
-      const button = element.parentElement && element.parentElement.querySelector("button");
-      if (button) {
-        button.textContent = "显示";
-      }
+      resetSecretToggle(element, id);
     }
 
     function setSecretValue(id, value, configured) {
@@ -490,7 +487,19 @@
       element.type = "password";
       element.value = value || "";
       element.placeholder = configured && !value ? "已配置，留空表示不修改" : "";
-      const button = element.parentElement && element.parentElement.querySelector("button");
+      resetSecretToggle(element, id);
+    }
+
+    // 仅复位该字段自己的「显示/隐藏」切换按钮；避免误改同容器内的其它按钮
+    // （如 OOPZ 登录区与密码框共用容器的「登录并获取」按钮）。
+    function resetSecretToggle(element, id) {
+      const container = element.parentElement;
+      if (!container) {
+        return;
+      }
+      const button = container.querySelector(
+        'button[data-action="toggle-secret"][data-secret="' + id + '"]'
+      );
       if (button) {
         button.textContent = "显示";
       }
