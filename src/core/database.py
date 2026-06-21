@@ -838,15 +838,27 @@ class MessageStatsDB:
     def get_user_ranking(area_id: str, days: int = 7, limit: int = 10) -> list[dict]:
         cutoff = (datetime.now(CN_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
         with db_connection() as conn:
-            rows = conn.execute(
-                """SELECT user_id, SUM(message_count) as total
-                   FROM message_stats
-                   WHERE area_id=? AND date >= ?
-                   GROUP BY user_id
-                   ORDER BY total DESC
-                   LIMIT ?""",
-                (area_id, cutoff, limit),
-            ).fetchall()
+            if area_id:
+                rows = conn.execute(
+                    """SELECT user_id, SUM(message_count) as total
+                       FROM message_stats
+                       WHERE area_id=? AND date >= ?
+                       GROUP BY user_id
+                       ORDER BY total DESC
+                       LIMIT ?""",
+                    (area_id, cutoff, limit),
+                ).fetchall()
+            else:
+                # 未指定域时跨全部域聚合，保持与日趋势/概览一致
+                rows = conn.execute(
+                    """SELECT user_id, SUM(message_count) as total
+                       FROM message_stats
+                       WHERE date >= ?
+                       GROUP BY user_id
+                       ORDER BY total DESC
+                       LIMIT ?""",
+                    (cutoff, limit),
+                ).fetchall()
         return [dict(r) for r in rows]
 
     @staticmethod
