@@ -32,9 +32,9 @@
             "<td>" + weekdaysLabel(t.weekdays) + "</td>" +
             "<td>" + escapeHtml((t.message_text || "").slice(0, 40)) + "</td>" +
             "<td>" + status + "</td>" +
-            '<td><button class="btn btn-sm btn-ghost" onclick="toggleScheduled(' + t.id + ')">' +
+            '<td><button class="btn btn-sm btn-ghost" type="button" data-action="toggle-scheduled" data-id="' + t.id + '">' +
               (t.enabled ? "停用" : "启用") +
-            '</button> <button class="btn btn-sm btn-danger" onclick="deleteScheduled(' + t.id + ')">删除</button></td>' +
+            '</button> <button class="btn btn-sm btn-danger" type="button" data-action="delete-scheduled" data-id="' + t.id + '">删除</button></td>' +
           "</tr>"
         );
       }).join("");
@@ -75,8 +75,8 @@
               '<div>时间: ' + time + ' | ' + weekdaysLabel(item.weekdays) + '</div>' +
               '<div>内容: ' + escapeHtml((item.message_text || "").slice(0, 80)) + '</div>' +
               '<div class="action-row">' +
-                '<button class="btn btn-ghost" type="button" onclick="useTemplateToForm(\'' + escapeHtml(item.key) + '\')">套用到表单</button>' +
-                '<button class="btn btn-primary" type="button" onclick="createFromTemplate(\'' + escapeHtml(item.key) + '\')">一键创建</button>' +
+                '<button class="btn btn-ghost" type="button" data-action="use-template" data-key="' + escapeHtml(item.key) + '">套用到表单</button>' +
+                '<button class="btn btn-primary" type="button" data-action="create-from-template" data-key="' + escapeHtml(item.key) + '">一键创建</button>' +
               '</div>' +
             '</div>' +
           '</article>'
@@ -258,6 +258,11 @@
 
     AdminShell.registerActions({
       "refresh-scheduler": () => loadScheduler(),
+      "create-scheduled": () => createScheduled(),
+      "toggle-scheduled": (el) => toggleScheduled(Number(el.dataset.id)),
+      "delete-scheduled": (el) => deleteScheduled(Number(el.dataset.id)),
+      "use-template": (el) => useTemplateToForm(el.dataset.key),
+      "create-from-template": (el) => createFromTemplate(el.dataset.key),
     });
     AdminShell.init({ page: "scheduler", passwordHandler: login });
     check();

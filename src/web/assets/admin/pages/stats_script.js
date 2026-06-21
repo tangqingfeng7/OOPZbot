@@ -102,6 +102,7 @@
     AdminShell.registerActions({
       "refresh-stats": () => loadTop(),
       "clear-history": () => clearHistory(),
+      "change-top": (el) => changeTop(Number(el.dataset.delta)),
     });
     AdminShell.init({ page: "stats", passwordHandler: login });
     check();

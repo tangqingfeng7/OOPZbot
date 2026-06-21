@@ -49,7 +49,7 @@
                   <label for="cfg_admin_password">后台新密码</label>
                   <div class="secret-input">
                     <input id="cfg_admin_password" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_admin_password', this)">显示</button>
+                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_admin_password">显示</button>
                   </div>
                 </div>
                 <div class="field field--check">
@@ -75,7 +75,7 @@
                   <label for="cfg_redis_password">Redis 密码</label>
                   <div class="secret-input">
                     <input id="cfg_redis_password" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_redis_password', this)">显示</button>
+                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_redis_password">显示</button>
                   </div>
                 </div>
               </div>
@@ -101,7 +101,7 @@
                 <div class="field field--wide">
                   <label>关键词回复</label>
                   <div id="cfg_kw_list" class="kw-editor"></div>
-                  <button type="button" class="kw-add-btn" onclick="window._kwAdd()">+ 添加关键词</button>
+                  <button type="button" class="kw-add-btn" data-action="kw-add">+ 添加关键词</button>
                 </div>
                 <div class="field field--check"><label><input id="cfg_profanity_enabled" type="checkbox" /> 启用脏话检测</label></div>
                 <div class="field field--check"><label><input id="cfg_profanity_recall" type="checkbox" /> 自动撤回脏话消息</label></div>
@@ -152,7 +152,7 @@
                   <div class="secret-input">
                     <input id="cfg_oopz_login_phone" type="text" inputmode="tel" autocomplete="username" placeholder="手机号；留空则用配置" />
                     <input id="cfg_oopz_login_password" type="password" autocomplete="current-password" placeholder="密码；留空则用配置" />
-                    <button id="cfg_oopz_login_btn" class="btn btn-sm btn-primary" type="button" onclick="loginOopzAccount()">登录并获取</button>
+                    <button id="cfg_oopz_login_btn" class="btn btn-sm btn-primary" type="button" data-action="oopz-login">登录并获取</button>
                   </div>
                   <div id="cfg_oopz_login_status" class="msg">等待登录</div>
                 </div>
@@ -167,8 +167,8 @@
                   <label>网易云扫码登录</label>
                   <div class="netease-login">
                     <div class="action-row">
-                      <button id="cfg_netease_qr_refresh" class="btn btn-sm btn-primary" type="button" onclick="refreshNeteaseQr()">刷新二维码</button>
-                      <button id="cfg_netease_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveNeteaseQrCookie(true)" disabled>保存并立即生效</button>
+                      <button id="cfg_netease_qr_refresh" class="btn btn-sm btn-primary" type="button" data-action="netease-qr-refresh">刷新二维码</button>
+                      <button id="cfg_netease_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" data-action="netease-qr-save" disabled>保存并立即生效</button>
                     </div>
                     <div class="netease-login__body">
                       <div id="cfg_netease_qr_box" class="netease-qr-box">
@@ -191,7 +191,7 @@
                   <div class="netease-account-panel" data-netease-account-status>当前网易云账号：未检测</div>
                   <div class="secret-input">
                     <input id="cfg_netease_cookie" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_netease_cookie', this)">显示</button>
+                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_netease_cookie">显示</button>
                   </div>
                 </div>
               </div>
@@ -231,7 +231,7 @@
                   <label for="cfg_qq_music_cookie">Cookie</label>
                   <div class="secret-input">
                     <input id="cfg_qq_music_cookie" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_qq_music_cookie', this)">显示</button>
+                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_qq_music_cookie">显示</button>
                   </div>
                 </div>
               </div>
@@ -248,8 +248,8 @@
                   <label>B 站扫码登录</label>
                   <div class="qr-login">
                     <div class="action-row">
-                      <button id="cfg_bilibili_qr_refresh" class="btn btn-sm btn-primary" type="button" onclick="refreshBilibiliQr()">刷新二维码</button>
-                      <button id="cfg_bilibili_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" onclick="saveBilibiliQrCookie(true)" disabled>保存并立即生效</button>
+                      <button id="cfg_bilibili_qr_refresh" class="btn btn-sm btn-primary" type="button" data-action="bilibili-qr-refresh">刷新二维码</button>
+                      <button id="cfg_bilibili_qr_save_runtime" class="btn btn-sm btn-ghost" type="button" data-action="bilibili-qr-save" disabled>保存并立即生效</button>
                     </div>
                     <div class="qr-login__body">
                       <div id="cfg_bilibili_qr_box" class="qr-box">
@@ -268,7 +268,7 @@
                   <div id="cfg_bilibili_account_status" class="account-panel" data-bilibili-account-status>当前B站账号：未检测</div>
                   <div class="secret-input">
                     <input id="cfg_bilibili_cookie" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_bilibili_cookie', this)">显示</button>
+                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_bilibili_cookie">显示</button>
                   </div>
                 </div>
               </div>
@@ -295,7 +295,7 @@
                   <label for="cfg_doubao_api_key">API Key</label>
                   <div class="secret-input">
                     <input id="cfg_doubao_api_key" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_doubao_api_key', this)">显示</button>
+                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_doubao_api_key">显示</button>
                   </div>
                 </div>
               </div>
@@ -316,7 +316,7 @@
                   <label for="cfg_doubao_img_api_key">API Key</label>
                   <div class="secret-input">
                     <input id="cfg_doubao_img_api_key" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" onclick="toggleSecret('cfg_doubao_img_api_key', this)">显示</button>
+                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_doubao_img_api_key">显示</button>
                   </div>
                 </div>
               </div>

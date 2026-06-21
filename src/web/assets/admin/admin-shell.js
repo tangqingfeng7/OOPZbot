@@ -598,6 +598,19 @@
   // -------------------------------------------------------------------------
 
   const _actionHandlers = Object.create(null);
+  // 内置动作：所有页面共用的弹窗关闭与登录/登出，免去逐页重复注册。
+  // login/logout 由各页脚本定义为全局函数，点击时已就绪。
+  _actionHandlers["close-modal"] = () => closeModal();
+  _actionHandlers["login"] = () => {
+    if (typeof window.login === "function") {
+      window.login();
+    }
+  };
+  _actionHandlers["logout"] = () => {
+    if (typeof window.logout === "function") {
+      window.logout();
+    }
+  };
 
   function registerActions(handlers) {
     Object.assign(_actionHandlers, handlers || {});

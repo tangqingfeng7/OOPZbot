@@ -136,6 +136,12 @@
     AdminShell.registerActions({
       "refresh-system": () => loadSys(),
       "refresh-logs": () => loadLogs(logTailSize),
+      "refresh-link": () => loadLink(),
+      "copy-link": () => copyLink(),
+      "rotate-link": () => rotateLink(),
+      "log-resume": () => startLogPolling(),
+      "log-pause": () => stopLogPolling(),
+      "load-logs": (el) => loadLogs(Number(el.dataset.lines)),
     });
     AdminShell.init({ page: "system", passwordHandler: login });
     check();

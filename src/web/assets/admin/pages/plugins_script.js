@@ -78,10 +78,10 @@
 
             var actions = [];
             if (!p.builtin) {
-              actions.push('<button class="btn btn-danger" onclick="unloadPlugin(\'' + esc(p.name) + '\')">卸载</button>');
+              actions.push('<button class="btn btn-danger" type="button" data-action="unload-plugin" data-name="' + esc(p.name) + '">卸载</button>');
             }
-            actions.push('<button class="btn btn-ghost" onclick="reloadConfig(\'' + esc(p.name) + '\')">重载配置</button>');
-            actions.push('<button class="btn btn-ghost" onclick="openConfigEditor(\'' + esc(p.name) + '\')">编辑配置</button>');
+            actions.push('<button class="btn btn-ghost" type="button" data-action="reload-config" data-name="' + esc(p.name) + '">重载配置</button>');
+            actions.push('<button class="btn btn-ghost" type="button" data-action="open-config-editor" data-name="' + esc(p.name) + '">编辑配置</button>');
 
             return '<tr>' +
               '<td style="font-weight:600">' + esc(p.name) + '</td>' +
@@ -99,7 +99,7 @@
           availTbody.innerHTML = available.map(function (name) {
             return '<tr>' +
               '<td style="font-weight:600">' + esc(name) + '</td>' +
-              '<td><div class="p-actions"><button class="btn btn-primary" onclick="loadPlugin(\'' + esc(name) + '\')">加载</button></div></td>' +
+              '<td><div class="p-actions"><button class="btn btn-primary" type="button" data-action="load-plugin" data-name="' + esc(name) + '">加载</button></div></td>' +
               '</tr>';
           }).join("");
         } else {
@@ -444,6 +444,12 @@
 
     AdminShell.registerActions({
       "refresh-plugins": () => loadPlugins(),
+      "load-plugin": (el) => loadPlugin(el.dataset.name),
+      "unload-plugin": (el) => unloadPlugin(el.dataset.name),
+      "reload-config": (el) => reloadConfig(el.dataset.name),
+      "open-config-editor": (el) => openConfigEditor(el.dataset.name),
+      "plugin-cfg-close": () => closeConfigEditor(),
+      "plugin-cfg-save": () => saveConfig(),
     });
     AdminShell.init({ page: "plugins", passwordHandler: login });
     check();

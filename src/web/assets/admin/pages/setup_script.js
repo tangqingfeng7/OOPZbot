@@ -73,7 +73,7 @@
         const action = step.actions && step.actions.length ? escapeHtml(step.actions[0]) : "当前无需额外操作";
         const page = step.page || "";
         const button = page
-          ? `<button class="btn btn-ghost" type="button" onclick="openAdminPage('${escapeHtml(page)}')">打开页面</button>`
+          ? `<button class="btn btn-ghost" type="button" data-action="open-page" data-page="${escapeHtml(page)}">打开页面</button>`
           : "";
         return `
           <article class="surface-card">
@@ -107,7 +107,7 @@
       }
       root.innerHTML = items.map((item) => {
         const button = item.page
-          ? `<button class="btn btn-ghost btn-sm" type="button" onclick="openAdminPage('${escapeHtml(item.page)}')">打开</button>`
+          ? `<button class="btn btn-ghost btn-sm" type="button" data-action="open-page" data-page="${escapeHtml(item.page)}">打开</button>`
           : "";
         return `
           <tr>
@@ -190,6 +190,7 @@
 
     AdminShell.registerActions({
       "refresh-diagnostics": () => loadDiagnostics(),
+      "open-page": (el) => openAdminPage(el.dataset.page),
     });
     AdminShell.init({ page: "setup", passwordHandler: login });
     check();

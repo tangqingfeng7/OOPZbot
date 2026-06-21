@@ -144,9 +144,9 @@
               '<td>' + roleHtml + '</td>' +
               '<td>' + statusLabel + '</td>' +
               '<td><div class="m-member-actions">' +
-                '<button class="btn btn-ghost" onclick="showDetail(\'' + esc(m.uid) + '\')">详情</button>' +
-                '<button class="btn btn-ghost" onclick="doMute(\'' + esc(m.uid) + '\')">禁言</button>' +
-                '<button class="btn btn-danger btn-sm" onclick="doKick(\'' + esc(m.uid) + '\')">踢出</button>' +
+                '<button class="btn btn-ghost" type="button" data-action="show-detail" data-uid="' + esc(m.uid) + '">详情</button>' +
+                '<button class="btn btn-ghost" type="button" data-action="do-mute" data-uid="' + esc(m.uid) + '">禁言</button>' +
+                '<button class="btn btn-danger btn-sm" type="button" data-action="do-kick" data-uid="' + esc(m.uid) + '">踢出</button>' +
               '</div></td>' +
             "</tr>"
           );
@@ -276,22 +276,22 @@
         // action buttons
         var actions = '';
         if (data.is_bot_admin) {
-          actions += '<button class="btn btn-ghost m-btn--admin-revoke" onclick="doRemoveAdmin(\'' + esc(uid) + '\')">撤销管理员</button>';
+          actions += '<button class="btn btn-ghost m-btn--admin-revoke" type="button" data-action="remove-admin" data-uid="' + esc(uid) + '">撤销管理员</button>';
         } else {
-          actions += '<button class="btn btn-ghost m-btn--admin-grant" onclick="doGrantAdmin(\'' + esc(uid) + '\')">设为管理员</button>';
+          actions += '<button class="btn btn-ghost m-btn--admin-grant" type="button" data-action="grant-admin" data-uid="' + esc(uid) + '">设为管理员</button>';
         }
         if (data.muted) {
-          actions += '<button class="btn btn-ghost" onclick="doUnmute(\'' + esc(uid) + '\')">解除禁言</button>';
+          actions += '<button class="btn btn-ghost" type="button" data-action="do-unmute" data-uid="' + esc(uid) + '">解除禁言</button>';
         } else {
-          actions += '<button class="btn btn-ghost" onclick="doMute(\'' + esc(uid) + '\')">禁言</button>';
+          actions += '<button class="btn btn-ghost" type="button" data-action="do-mute" data-uid="' + esc(uid) + '">禁言</button>';
         }
         if (data.mic_muted) {
-          actions += '<button class="btn btn-ghost" onclick="doUnmuteMic(\'' + esc(uid) + '\')">解除禁麦</button>';
+          actions += '<button class="btn btn-ghost" type="button" data-action="do-unmute-mic" data-uid="' + esc(uid) + '">解除禁麦</button>';
         } else {
-          actions += '<button class="btn btn-ghost" onclick="doMuteMic(\'' + esc(uid) + '\')">禁麦</button>';
+          actions += '<button class="btn btn-ghost" type="button" data-action="do-mute-mic" data-uid="' + esc(uid) + '">禁麦</button>';
         }
-        actions += '<button class="btn btn-danger" onclick="doKick(\'' + esc(uid) + '\')">踢出</button>';
-        actions += '<button class="btn btn-danger" onclick="doBlock(\'' + esc(uid) + '\')">封禁</button>';
+        actions += '<button class="btn btn-danger" type="button" data-action="do-kick" data-uid="' + esc(uid) + '">踢出</button>';
+        actions += '<button class="btn btn-danger" type="button" data-action="do-block" data-uid="' + esc(uid) + '">封禁</button>';
         AdminShell.byId("detailActions").innerHTML = actions;
 
         // assignable roles
@@ -304,10 +304,10 @@
             var rname = esc(r.name || rid);
             var hasRole = roles.some(function (ur) { return (ur.roleID || ur.id) == rid; });
             if (hasRole) {
-              roleSection += '<span class="m-role-tag m-role-tag--owned" onclick="doRoleRemove(\'' + esc(uid) + '\',' + rid + ')" title="点击移除">' +
+              roleSection += '<span class="m-role-tag m-role-tag--owned" data-action="role-remove" data-uid="' + esc(uid) + '" data-rid="' + rid + '" title="点击移除">' +
                 rname + ' <span class="m-role-tag__icon">&times;</span></span>';
             } else {
-              roleSection += '<span class="m-role-tag" onclick="doRoleAdd(\'' + esc(uid) + '\',' + rid + ')" title="点击添加">' +
+              roleSection += '<span class="m-role-tag" data-action="role-add" data-uid="' + esc(uid) + '" data-rid="' + rid + '" title="点击添加">' +
                 rname + ' <span class="m-role-tag__icon">+</span></span>';
             }
           });
@@ -484,7 +484,7 @@
               '<td class="table-emphasis">' + esc(b.name) + "</td>" +
               "<td style=\"font-size:12px;color:var(--ink-faint)\">" + esc((b.uid || "").slice(0, 12)) + "...</td>" +
               "<td>" +
-                '<button class="btn btn-ghost btn-sm" onclick="doUnblock(\'' + esc(b.uid) + '\')">解封</button>' +
+                '<button class="btn btn-ghost btn-sm" type="button" data-action="do-unblock" data-uid="' + esc(b.uid) + '">解封</button>' +
               "</td>" +
             "</tr>"
           );
@@ -650,6 +650,25 @@
 
     AdminShell.registerActions({
       "refresh-members": () => loadMembers(),
+      "load-blocks": () => loadBlocks(),
+      "members-prev": () => prevPage(),
+      "members-next": () => nextPage(),
+      "refresh-channels": () => refreshChannels(),
+      "send-message": () => doSendMessage(),
+      "send-announcement": () => doSendAnnouncement(),
+      "close-drawer": () => closeDrawer(),
+      "show-detail": (el) => showDetail(el.dataset.uid),
+      "do-mute": (el) => doMute(el.dataset.uid),
+      "do-unmute": (el) => doUnmute(el.dataset.uid),
+      "do-mute-mic": (el) => doMuteMic(el.dataset.uid),
+      "do-unmute-mic": (el) => doUnmuteMic(el.dataset.uid),
+      "do-kick": (el) => doKick(el.dataset.uid),
+      "do-block": (el) => doBlock(el.dataset.uid),
+      "do-unblock": (el) => doUnblock(el.dataset.uid),
+      "grant-admin": (el) => doGrantAdmin(el.dataset.uid),
+      "remove-admin": (el) => doRemoveAdmin(el.dataset.uid),
+      "role-add": (el) => doRoleAdd(el.dataset.uid, Number(el.dataset.rid)),
+      "role-remove": (el) => doRoleRemove(el.dataset.uid, Number(el.dataset.rid)),
     });
     AdminShell.init({ page: "members", passwordHandler: login });
     check();

@@ -128,6 +128,8 @@
 
     AdminShell.registerActions({
       "refresh-overview": () => loadOverview(),
+      "stream-resume": () => startOverviewStream(),
+      "stream-pause": () => stopOverviewStream(),
     });
     AdminShell.init({ page: "dashboard", passwordHandler: login });
     check();

@@ -5,7 +5,7 @@
             <select id="areaPicker" class="m-area-select" onchange="onAreaChange()">
               <option value="">加载中...</option>
             </select>
-            <button class="btn btn-ghost" type="button" onclick="loadAreaManager()">刷新</button>
+            <button class="btn btn-ghost" type="button" data-action="refresh-areas">刷新</button>
           </div>
         </article>
 
@@ -14,8 +14,8 @@
           <div class="section-head">
             <h3 class="section-title">域配置</h3>
             <div class="action-row" style="gap:6px">
-              <button class="btn btn-primary btn-sm" type="button" onclick="saveAreaConfig()">保存配置</button>
-              <button class="btn btn-danger btn-sm" type="button" onclick="deleteAreaConfig()">删除配置</button>
+              <button class="btn btn-primary btn-sm" type="button" data-action="save-area-config">保存配置</button>
+              <button class="btn btn-danger btn-sm" type="button" data-action="delete-area-config">删除配置</button>
             </div>
           </div>
           <div class="field-grid" style="padding:16px 20px">
@@ -59,7 +59,7 @@
             <h3 class="section-title">频道列表</h3>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="a-id-label">域 ID: <code id="areaIdDisplay" class="a-id-code">-</code></span>
-              <button class="btn btn-ghost btn-sm" type="button" onclick="showCreateChannel()">创建频道</button>
+              <button class="btn btn-ghost btn-sm" type="button" data-action="show-create-channel">创建频道</button>
             </div>
           </div>
           <div class="table-shell">
@@ -83,7 +83,7 @@
         <article class="table-card" id="voiceCard">
           <div class="section-head">
             <h3 class="section-title">语音频道监控</h3>
-            <button class="btn btn-ghost btn-sm" type="button" onclick="loadVoiceChannels()">刷新</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-action="load-voice-channels">刷新</button>
           </div>
           <div id="voiceList" class="a-voice-list">
             <p class="empty-state">暂无语音频道数据</p>
@@ -91,11 +91,11 @@
         </article>
 
         <!-- 创建频道对话框 -->
-        <div id="chModalOverlay" class="m-modal-overlay" onclick="closeChModal()"></div>
+        <div id="chModalOverlay" class="m-modal-overlay" data-action="close-ch-modal"></div>
         <div id="chModalDialog" class="m-modal">
           <header class="m-modal__head">
             <h3 class="m-modal__title">创建频道</h3>
-            <button class="m-modal__close" onclick="closeChModal()" aria-label="关闭">&times;</button>
+            <button class="m-modal__close" type="button" data-action="close-ch-modal" aria-label="关闭">&times;</button>
           </header>
           <div class="m-modal__body">
             <div class="field"><label for="newChName">频道名称</label><input id="newChName" type="text" placeholder="输入频道名称" /></div>
@@ -109,17 +109,17 @@
             <div id="createChMsg" class="msg"></div>
           </div>
           <footer class="m-modal__foot">
-            <button class="btn btn-ghost" type="button" onclick="closeChModal()">取消</button>
-            <button class="btn btn-primary" type="button" onclick="doCreateChannel()">创建</button>
+            <button class="btn btn-ghost" type="button" data-action="close-ch-modal">取消</button>
+            <button class="btn btn-primary" type="button" data-action="do-create-channel">创建</button>
           </footer>
         </div>
 
         <!-- 编辑频道对话框 -->
-        <div id="editChOverlay" class="m-modal-overlay" onclick="closeEditChannel()"></div>
+        <div id="editChOverlay" class="m-modal-overlay" data-action="close-edit-channel"></div>
         <div id="editChDialog" class="m-modal" style="width:min(520px,92vw)">
           <header class="m-modal__head">
             <h3 id="editChTitle" class="m-modal__title">编辑频道</h3>
-            <button class="m-modal__close" onclick="closeEditChannel()" aria-label="关闭">&times;</button>
+            <button class="m-modal__close" type="button" data-action="close-edit-channel" aria-label="关闭">&times;</button>
           </header>
           <div class="m-modal__body">
             <input id="editChId" type="hidden" />
@@ -176,8 +176,8 @@
             <div id="editChMsg" class="msg" style="margin-top:12px"></div>
           </div>
           <footer class="m-modal__foot">
-            <button class="btn btn-ghost" type="button" onclick="closeEditChannel()">取消</button>
-            <button class="btn btn-primary" type="button" onclick="doSaveChannelSettings()">保存</button>
+            <button class="btn btn-ghost" type="button" data-action="close-edit-channel">取消</button>
+            <button class="btn btn-primary" type="button" data-action="do-save-channel-settings">保存</button>
           </footer>
         </div>
       </section>

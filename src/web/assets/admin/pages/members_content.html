@@ -6,8 +6,8 @@
               <option value="">加载中...</option>
             </select>
             <input id="memberSearch" type="text" class="input" placeholder="搜索成员..." style="width:180px" onkeydown="if(event.key==='Enter')loadMembers()">
-            <button class="btn btn-ghost" type="button" onclick="loadMembers()">搜索</button>
-            <button class="btn btn-ghost" type="button" onclick="loadBlocks()">封禁列表</button>
+            <button class="btn btn-ghost" type="button" data-action="refresh-members">搜索</button>
+            <button class="btn btn-ghost" type="button" data-action="load-blocks">封禁列表</button>
           </div>
         </article>
 
@@ -46,9 +46,9 @@
             </table>
           </div>
           <div class="action-row" style="justify-content:center;gap:8px;padding-top:8px">
-            <button class="btn btn-ghost" type="button" onclick="prevPage()">上一页</button>
+            <button class="btn btn-ghost" type="button" data-action="members-prev">上一页</button>
             <span id="pageInfo" style="line-height:32px;font-size:13px;color:#94a3b8">1</span>
-            <button class="btn btn-ghost" type="button" onclick="nextPage()">下一页</button>
+            <button class="btn btn-ghost" type="button" data-action="members-next">下一页</button>
           </div>
         </article>
 
@@ -99,7 +99,7 @@
                   <span class="m-select-arrow"></span>
                 </div>
               </div>
-              <button class="m-send-refresh" type="button" onclick="refreshChannels()" title="刷新频道列表">
+              <button class="m-send-refresh" type="button" data-action="refresh-channels" title="刷新频道列表">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.65 2.35A7.96 7.96 0 008 0C3.58 0 .01 3.58.01 8S3.58 16 8 16c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 018 14 6 6 0 012 8a6 6 0 016-6c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/></svg>
               </button>
             </div>
@@ -108,11 +108,11 @@
             </div>
             <div class="m-send-bar">
               <span id="sendStatus" class="m-send-status"></span>
-              <button class="m-send-btn m-send-btn--normal" type="button" onclick="doSendMessage()">
+              <button class="m-send-btn m-send-btn--normal" type="button" data-action="send-message">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="margin-right:4px"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/></svg>
                 发送消息
               </button>
-              <button class="m-send-btn m-send-btn--announce" type="button" onclick="doSendAnnouncement()">
+              <button class="m-send-btn m-send-btn--announce" type="button" data-action="send-announcement">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="margin-right:4px"><path d="M18 11v2h4v-2h-4zm-2 6.61c.96.71 2.21 1.65 3.2 2.39.4-.53.8-1.07 1.2-1.6-.99-.74-2.24-1.68-3.2-2.4-.4.54-.8 1.08-1.2 1.61zM20.4 5.6c-.4-.53-.8-1.07-1.2-1.6-.99.74-2.24 1.68-3.2 2.4.4.53.8 1.07 1.2 1.6.96-.72 2.21-1.65 3.2-2.4zM4 9c-1.1 0-2 .9-2 2v2c0 1.1.9 2 2 2h1l5 5V4L5 9H4zm11.5 3c0-1.33-.58-2.53-1.5-3.35v6.69c.92-.81 1.5-2.01 1.5-3.34z" fill="currentColor"/></svg>
                 发送公告
               </button>
@@ -121,11 +121,11 @@
         </article>
 
         <!-- 用户详情抽屉 -->
-        <div id="drawerOverlay" class="m-drawer-overlay" onclick="closeDrawer()"></div>
+        <div id="drawerOverlay" class="m-drawer-overlay" data-action="close-drawer"></div>
         <aside id="detailDrawer" class="m-drawer">
           <header class="m-drawer__head">
             <h3 id="detailName" class="m-drawer__title">用户详情</h3>
-            <button class="m-drawer__close" onclick="closeDrawer()" aria-label="关闭">&times;</button>
+            <button class="m-drawer__close" type="button" data-action="close-drawer" aria-label="关闭">&times;</button>
           </header>
           <div class="m-drawer__body">
             <div id="detailProfile" class="m-profile"></div>
@@ -136,11 +136,11 @@
         </aside>
 
         <!-- 自定义弹窗 -->
-        <div id="modalOverlay" class="m-modal-overlay" onclick="AdminShell.closeModal()"></div>
+        <div id="modalOverlay" class="m-modal-overlay" data-action="close-modal"></div>
         <div id="modalDialog" class="m-modal">
           <header class="m-modal__head">
             <h3 id="modalTitle" class="m-modal__title">操作</h3>
-            <button class="m-modal__close" onclick="AdminShell.closeModal()" aria-label="关闭">&times;</button>
+            <button class="m-modal__close" type="button" data-action="close-modal" aria-label="关闭">&times;</button>
           </header>
           <div id="modalBody" class="m-modal__body"></div>
           <footer id="modalFooter" class="m-modal__foot"></footer>

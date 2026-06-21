@@ -2,8 +2,8 @@
         <article class="surface-card">
           <div class="action-row">
             <span id="statsState" class="micro-status is-warning">等待同步</span>
-            <button class="btn btn-primary" type="button" onclick="loadTop().catch(() => {})">刷新排行</button>
-            <button class="btn btn-danger" type="button" onclick="clearHistory()">清空历史</button>
+            <button class="btn btn-primary" type="button" data-action="refresh-stats">刷新排行</button>
+            <button class="btn btn-danger" type="button" data-action="clear-history">清空历史</button>
           </div>
         </article>
 
@@ -43,8 +43,8 @@
             </table>
           </div>
           <div class="action-row" style="margin-top: 14px;">
-            <button class="btn btn-sm btn-ghost" type="button" onclick="changeTop(-1)">上一页</button>
-            <button class="btn btn-sm btn-ghost" type="button" onclick="changeTop(1)">下一页</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-action="change-top" data-delta="-1">上一页</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-action="change-top" data-delta="1">下一页</button>
             <span id="topInfo" class="mono"></span>
           </div>
         </article>
@@ -56,7 +56,7 @@
             </div>
           </div>
           <div class="action-row">
-            <button class="btn btn-danger" type="button" onclick="clearHistory()">清空播放历史</button>
+            <button class="btn btn-danger" type="button" data-action="clear-history">清空播放历史</button>
           </div>
           <div id="msg" class="msg"></div>
         </article>

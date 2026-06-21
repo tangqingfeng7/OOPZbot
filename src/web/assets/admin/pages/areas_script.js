@@ -329,8 +329,8 @@
             <td>${badges}</td>
             <td>
               <div class="a-ch-actions">
-                <button class="btn btn-ghost" onclick="showEditChannel('${esc(ch.id)}','${esc(ch.type)}')">编辑</button>
-                <button class="btn btn-danger" onclick="doDeleteChannel('${esc(ch.id)}','${esc(ch.name)}')">删除</button>
+                <button class="btn btn-ghost" type="button" data-action="show-edit-channel" data-ch-id="${esc(ch.id)}" data-ch-type="${esc(ch.type)}">编辑</button>
+                <button class="btn btn-danger" type="button" data-action="do-delete-channel" data-ch-id="${esc(ch.id)}" data-ch-name="${esc(ch.name)}">删除</button>
               </div>
             </td>
           </tr>`;
@@ -551,6 +551,16 @@
 
     AdminShell.registerActions({
       "refresh-areas": () => loadAreaManager(),
+      "save-area-config": () => saveAreaConfig(),
+      "delete-area-config": () => deleteAreaConfig(),
+      "show-create-channel": () => showCreateChannel(),
+      "load-voice-channels": () => loadVoiceChannels(),
+      "close-ch-modal": () => closeChModal(),
+      "do-create-channel": () => doCreateChannel(),
+      "close-edit-channel": () => closeEditChannel(),
+      "do-save-channel-settings": () => doSaveChannelSettings(),
+      "show-edit-channel": (el) => showEditChannel(el.dataset.chId, el.dataset.chType),
+      "do-delete-channel": (el) => doDeleteChannel(el.dataset.chId, el.dataset.chName),
     });
     AdminShell.init({ page: "areas", passwordHandler: login });
     AdminShell.upgradeSelect("ac_default_channel_select");

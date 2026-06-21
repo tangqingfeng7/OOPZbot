@@ -796,6 +796,13 @@
       "refresh-config": () => loadConfig(),
       "reset-overrides": () => resetOverrides(),
       "save-config": () => saveConfig(true),
+      "toggle-secret": (el) => toggleSecret(el.dataset.secret, el),
+      "kw-add": () => window._kwAdd(),
+      "oopz-login": () => loginOopzAccount(),
+      "netease-qr-refresh": () => refreshNeteaseQr(),
+      "netease-qr-save": () => saveNeteaseQrCookie(true),
+      "bilibili-qr-refresh": () => refreshBilibiliQr(),
+      "bilibili-qr-save": () => saveBilibiliQrCookie(true),
     });
     AdminShell.init({ page: "config", passwordHandler: login });
     initTabs();
