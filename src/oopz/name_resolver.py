@@ -13,6 +13,7 @@ import requests
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 
+from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
 logger = get_logger("NameResolver")
@@ -239,7 +240,7 @@ class NameResolver:
             resp = self._session.post(
                 url, headers=headers,
                 data=body_str.encode("utf-8"),
-                timeout=10,
+                timeout=HTTP_TIMEOUT_DEFAULT,
             )
             if resp.status_code != 200:
                 logger.debug(f"personInfos 请求失败: {resp.status_code}")

@@ -7,9 +7,13 @@ from __future__ import annotations
 import requests
 from typing import Optional
 
+from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
 logger = get_logger("QQMusic")
+
+# 专辑封面 CDN 模板，{mid} 为专辑 mid。
+_ALBUM_COVER_URL = "https://y.gtimg.cn/music/photo_new/T002R300x300M000{mid}.jpg"
 
 
 _cached_config: dict | None = None
@@ -54,7 +58,7 @@ class QQMusic:
                 f"{self.base_url}{path}",
                 params=params,
                 headers=headers,
-                timeout=10,
+                timeout=HTTP_TIMEOUT_DEFAULT,
             )
             resp.raise_for_status()
             return resp.json()
@@ -161,7 +165,7 @@ class QQMusic:
         duration_ms = duration_s * 1000
         cover = ""
         if isinstance(album, dict) and album.get("mid"):
-            cover = f"https://y.gtimg.cn/music/photo_new/T002R300x300M000{album['mid']}.jpg"
+            cover = _ALBUM_COVER_URL.format(mid=album["mid"])
         return {
             "id": song_id,
             "mid": song_id,

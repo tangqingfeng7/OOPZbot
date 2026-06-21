@@ -6,6 +6,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from config import NETEASE_CLOUD
+from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
 logger = get_logger("Netease")
@@ -178,14 +179,14 @@ class NeteaseCloud:
                     f"{self.base_url}{path}",
                     data=request_params,
                     headers=headers,
-                    timeout=10,
+                    timeout=HTTP_TIMEOUT_DEFAULT,
                 )
             else:
                 resp = self._session.get(
                     f"{self.base_url}{path}",
                     params=request_params,
                     headers=headers,
-                    timeout=10,
+                    timeout=HTTP_TIMEOUT_DEFAULT,
                 )
             resp.raise_for_status()
             return resp.json()

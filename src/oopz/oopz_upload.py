@@ -11,6 +11,7 @@ import requests
 from PIL import Image
 
 from config import OOPZ_CONFIG
+from core.http_constants import HTTP_TIMEOUT_DOWNLOAD
 from core.logger_config import get_logger
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ class UploadMixin:
     ) -> dict:
         """从网络 URL 下载音频并上传到 Oopz（AUDIO 类型）"""
         try:
-            resp = self.session.get(audio_url, timeout=30, headers={
+            resp = self.session.get(audio_url, timeout=HTTP_TIMEOUT_DOWNLOAD, headers={
                 "Referer": "https://music.163.com/",
             })
             resp.raise_for_status()

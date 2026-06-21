@@ -20,6 +20,7 @@ try:
     from config import AUTO_RECALL_CONFIG
 except ImportError:
     AUTO_RECALL_CONFIG = {"enabled": False}
+from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 from oopz.oopz_api import OopzApiMixin
 from core.proxy_utils import configure_requests_session
@@ -244,7 +245,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
         headers = {**self.session.headers, **self.signer.oopz_headers(sign_path, "")}
         url = OOPZ_CONFIG["base_url"] + url_path
-        return self.session.get(url, headers=headers, params=params, timeout=10)
+        return self.session.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT_DEFAULT)
 
     def _get(self, url_path: str, params: Optional[dict] = None) -> requests.Response:
         """GET 请求（签名包含查询参数）。"""

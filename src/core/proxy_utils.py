@@ -13,13 +13,21 @@ from urllib.parse import unquote, urlparse
 _log = logging.getLogger("ProxyUtils")
 
 _DIRECT_VALUES = {"0", "false", "no", "none", "off", "direct"}
+
+# 本地代理客户端（Clash / mihomo）的默认监听端口与回环地址。
+# 集中定义，避免在多个别名里重复写死同一组端口。
+_LOCAL_PROXY_HOST = "127.0.0.1"
+_CLASH_HTTP_PORT = 7890
+_CLASH_SOCKS_PORT = 7891
+_CLASH_HTTP = f"http://{_LOCAL_PROXY_HOST}:{_CLASH_HTTP_PORT}"
+_CLASH_SOCKS = f"socks5://{_LOCAL_PROXY_HOST}:{_CLASH_SOCKS_PORT}"
 _PROXY_ALIASES = {
-    "clash": "http://127.0.0.1:7890",
-    "clash-http": "http://127.0.0.1:7890",
-    "clash-mixed": "http://127.0.0.1:7890",
-    "clash-socks": "socks5://127.0.0.1:7891",
-    "mihomo": "http://127.0.0.1:7890",
-    "mihomo-socks": "socks5://127.0.0.1:7891",
+    "clash": _CLASH_HTTP,
+    "clash-http": _CLASH_HTTP,
+    "clash-mixed": _CLASH_HTTP,
+    "clash-socks": _CLASH_SOCKS,
+    "mihomo": _CLASH_HTTP,
+    "mihomo-socks": _CLASH_SOCKS,
 }
 _DEFAULT_PORTS = {
     "http": 80,

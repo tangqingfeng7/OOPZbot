@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 
 import requests as http_requests
 
+from core.http_constants import HTTP_TIMEOUT_DOWNLOAD
 from core.logger_config import get_logger
 
 logger = get_logger("Voice")
@@ -49,7 +50,7 @@ def _ensure_agora_sdk() -> None:
     except Exception:
         proxies = None
     try:
-        resp = http_requests.get(_SDK_URL, timeout=30, proxies=proxies)
+        resp = http_requests.get(_SDK_URL, timeout=HTTP_TIMEOUT_DOWNLOAD, proxies=proxies)
         resp.raise_for_status()
         if len(resp.content) < _SDK_MIN_SIZE:
             raise RuntimeError(f"SDK 文件过小 ({len(resp.content)} bytes)")

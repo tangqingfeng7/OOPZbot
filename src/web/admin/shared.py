@@ -17,6 +17,7 @@ from http.cookies import SimpleCookie
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
+from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
@@ -324,7 +325,7 @@ def _netease_api_get(
         f"{base_url}{path}",
         params=params or {},
         headers=request_headers,
-        timeout=10,
+        timeout=HTTP_TIMEOUT_DEFAULT,
     )
     response.raise_for_status()
     data = response.json()
@@ -349,7 +350,7 @@ def _netease_api_post(
         f"{base_url}{path}",
         data=data or {},
         headers=request_headers,
-        timeout=10,
+        timeout=HTTP_TIMEOUT_DEFAULT,
     )
     response.raise_for_status()
     payload = response.json()
@@ -557,7 +558,7 @@ def _bilibili_api_get(path: str, params: dict | None = None) -> tuple[dict, Any]
             "Referer": "https://www.bilibili.com/",
             "Cache-Control": "no-cache",
         },
-        timeout=10,
+        timeout=HTTP_TIMEOUT_DEFAULT,
     )
     response.raise_for_status()
     data = response.json()
@@ -583,7 +584,7 @@ def _bilibili_account_api_get(path: str, headers: dict | None = None) -> tuple[d
     response = requests.get(
         f"{_BILIBILI_API_BASE}{path}",
         headers=request_headers,
-        timeout=10,
+        timeout=HTTP_TIMEOUT_DEFAULT,
     )
     response.raise_for_status()
     data = response.json()
