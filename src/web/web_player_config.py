@@ -141,7 +141,7 @@ CONFIG_GROUPS: dict[str, dict] = {
         "target": NETEASE_CLOUD,
         "fields": {
             "base_url": {"type": "str", "max_len": 300},
-            "cookie": {"type": "str", "max_len": 3000, "sensitive": True, "expose_in_admin": True},
+            "cookie": {"type": "str", "max_len": 6000, "sensitive": True, "expose_in_admin": True},
             "audio_download_timeout": {"type": "int", "min": 5, "max": 600},
             "audio_download_retries": {"type": "int", "min": 0, "max": 10},
             "audio_quality": {"type": "str", "max_len": 20},
