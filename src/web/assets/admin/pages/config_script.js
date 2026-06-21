@@ -78,13 +78,18 @@
       "mihomo-socks": "socks5://127.0.0.1:7891",
     };
 
+    // mode: "direct"=直连忽略环境、"system"=跟随系统/环境变量代理、"manual"=手动指定。
     function _parseProxyValue(raw) {
-      const out = { enabled: false, scheme: "http", host: PROXY_DEFAULT_HOST, port: PROXY_HTTP_PORT };
+      const out = { mode: "direct", scheme: "http", host: PROXY_DEFAULT_HOST, port: PROXY_HTTP_PORT };
       if (raw === false) {
         return out;
       }
       const value = (raw == null ? "" : String(raw)).trim();
-      if (value === "" || value.toLowerCase() === "direct") {
+      if (value === "") {
+        out.mode = "system";
+        return out;
+      }
+      if (value.toLowerCase() === "direct") {
         return out;
       }
       let urlStr = PROXY_ALIASES[value.toLowerCase()] || value;
@@ -95,32 +100,37 @@
       if (!m) {
         return out;
       }
-      out.enabled = true;
+      out.mode = "manual";
       out.scheme = m[1].toLowerCase().indexOf("socks") === 0 ? "socks5" : "http";
       out.host = m[2] || PROXY_DEFAULT_HOST;
       out.port = m[3] ? Number(m[3]) : (out.scheme === "socks5" ? PROXY_SOCKS_PORT : PROXY_HTTP_PORT);
       return out;
     }
 
-    function _applyProxyEnabledState() {
-      const on = chk("cfg_proxy_enabled");
+    function _applyProxyModeState() {
+      const manual = val("cfg_proxy_mode") === "manual";
       document.querySelectorAll(".js-proxy-detail").forEach(function (el) {
-        el.style.opacity = on ? "" : "0.45";
+        el.style.opacity = manual ? "" : "0.45";
       });
     }
 
     function _loadProxy(config) {
       const p = _parseProxyValue(config && config.oopz ? config.oopz.proxy : "");
-      setVal("cfg_proxy_enabled", p.enabled);
+      setVal("cfg_proxy_mode", p.mode);
       setVal("cfg_proxy_scheme", p.scheme);
       setVal("cfg_proxy_host", p.host);
       setVal("cfg_proxy_port", p.port);
+      AdminShell.refreshCustomSelect("cfg_proxy_mode");
       AdminShell.refreshCustomSelect("cfg_proxy_scheme");
-      _applyProxyEnabledState();
+      _applyProxyModeState();
     }
 
     function _buildProxyValue() {
-      if (!chk("cfg_proxy_enabled")) {
+      const mode = val("cfg_proxy_mode") || "direct";
+      if (mode === "system") {
+        return "";
+      }
+      if (mode !== "manual") {
         return "direct";
       }
       const scheme = val("cfg_proxy_scheme") || "http";
@@ -869,9 +879,10 @@
       "netease-qr-save": () => saveNeteaseQrCookie(true),
       "bilibili-qr-refresh": () => refreshBilibiliQr(),
       "bilibili-qr-save": () => saveBilibiliQrCookie(true),
-      "proxy-toggle": () => _applyProxyEnabledState(),
+      "proxy-mode": () => _applyProxyModeState(),
     });
     AdminShell.init({ page: "config", passwordHandler: login });
     initTabs();
+    AdminShell.upgradeSelect("cfg_proxy_mode");
     AdminShell.upgradeSelect("cfg_proxy_scheme");
     check();
