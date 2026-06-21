@@ -34,8 +34,9 @@ class BackgroundServiceRunner:
         logger.info("自动播放监控已启动。")
 
     def _start_web_player(self, context: AppContext) -> None:
-        from web.web_player import register_runtime_dependencies, set_sender
+        from web.web_player import register_runtime_dependencies, set_oopz_client, set_sender
         set_sender(context.sender)
+        set_oopz_client(context.client)
         register_runtime_dependencies(
             music=context.handler.infrastructure.music,
             plugins=context.handler.infrastructure.plugins,

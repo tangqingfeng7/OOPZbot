@@ -177,6 +177,7 @@ _sender = None
 _music_dependency = None
 _plugin_runtime = None
 _plugin_host = None
+_oopz_client = None
 
 
 def set_sender(sender) -> None:
@@ -186,6 +187,16 @@ def set_sender(sender) -> None:
 
 def get_sender():
     return _sender
+
+
+def set_oopz_client(client) -> None:
+    """注入运行中的 OOPZ WebSocket 客户端，供后台凭据热更新刷新连接。"""
+    global _oopz_client
+    _oopz_client = client
+
+
+def get_oopz_client():
+    return _oopz_client
 
 
 def set_plugin_runtime(runtime, host) -> None:
