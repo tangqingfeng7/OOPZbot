@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 
 import requests as http_requests
 
-from core.http_constants import HTTP_TIMEOUT_DOWNLOAD
+from core.http_constants import HTTP_TIMEOUT_DEFAULT, HTTP_TIMEOUT_DOWNLOAD
 from core.logger_config import get_logger
 
 logger = get_logger("Voice")
@@ -720,11 +720,11 @@ class VoiceClient:
             stop_event = self._stop_event
         try:
             from config import NETEASE_CLOUD
-            connect_timeout = 10
+            connect_timeout = HTTP_TIMEOUT_DEFAULT
             read_timeout = NETEASE_CLOUD.get("audio_download_timeout", 60)
             max_retries = NETEASE_CLOUD.get("audio_download_retries", 2)
         except Exception:
-            connect_timeout, read_timeout, max_retries = 10, 60, 2
+            connect_timeout, read_timeout, max_retries = HTTP_TIMEOUT_DEFAULT, 60, 2
 
         session = http_requests.Session()
         session.trust_env = False

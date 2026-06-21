@@ -19,6 +19,7 @@ import requests
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from core.http_constants import HTTP_TIMEOUT_LOGIN
 from core.logger_config import get_logger
 
 logger = get_logger("OopzPasswordLogin")
@@ -645,7 +646,7 @@ def _config_login_account(oopz_config: Mapping[str, Any]) -> tuple[str, str]:
 
 def refresh_credentials_from_config_password(
     *,
-    timeout: float = 20,
+    timeout: float = HTTP_TIMEOUT_LOGIN,
     save: bool = True,
 ) -> dict[str, Any] | None:
     """配置里有 OOPZ 账号密码时，启动前用直接 API 刷新登录凭据。"""

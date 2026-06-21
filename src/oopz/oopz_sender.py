@@ -20,7 +20,7 @@ try:
     from config import AUTO_RECALL_CONFIG
 except ImportError:
     AUTO_RECALL_CONFIG = {"enabled": False}
-from core.http_constants import HTTP_TIMEOUT_DEFAULT
+from core.http_constants import HTTP_TIMEOUT_DEFAULT, HTTP_TIMEOUT_LOGIN
 from core.logger_config import get_logger
 from oopz.oopz_api import OopzApiMixin
 from core.proxy_utils import configure_requests_session
@@ -188,7 +188,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
                     refresh_credentials_from_config_password,
                 )
 
-                credentials = refresh_credentials_from_config_password(timeout=20, save=True)
+                credentials = refresh_credentials_from_config_password(timeout=HTTP_TIMEOUT_LOGIN, save=True)
             except OopzPasswordLoginError as exc:
                 logger.warning("OOPZ 登录态失效，自动刷新失败，继续使用现有凭据: HTTP %s, %s", status_code, exc)
                 return False

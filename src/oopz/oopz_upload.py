@@ -11,7 +11,7 @@ import requests
 from PIL import Image
 
 from config import OOPZ_CONFIG
-from core.http_constants import HTTP_TIMEOUT_DOWNLOAD
+from core.http_constants import HTTP_TIMEOUT_DOWNLOAD, HTTP_TIMEOUT_MEDIA
 from core.logger_config import get_logger
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class UploadMixin:
     def upload_file_from_url(self, image_url: str) -> dict:
         """从网络 URL 下载图片并上传到 Oopz（不落地磁盘）"""
         try:
-            resp = self.session.get(image_url, stream=True, timeout=15)
+            resp = self.session.get(image_url, stream=True, timeout=HTTP_TIMEOUT_MEDIA)
             resp.raise_for_status()
             image_bytes = resp.content
 

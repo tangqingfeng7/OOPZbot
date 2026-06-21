@@ -35,6 +35,14 @@ OOPZ_CONFIG = {
 
 }
 
+# 本地代理客户端别名端口：proxy 填 "clash"/"mihomo" 等别名时使用。
+# 改了 Clash/mihomo 的监听端口时，只需在这里调整，无需改动代码。
+PROXY_ALIAS_CONFIG = {
+    "host": "127.0.0.1",
+    "http_port": 7890,   # clash / clash-http / clash-mixed / mihomo
+    "socks_port": 7891,  # clash-socks / mihomo-socks
+}
+
 # HTTP 请求头模板
 DEFAULT_HEADERS = {
     "Accept": "*/*",
