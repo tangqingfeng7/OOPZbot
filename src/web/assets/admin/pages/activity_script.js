@@ -78,8 +78,78 @@
       });
     }
 
+    // ---- SVG 图标库（全部内联，不用 emoji）----
+    var ICON = {
+      crown: '<path d="M3 7l4 4 5-7 5 7 4-4-2 12H5L3 7z"/>',
+      flame: '<path d="M12 2c1 4-2 5-2 8a2 2 0 104 0c0-1 0-2-1-3 3 1 4 4 4 7a5 5 0 11-10 0c0-4 3-6 5-12z"/>',
+      bolt: '<path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/>',
+      chat: '<path d="M4 4h16v12H7l-3 3V4z"/>',
+      drop: '<path d="M12 3s6 7 6 11a6 6 0 11-12 0c0-4 6-11 6-11z"/>',
+      ghost:
+        '<path d="M5 21V10a7 7 0 0114 0v11l-2.5-1.8L14 21l-2-1.8L10 21l-2.5-1.8L5 21z"/>' +
+        '<circle cx="9.5" cy="10.5" r="1.2" fill="#0f172a"/>' +
+        '<circle cx="14.5" cy="10.5" r="1.2" fill="#0f172a"/>',
+    };
+
+    function iconSvg(path, color) {
+      return (
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="' + color +
+        '" aria-hidden="true" style="vertical-align:-2px;margin-right:5px;">' + path + "</svg>"
+      );
+    }
+
+    // 按消息数授予一个搞怪称号（图标 + 文案 + 主题色）
+    function titleMeta(total) {
+      var n = Number(total) || 0;
+      if (n >= 1000) return { label: "宇宙级话痨", color: "#a855f7", icon: ICON.crown };
+      if (n >= 200) return { label: "群聊永动机", color: "#8b5cf6", icon: ICON.crown };
+      if (n >= 100) return { label: "话痨之王", color: "#6366f1", icon: ICON.crown };
+      if (n >= 50) return { label: "社交牛逼症", color: "#f97316", icon: ICON.flame };
+      if (n >= 20) return { label: "活跃分子", color: "#eab308", icon: ICON.bolt };
+      if (n >= 5) return { label: "冒泡选手", color: "#22c55e", icon: ICON.chat };
+      if (n >= 1) return { label: "潜水偷看", color: "#38bdf8", icon: ICON.drop };
+      return { label: "查无此人", color: "#94a3b8", icon: ICON.ghost };
+    }
+
+    // 名次徽章：前三名金/银/铜奖牌 SVG，其余编号圆环
+    function rankBadgeSvg(index) {
+      var palette = [
+        { fill: "#fbbf24", ring: "#f59e0b" },
+        { fill: "#cbd5e1", ring: "#94a3b8" },
+        { fill: "#d99a5b", ring: "#b45309" },
+      ];
+      if (index < 3) {
+        var c = palette[index];
+        return (
+          '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">' +
+            '<path d="M8 2l2 5h4l2-5" fill="none" stroke="' + c.ring + '" stroke-width="2" stroke-linecap="round"/>' +
+            '<circle cx="12" cy="14" r="7" fill="' + c.fill + '" stroke="' + c.ring + '" stroke-width="2"/>' +
+            '<text x="12" y="17.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#1f2937">' +
+              (index + 1) + "</text>" +
+          "</svg>"
+        );
+      }
+      return (
+        '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">' +
+          '<circle cx="12" cy="12" r="9" fill="rgba(148,163,184,0.16)" stroke="rgba(148,163,184,0.5)" stroke-width="1.5"/>' +
+          '<text x="12" y="15.5" text-anchor="middle" font-size="9" font-weight="700" fill="#cbd5e1">' +
+            (index + 1) + "</text>" +
+        "</svg>"
+      );
+    }
+
+    function crownSvg() {
+      return (
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="#fbbf24" aria-hidden="true" ' +
+        'style="vertical-align:-2px;margin-left:5px;"><path d="M3 7l4 4 5-7 5 7 4-4-2 12H5L3 7z"/></svg>'
+      );
+    }
+
     function renderRankingChart(ranking) {
-      var labels = ranking.map(function (r) { return r.display_name || r.user_id.slice(0, 8); });
+      var labels = ranking.map(function (r, i) {
+        var name = r.display_name || r.user_id.slice(0, 8);
+        return "#" + (i + 1) + " " + name;
+      });
       var data = ranking.map(function (r) { return r.total; });
       var ctx = document.getElementById("rankingChart");
       if (!ctx) return;
@@ -132,17 +202,33 @@
 
     function renderRankingTable(ranking) {
       var rows = ranking.map(function (r, i) {
-        var prefix = i + 1;
+        var crown = i === 0 ? crownSvg() : "";
+        var meta = titleMeta(r.total);
+        var pill =
+          '<span class="rank-title" style="--title-color:' + meta.color + ';">' +
+            iconSvg(meta.icon, meta.color) + escapeHtml(meta.label) + "</span>";
         return (
           "<tr>" +
-            "<td>" + prefix + "</td>" +
-            '<td class="table-emphasis">' + escapeHtml(r.display_name || r.user_id.slice(0, 12)) + "</td>" +
+            '<td>' + rankBadgeSvg(i) + "</td>" +
+            '<td class="table-emphasis">' + escapeHtml(r.display_name || r.user_id.slice(0, 12)) + crown + "</td>" +
             "<td>" + escapeHtml(r.total) + "</td>" +
+            "<td>" + pill + "</td>" +
           "</tr>"
         );
       }).join("");
-      AdminShell.byId("rankingRows").innerHTML =
-        rows || '<tr><td colspan="3" class="empty-state">暂无数据</td></tr>';
+      AdminShell.byId("rankingRows").innerHTML = rows || emptyRankingRow();
+    }
+
+    function emptyRankingRow() {
+      var svg =
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.8" style="vertical-align:-4px;margin-right:6px;">' +
+          '<path d="M4 5h16v10H8l-4 4V5z"/>' +
+          '<circle cx="9" cy="10" r="1" fill="currentColor"/>' +
+          '<circle cx="12" cy="10" r="1" fill="currentColor"/>' +
+          '<circle cx="15" cy="10" r="1" fill="currentColor"/>' +
+        "</svg>";
+      return '<tr><td colspan="4" class="empty-state">' + svg + "还没人冒泡，快去群里水两句</td></tr>";
     }
 
     async function loadActivity() {
@@ -164,7 +250,8 @@
       renderRankingChart(ranking);
       renderRankingTable(ranking);
 
-      setPageState("统计已同步", "success");
+      var champ = ranking.length ? (ranking[0].display_name || ranking[0].user_id.slice(0, 8)) : "";
+      setPageState(champ ? ("本期榜首：" + champ) : "战绩已刷新", "success");
     }
 
     async function check() {
