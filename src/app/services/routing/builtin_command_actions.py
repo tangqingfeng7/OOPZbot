@@ -40,6 +40,7 @@ class CommunityCommandActions:
 class InteractionCommandActions:
     def __init__(self, runtime: CommandRuntimeView):
         self._services = runtime.services
+        self._sender = sender_of(runtime)
 
     def show_voice_channels(self, channel: str, area: str) -> None:
         self._services.interaction.common.show_voice_channels(channel, area)
@@ -61,6 +62,27 @@ class InteractionCommandActions:
 
     def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
         self._services.interaction.common.generate_image(prompt, channel, area, user)
+
+    def clear_ai_memory(self, user: str, channel: str, area: str) -> None:
+        """清除用户在当前频道的 AI 对话记忆（mention/slash 共用）。"""
+        cleared = self._services.interaction.chat.clear_memory(user, channel)
+        if cleared:
+            self._sender.send_message("对话记忆已清除", channel=channel, area=area)
+        else:
+            self._sender.send_message("当前没有对话记忆", channel=channel, area=area)
+
+    def handle_pick(self, raw: str, channel: str, area: str, user: str, usage: str) -> None:
+        """选择候选编号：先试点歌候选，再试成员候选（mention/slash 共用）。"""
+        token = (raw or "").strip()
+        if not token.isdigit():
+            self._sender.send_message(usage, channel=channel, area=area)
+            return
+        index = int(token)
+        if self._services.interaction.music.handle_pick(index, channel, area, user):
+            return
+        if self._services.community.member.handle_pick(index, channel, area, user):
+            return
+        self._sender.send_message("当前没有可选择的候选结果，请先搜索或搜歌", channel=channel, area=area)
 
 
 class ModerationCommandActions:

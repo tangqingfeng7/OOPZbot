@@ -19,6 +19,8 @@ from domain.plugins.base import (
     validate_range,
 )
 
+from plugins._shared.command_mixin import PluginCommandMixin
+
 from .api import DeltaForceApiClient, describe_common_failure
 from .assets import normalize_mode
 from .formatters import (
@@ -61,7 +63,10 @@ from .store import DeltaForceStore
 logger = get_logger("DeltaForcePlugin")
 
 
-class DeltaForcePlugin(BotModule):
+class DeltaForcePlugin(PluginCommandMixin, BotModule):
+    command_error_prefix = "三角洲命令执行失败"
+    command_log_name = "DeltaForcePlugin"
+
     def __init__(self) -> None:
         self._config: dict = {}
         self._api: Optional[DeltaForceApiClient] = None
@@ -255,34 +260,7 @@ class DeltaForcePlugin(BotModule):
         if self._push:
             self._push.stop()
 
-    def handle_mention(self, text, channel, area, user, handler) -> bool:
-        mention_prefix = self.command_capabilities.mention_prefixes[0]
-        command = text[len(mention_prefix):].strip() if text.startswith(mention_prefix) else text.strip()
-        if not command:
-            self._send_text(handler, build_help_text(), channel, area)
-            return True
-        self._dispatch(command, channel, area, user, handler)
-        return True
-
-    def handle_slash(self, command, subcommand, arg, channel, area, user, handler) -> bool:
-        if (command or "").strip().lower() != "/df":
-            return False
-        parts = []
-        if subcommand:
-            parts.append(subcommand)
-        if arg:
-            parts.append(arg)
-        self._dispatch(" ".join(parts).strip(), channel, area, user, handler, slash=True)
-        return True
-
-    def _dispatch(self, command_text: str, channel: str, area: str, user: str, handler, slash: bool = False) -> None:
-        try:
-            self._dispatch_inner(command_text, channel, area, user, handler, slash=slash)
-        except Exception as exc:
-            logger.exception("DeltaForcePlugin: command failed: %s", command_text)
-            self._send_text(handler, f"三角洲命令执行失败: {exc}", channel, area)
-
-    def _dispatch_inner(self, command_text: str, channel: str, area: str, user: str, handler, slash: bool = False) -> None:
+    def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
         command_text = command_text.strip()
         lower = command_text.lower()
 

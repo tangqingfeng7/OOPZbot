@@ -17,11 +17,11 @@ plugins/
 
 每个插件入口通常需要：
 
-1. 定义一个继承 `BotModule` 的类
+1. 定义一个同时继承 `PluginCommandMixin` 和 `BotModule` 的类
 2. 实现 `metadata`
 3. 声明 `command_capabilities`
 4. 视需要实现 `config_spec`
-5. 实现 `handle_mention` 和/或 `handle_slash`
+5. 实现 `dispatch_command`（命令入口由 `PluginCommandMixin` 统一处理，无需手写 `handle_mention` / `handle_slash`）
 
 如果插件依赖私有辅助模块，例如 `plugins/demo_plugin/service.py`，建议声明 `private_modules`，以便卸载时清理模块缓存。
 
@@ -63,6 +63,7 @@ python tools/export_plugin_config_assets.py delta_force
 
 `plugins/_shared/` 提供可复用基类，避免重复造轮子：
 
+- `PluginCommandMixin`：统一的 mention/slash 命令入口，子类只实现 `dispatch_command`，用类属性 `command_error_prefix` / `command_log_name` 定制错误文案与日志名。当前全部插件均采用此写法。
 - `IntervalWorker`：固定间隔的后台守护线程基类（定时推送 / 轮询监控），子类实现 `_tick()`。
 - `JsonHttpClient`：带重试与 JSON 解析的 HTTP 客户端基类，统一 UA / 超时 / 代理 / 重试。
 

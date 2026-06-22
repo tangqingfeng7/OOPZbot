@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 
 import requests as http_requests
 
+from core.browser_launch import VOICE_STREAM_ARGS as _BROWSER_ARGS
 from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_DEFAULT, HTTP_TIMEOUT_DOWNLOAD
 from core.logger_config import get_logger
@@ -26,17 +27,6 @@ _HTML_PATH = os.path.join(_WEB_ASSETS_DIR, "agora_player.html")
 _SDK_PATH = os.path.join(_WEB_ASSETS_DIR, "agora_sdk.js")
 _SDK_URL = "https://download.agora.io/sdk/release/AgoraRTC_N-4.22.0.js"
 _SDK_MIN_SIZE = 500_000
-
-_BROWSER_ARGS = [
-    "--disable-web-security",
-    "--allow-file-access-from-files",
-    "--autoplay-policy=no-user-gesture-required",
-    "--use-fake-device-for-media-stream",
-    "--use-fake-ui-for-media-stream",
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--no-proxy-server",
-]
 
 
 def _ensure_agora_sdk() -> None:

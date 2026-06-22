@@ -6,10 +6,20 @@ from domain.plugins.base import (
     PluginConfigSpec,
     PluginMetadata,
 )
-from .._shared.lol_common import extract_keyword_from_mention
+from plugins._shared.command_mixin import PluginCommandMixin
 
 
-class LolBanPlugin(BotModule):
+_HELP_TEXT = (
+    "请输入QQ号\n"
+    "格式: @bot 查封号 123456789  |  /lol 123456789\n"
+    "官方封号查询: https://gamesafe.qq.com/query_punish.shtml"
+)
+
+
+class LolBanPlugin(PluginCommandMixin, BotModule):
+    command_error_prefix = "封号查询出错"
+    command_log_name = "LolBanPlugin"
+
     def __init__(self):
         self._handler = None
         self._config: dict = {}
@@ -55,46 +65,11 @@ class LolBanPlugin(BotModule):
         from .query_service import LolQueryHandler
         self._handler = LolQueryHandler(self._config)
 
-    def _keyword(self, text: str) -> str:
-        return extract_keyword_from_mention(text, self.command_capabilities.mention_prefixes)
-
-    def handle_mention(self, text, channel, area, user, handler):
-        keyword = self._keyword(text)
+    def dispatch_command(self, command_text, channel, area, user, handler) -> None:
+        keyword = command_text.strip()
         if not keyword:
-            handler.sender.send_message(
-                "请输入QQ号，例如: @bot 查封号 123456789\n"
-                "官方封号查询: https://gamesafe.qq.com/query_punish.shtml",
-                channel=channel,
-                area=area,
-            )
-            return True
-        handler.sender.send_message(
-            f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...",
-            channel=channel,
-            area=area,
-        )
+            self._send(handler, _HELP_TEXT, channel, area)
+            return
+        self._send(handler, f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...", channel, area)
         reply = self._handler.query_and_format(keyword)
-        handler.sender.send_message(reply, channel=channel, area=area)
-        return True
-
-    def handle_slash(self, command, subcommand, arg, channel, area, user, handler):
-        keyword = (subcommand or "").strip()
-        if arg:
-            keyword = f"{keyword} {arg}".strip() if keyword else arg.strip()
-        if not keyword:
-            handler.sender.send_message(
-                "用法: /lol QQ号\n"
-                "示例: /lol 123456789\n\n"
-                "官方封号查询: https://gamesafe.qq.com/query_punish.shtml",
-                channel=channel,
-                area=area,
-            )
-            return True
-        handler.sender.send_message(
-            f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...",
-            channel=channel,
-            area=area,
-        )
-        reply = self._handler.query_and_format(keyword)
-        handler.sender.send_message(reply, channel=channel, area=area)
-        return True
+        self._send(handler, reply, channel, area)

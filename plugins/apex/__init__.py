@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.logger_config import get_logger
 from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
@@ -16,6 +15,8 @@ from domain.plugins.base import (
     validate_range,
 )
 
+from plugins._shared.command_mixin import PluginCommandMixin
+
 from .api import ApexApiClient
 from .formatters import (
     build_help_text,
@@ -25,10 +26,11 @@ from .formatters import (
     format_predator,
 )
 
-logger = get_logger("ApexPlugin")
 
+class ApexPlugin(PluginCommandMixin, BotModule):
+    command_error_prefix = "Apex 查询出错"
+    command_log_name = "ApexPlugin"
 
-class ApexPlugin(BotModule):
     def __init__(self) -> None:
         self._config: dict = {}
         self._api: Optional[ApexApiClient] = None
@@ -102,33 +104,7 @@ class ApexPlugin(BotModule):
     def on_unload(self) -> None:
         pass
 
-    def handle_mention(self, text, channel, area, user, handler) -> bool:
-        for prefix in self.command_capabilities.mention_prefixes:
-            if text.startswith(prefix):
-                command = text[len(prefix):].strip()
-                self._dispatch(command, channel, area, user, handler)
-                return True
-        return False
-
-    def handle_slash(self, command, subcommand, arg, channel, area, user, handler) -> bool:
-        if (command or "").strip().lower() != "/apex":
-            return False
-        parts = []
-        if subcommand:
-            parts.append(subcommand)
-        if arg:
-            parts.append(arg)
-        self._dispatch(" ".join(parts).strip(), channel, area, user, handler)
-        return True
-
-    def _dispatch(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
-        try:
-            self._dispatch_inner(command_text, channel, area, user, handler)
-        except Exception as exc:
-            logger.exception("ApexPlugin: command failed: %s", command_text)
-            self._send(handler, f"Apex 查询出错: {exc}", channel, area)
-
-    def _dispatch_inner(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
+    def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
         text = command_text.strip()
         lower = text.lower()
 
@@ -221,7 +197,3 @@ class ApexPlugin(BotModule):
 
         data = self._api.get_predator()
         self._send(handler, format_predator(data), channel, area)
-
-    @staticmethod
-    def _send(handler, text: str, channel: str, area: str) -> None:
-        handler.sender.send_message(text, channel=channel, area=area)
