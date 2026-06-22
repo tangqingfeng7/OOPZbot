@@ -16,6 +16,8 @@ from domain.plugins.base import (
     validate_range,
 )
 
+from plugins._shared.command_mixin import PluginCommandMixin
+
 from .api import SteamPriceApiClient
 from .monitor import SteamPriceMonitor
 from .store import SteamPriceStore
@@ -149,7 +151,10 @@ def _format_game_detail(detail: dict) -> str:
     return "\n".join(lines)
 
 
-class SteamPricePlugin(BotModule):
+class SteamPricePlugin(PluginCommandMixin, BotModule):
+    command_error_prefix = "Steam 查询出错"
+    command_log_name = "SteamPricePlugin"
+
     def __init__(self) -> None:
         self._config: dict = {}
         self._api: Optional[SteamPriceApiClient] = None
@@ -247,37 +252,11 @@ class SteamPricePlugin(BotModule):
     # 命令入口
     # ------------------------------------------------------------------
 
-    def handle_mention(self, text, channel, area, user, handler) -> bool:
-        for prefix in self.command_capabilities.mention_prefixes:
-            if text.startswith(prefix):
-                command = text[len(prefix):].strip()
-                self._dispatch(command, channel, area, user, handler)
-                return True
-        return False
-
-    def handle_slash(self, command, subcommand, arg, channel, area, user, handler) -> bool:
-        if (command or "").strip().lower() != "/steam":
-            return False
-        parts = []
-        if subcommand:
-            parts.append(subcommand)
-        if arg:
-            parts.append(arg)
-        self._dispatch(" ".join(parts).strip(), channel, area, user, handler)
-        return True
-
     # ------------------------------------------------------------------
     # 命令分发
     # ------------------------------------------------------------------
 
-    def _dispatch(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
-        try:
-            self._dispatch_inner(command_text, channel, area, user, handler)
-        except Exception as exc:
-            logger.exception("SteamPricePlugin: command failed: %s", command_text)
-            self._send(handler, f"Steam 查询出错: {exc}", channel, area)
-
-    def _dispatch_inner(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
+    def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
         text = command_text.strip()
         lower = text.lower()
 
@@ -478,10 +457,3 @@ class SteamPricePlugin(BotModule):
             self._store.unsubscribe_channel(channel, area)
             self._send(handler, "已关闭当前频道的 Steam 特惠推送。", channel, area)
 
-    # ------------------------------------------------------------------
-    # 工具
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _send(handler, text: str, channel: str, area: str) -> None:
-        handler.sender.send_message(text, channel=channel, area=area)
