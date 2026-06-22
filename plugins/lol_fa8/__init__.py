@@ -1,3 +1,4 @@
+from core.constants import Msg
 from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
@@ -80,7 +81,7 @@ class LolFa8Plugin(BotModule):
             )
             return True
         handler.sender.send_message(
-            f"[search] 正在查询 {keyword} 的战绩...",
+            f"{Msg.SEARCH} 正在查询 {keyword} 的战绩...",
             channel=channel,
             area=area,
         )
@@ -102,7 +103,7 @@ class LolFa8Plugin(BotModule):
             )
             return True
         handler.sender.send_message(
-            f"[search] 正在查询 {keyword} 的战绩...",
+            f"{Msg.SEARCH} 正在查询 {keyword} 的战绩...",
             channel=channel,
             area=area,
         )

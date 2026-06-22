@@ -926,6 +926,31 @@ DELETE /client/v1/area/v1/member/v1/removeFromChannel?area={area}&channel={chann
 
 > 也可用于管理员将他人移出语音频道。
 
+### 调度成员到语音频道（拖拽）
+
+```
+PUT /client/v1/area/v1/member/v1/dragInto
+```
+
+**请求体：**
+
+```json
+{
+  "area": "域ID",
+  "channel": "用户当前所在语音频道ID（源）",
+  "toChannel": "目标语音频道ID",
+  "target": "被调度用户的UID"
+}
+```
+
+**成功响应：**
+
+```json
+{"status": true, "data": true, "message": null, "error": null, "code": "200"}
+```
+
+**说明：** 管理员将其他成员从其当前语音频道拖拽（调度）到另一个语音频道，需管理员权限。`channel` 为用户当前所在的语音频道，调用前可用「获取语音频道在线成员」接口探测。
+
 ---
 
 ## 成员 API

@@ -1,5 +1,6 @@
 import datetime
 
+from core.constants import Msg
 from domain.community.role_rules import resolve_role_id
 from oopz.name_resolver import get_resolver
 from app.services.runtime import CommandRuntimeView, sender_of
@@ -98,11 +99,11 @@ class RoleService:
 
         result = self._sender.edit_user_role(uid, role_id, add=True, area=area)
         if "error" in result:
-            self._sender.send_message(f"[x] 给 {name} 添加身份组失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 给 {name} 添加身份组失败: {result['error']}", channel=channel, area=area)
             return
 
         self._sender.send_message(
-            f"[ok] {result.get('message', f'已给 {name} 添加身份组')}",
+            f"{Msg.OK} {result.get('message', f'已给 {name} 添加身份组')}",
             channel=channel,
             area=area,
         )
@@ -136,11 +137,11 @@ class RoleService:
 
         result = self._sender.edit_user_role(uid, role_id, add=False, area=area)
         if "error" in result:
-            self._sender.send_message(f"[x] 取消 {name} 身份组失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 取消 {name} 身份组失败: {result['error']}", channel=channel, area=area)
             return
 
         self._sender.send_message(
-            f"[ok] {result.get('message', f'已取消 {name} 的该身份组')}",
+            f"{Msg.OK} {result.get('message', f'已取消 {name} 的该身份组')}",
             channel=channel,
             area=area,
         )

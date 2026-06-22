@@ -3,6 +3,7 @@ import time
 from typing import Optional
 
 from config import PROFANITY_CONFIG
+from core.constants import Msg
 from domain.safety.profanity_rules import (
     actual_mute_duration as resolve_mute_duration,
     format_duration as format_mute_duration,
@@ -165,7 +166,7 @@ class ProfanityGuardService:
             self._warnings[user] = (count, now)
             if count < 2:
                 self._sender.send_message(
-                    f"[!] {name} 请文明发言，再犯将被禁言 {display}",
+                    f"{Msg.WARN} {name} 请文明发言，再犯将被禁言 {display}",
                     channel=channel,
                     area=area,
                 )
@@ -176,14 +177,14 @@ class ProfanityGuardService:
         if "error" in result:
             logger.warning("自动禁言 %s 失败: %s", name, result["error"])
             self._sender.send_message(
-                f"[!] {name} 发送违规内容，自动禁言失败",
+                f"{Msg.WARN} {name} 发送违规内容，自动禁言失败",
                 channel=channel,
                 area=area,
             )
         else:
             logger.info("自动禁言: %s 触发关键词 [%s]（%s条消息），禁言 %s", name, matched, len(messages), display)
             self._sender.send_message(
-                f"[!] {name} 因发送违规内容被自动禁言 {display}",
+                f"{Msg.WARN} {name} 因发送违规内容被自动禁言 {display}",
                 channel=channel,
                 area=area,
             )

@@ -8,6 +8,8 @@ from typing import Optional, Tuple
 
 import requests as http_requests
 
+from core.constants import USER_AGENT
+from core.http_constants import HTTP_TIMEOUT_DEFAULT, HTTP_TIMEOUT_DOWNLOAD
 from core.logger_config import get_logger
 
 logger = get_logger("Voice")
@@ -49,7 +51,7 @@ def _ensure_agora_sdk() -> None:
     except Exception:
         proxies = None
     try:
-        resp = http_requests.get(_SDK_URL, timeout=30, proxies=proxies)
+        resp = http_requests.get(_SDK_URL, timeout=HTTP_TIMEOUT_DOWNLOAD, proxies=proxies)
         resp.raise_for_status()
         if len(resp.content) < _SDK_MIN_SIZE:
             raise RuntimeError(f"SDK 文件过小 ({len(resp.content)} bytes)")
@@ -719,16 +721,16 @@ class VoiceClient:
             stop_event = self._stop_event
         try:
             from config import NETEASE_CLOUD
-            connect_timeout = 10
+            connect_timeout = HTTP_TIMEOUT_DEFAULT
             read_timeout = NETEASE_CLOUD.get("audio_download_timeout", 60)
             max_retries = NETEASE_CLOUD.get("audio_download_retries", 2)
         except Exception:
-            connect_timeout, read_timeout, max_retries = 10, 60, 2
+            connect_timeout, read_timeout, max_retries = HTTP_TIMEOUT_DEFAULT, 60, 2
 
         session = http_requests.Session()
         session.trust_env = False
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Referer": "https://music.163.com/",
         })
 

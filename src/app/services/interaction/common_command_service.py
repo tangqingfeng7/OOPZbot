@@ -1,3 +1,4 @@
+from core.constants import Msg
 from oopz.name_resolver import NameResolver, get_resolver
 from app.services.runtime import CommandRuntimeView, chat_of, music_of, sender_of
 
@@ -101,7 +102,7 @@ class CommonCommandService:
         user_name = names.user(user) if user else "未知用户"
 
         self._sender.send_message(
-            f"[paint] {user_name} 请求生成图片，正在绘制中...",
+            f"{Msg.PAINT} {user_name} 请求生成图片，正在绘制中...",
             channel=channel,
             area=area,
         )

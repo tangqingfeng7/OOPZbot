@@ -12,6 +12,8 @@ from http.cookies import SimpleCookie
 from typing import Optional
 from urllib.parse import quote
 
+from core.constants import USER_AGENT
+from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
 logger = get_logger("BilibiliMusic")
@@ -28,10 +30,7 @@ _HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": USER_AGENT,
     "Referer": _BILIBILI_HOME,
 }
 
@@ -105,7 +104,7 @@ class BilibiliMusic:
     def _prime_session(self) -> None:
         """刷新 B 站首页 Cookie，降低公开接口偶发 412 的概率。"""
         try:
-            resp = self._session.get(_BILIBILI_HOME, timeout=10)
+            resp = self._session.get(_BILIBILI_HOME, timeout=HTTP_TIMEOUT_DEFAULT)
             logger.debug(
                 "B 站首页 Cookie 预热完成: status=%s cookies=%s",
                 getattr(resp, "status_code", "-"),
@@ -119,11 +118,11 @@ class BilibiliMusic:
         if referer:
             request_headers["Referer"] = referer
         try:
-            resp = self._session.get(url, params=params, headers=request_headers, timeout=10)
+            resp = self._session.get(url, params=params, headers=request_headers, timeout=HTTP_TIMEOUT_DEFAULT)
             if resp.status_code == 412:
                 logger.debug("B 站 API 返回 412，刷新首页 Cookie 后重试: url=%s params=%s", url, params or {})
                 self._prime_session()
-                resp = self._session.get(url, params=params, headers=request_headers, timeout=10)
+                resp = self._session.get(url, params=params, headers=request_headers, timeout=HTTP_TIMEOUT_DEFAULT)
             resp.raise_for_status()
             data = resp.json()
             if isinstance(data, dict):

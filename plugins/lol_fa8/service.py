@@ -7,18 +7,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from core.constants import USER_AGENT, Msg
 from core.logger_config import get_logger
 
 logger = get_logger("FA8")
 
 BASE_URL = "https://fa.3ui.cc"
 
-_DEFAULT_CONFIG = {
-    "enabled": False,
-    "username": "",
-    "password": "",
-    "default_area": "1",
-}
+def _default_config() -> dict:
+    """从插件 config_spec 派生默认配置 —— 默认值的单一来源在 __init__.py。"""
+    from plugins.lol_fa8 import LolFa8Plugin
+
+    return {field.name: field.default for field in LolFa8Plugin().config_spec.fields}
 
 SERVERS = {
     "1": "艾欧尼亚", "2": "比尔吉沃特", "3": "祖安", "4": "诺克萨斯",
@@ -146,11 +146,7 @@ class FA8Client:
         )
         self._session.mount("https://", adapter)
         self._session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/140.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": USER_AGENT,
             "Origin": BASE_URL,
             "Referer": f"{BASE_URL}/",
             "Connection": "keep-alive",
@@ -294,7 +290,7 @@ class FA8Handler:
     """FA8 战绩查询命令处理器"""
 
     def __init__(self, config: dict | None = None):
-        self._config = _DEFAULT_CONFIG.copy()
+        self._config = _default_config()
         if config:
             self._config.update(config)
         self._client = FA8Client(
@@ -392,14 +388,14 @@ class FA8Handler:
         result = self._search_summoner(name, areas)
         if result is None:
             if is_group:
-                return f"[x] 在{group_label}所有服务器中均未找到该玩家"
+                return f"{Msg.ERR} 在{group_label}所有服务器中均未找到该玩家"
             msg_area = SERVERS.get(areas[0], f"大区{areas[0]}")
-            return f"[x] 在{msg_area}未找到该玩家"
+            return f"{Msg.ERR} 在{msg_area}未找到该玩家"
 
         area, info = result
         msg = info.get("msg", "")
         if "登录" in str(msg):
-            return f"[x] 查询失败: FA8 登录态异常，请联系管理员检查配置"
+            return f"{Msg.ERR} 查询失败: FA8 登录态异常，请联系管理员检查配置"
 
         puuid = info.get("puuid", "")
         server_name = SERVERS.get(area, f"大区{area}")

@@ -2,7 +2,7 @@
         <article class="surface-card">
           <div class="action-row">
             <span id="schedulerState" class="micro-status is-warning">等待同步</span>
-            <button class="btn btn-primary" type="button" onclick="loadScheduler().catch(() => {})">刷新列表</button>
+            <button class="btn btn-primary" type="button" data-action="refresh-scheduler">刷新列表</button>
           </div>
         </article>
 
@@ -26,7 +26,7 @@
             </div>
             <textarea id="schText" rows="3" placeholder="消息内容" style="width: 100%;"></textarea>
             <div class="action-row">
-              <button class="btn btn-primary" type="button" onclick="createScheduled()">创建</button>
+              <button class="btn btn-primary" type="button" data-action="create-scheduled">创建</button>
               <span id="createMsg" class="msg"></span>
             </div>
           </div>

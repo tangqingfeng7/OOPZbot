@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import threading
 from typing import Optional
 
 from core.logger_config import get_logger
+
+from plugins._shared.background import IntervalWorker
 
 from .api import SteamPriceApiClient
 from .store import SteamPriceStore
@@ -13,54 +14,36 @@ from .store import SteamPriceStore
 logger = get_logger("SteamPriceMonitor")
 
 
-class SteamPriceMonitor:
+class SteamPriceMonitor(IntervalWorker):
     """守护线程：轮询关注列表中游戏的最新价格，触发史低/特惠推送。"""
+
+    _NAME = "SteamPriceMonitor"
 
     def __init__(self, config: dict, api: SteamPriceApiClient, store: SteamPriceStore) -> None:
         self._config = config or {}
         self._api = api
         self._store = store
-        self._interval = max(300, int(self._config.get("check_interval_sec", 1800) or 1800))
+        super().__init__(int(self._config.get("check_interval_sec", 1800) or 1800))
+        self._interval = max(300, self._interval)
         self._min_discount = max(0, int(self._config.get("min_discount_for_push", 50) or 50))
         self._handler = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
 
     def ensure_started(self, handler) -> None:
         self._handler = handler
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._loop, name="SteamPriceMonitor", daemon=True,
-            )
-            self._thread.start()
+        if self._start_thread():
             logger.info("SteamPriceMonitor: 后台监控已启动 (间隔 %ds)", self._interval)
 
     def stop(self) -> None:
-        self._stop_event.set()
-        thread = self._thread
-        if thread and thread.is_alive():
-            thread.join(timeout=3)
-        self._thread = None
+        super().stop(join_timeout=3)
         logger.info("SteamPriceMonitor: 已停止")
 
     # ------------------------------------------------------------------
     # 主循环
     # ------------------------------------------------------------------
 
-    def _loop(self) -> None:
-        while not self._stop_event.wait(self._interval):
-            if not self._handler:
-                continue
-            try:
-                self._tick()
-            except Exception:
-                logger.exception("SteamPriceMonitor: tick failed")
-
     def _tick(self) -> None:
+        if not self._handler:
+            return
         personal_watches = self._store.get_all_personal_watches()
         channel_subs = self._store.get_channel_subscriptions()
 

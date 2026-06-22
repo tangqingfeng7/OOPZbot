@@ -1,3 +1,4 @@
+from core.constants import Msg
 from oopz.name_resolver import NameResolver, get_resolver
 from app.services.runtime import CommandRuntimeView, sender_of
 
@@ -13,19 +14,19 @@ class ModerationService:
         name = NameResolver().user(uid) or uid[:8]
         result = self._sender.mute_user(uid, area=area, duration=duration)
         if "error" in result:
-            self._sender.send_message(f"[x] 禁言 {name} 失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 禁言 {name} 失败: {result['error']}", channel=channel, area=area)
             return
-        self._sender.send_message(f"[ok] {result.get('message', f'已禁言 {name}')}", channel=channel, area=area)
+        self._sender.send_message(f"{Msg.OK} {result.get('message', f'已禁言 {name}')}", channel=channel, area=area)
 
     def unmute_user(self, uid: str, channel: str, area: str) -> None:
         """执行解除禁言。"""
         name = NameResolver().user(uid) or uid[:8]
         result = self._sender.unmute_user(uid, area=area)
         if "error" in result:
-            self._sender.send_message(f"[x] 解除禁言 {name} 失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 解除禁言 {name} 失败: {result['error']}", channel=channel, area=area)
             return
         self._sender.send_message(
-            f"[ok] {result.get('message', f'已解除 {name} 的禁言')}",
+            f"{Msg.OK} {result.get('message', f'已解除 {name} 的禁言')}",
             channel=channel,
             area=area,
         )
@@ -35,19 +36,19 @@ class ModerationService:
         name = NameResolver().user(uid) or uid[:8]
         result = self._sender.mute_mic(uid, area=area, duration=duration)
         if "error" in result:
-            self._sender.send_message(f"[x] 禁麦 {name} 失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 禁麦 {name} 失败: {result['error']}", channel=channel, area=area)
             return
-        self._sender.send_message(f"[ok] {result.get('message', f'已禁麦 {name}')}", channel=channel, area=area)
+        self._sender.send_message(f"{Msg.OK} {result.get('message', f'已禁麦 {name}')}", channel=channel, area=area)
 
     def unmute_mic(self, uid: str, channel: str, area: str) -> None:
         """执行解除禁麦。"""
         name = NameResolver().user(uid) or uid[:8]
         result = self._sender.unmute_mic(uid, area=area)
         if "error" in result:
-            self._sender.send_message(f"[x] 解除禁麦 {name} 失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 解除禁麦 {name} 失败: {result['error']}", channel=channel, area=area)
             return
         self._sender.send_message(
-            f"[ok] {result.get('message', f'已解除 {name} 的禁麦')}",
+            f"{Msg.OK} {result.get('message', f'已解除 {name} 的禁麦')}",
             channel=channel,
             area=area,
         )
@@ -57,19 +58,19 @@ class ModerationService:
         name = NameResolver().user(uid) or uid[:8]
         result = self._sender.remove_from_area(uid, area=area)
         if "error" in result:
-            self._sender.send_message(f"[x] 移出域 {name} 失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 移出域 {name} 失败: {result['error']}", channel=channel, area=area)
             return
-        self._sender.send_message(f"[ok] {result.get('message', f'已移出域 {name}')}", channel=channel, area=area)
+        self._sender.send_message(f"{Msg.OK} {result.get('message', f'已移出域 {name}')}", channel=channel, area=area)
 
     def unblock_in_area(self, uid: str, channel: str, area: str) -> None:
         """解除域内封禁。"""
         name = NameResolver().user(uid) or uid[:8]
         result = self._sender.unblock_user_in_area(uid, area=area)
         if "error" in result:
-            self._sender.send_message(f"[x] 解除域内封禁 {name} 失败: {result['error']}", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 解除域内封禁 {name} 失败: {result['error']}", channel=channel, area=area)
             return
         self._sender.send_message(
-            f"[ok] {result.get('message', f'已解除 {name} 的域内封禁')}",
+            f"{Msg.OK} {result.get('message', f'已解除 {name} 的域内封禁')}",
             channel=channel,
             area=area,
         )

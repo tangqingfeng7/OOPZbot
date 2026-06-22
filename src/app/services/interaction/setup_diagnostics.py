@@ -9,6 +9,7 @@ import requests
 import config as runtime_config
 import web.web_player_config as web_cfg
 from core.database import DB_PATH
+from core.http_constants import HTTP_TIMEOUT_PROBE
 from core.queue_manager import get_redis_client
 
 
@@ -98,7 +99,7 @@ class SetupDiagnostics:
         if not url:
             return False, "未配置地址"
         try:
-            response = self._session.get(url, timeout=3, allow_redirects=True)
+            response = self._session.get(url, timeout=HTTP_TIMEOUT_PROBE, allow_redirects=True)
             if response.status_code < 500:
                 return True, f"HTTP {response.status_code}"
             return False, f"HTTP {response.status_code}"

@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.constants import build_mention
 from onebot_v11.store import OneBotStore, make_user_source
 
 
@@ -197,5 +198,5 @@ def build_oopz_send_payload(parts: SendParts, *, store: OneBotStore) -> tuple[st
         if record is not None:
             uid = record.source.removeprefix("user:")
         mention_list.append({"person": uid, "isBot": False, "botType": "", "offset": -1})
-        text_parts.append(f"(met){uid}(met)")
+        text_parts.append(build_mention(uid))
     return "".join(text_parts), mention_list, parts.mention_all, parts.attachments

@@ -142,6 +142,21 @@ class WebPlayerAdminTest(unittest.TestCase):
         self.assertFalse(data["ok"])
         self.assertIn("插件名不合法", data["error"])
 
+    def test_member_endpoint_returns_503_when_sender_missing(self) -> None:
+        import web.admin.shared._runtime as runtime
+
+        with (
+            patch.object(self.module, "_admin_enabled", return_value=True),
+            patch.object(self.module, "_is_admin_authorized", return_value=True),
+            patch.object(runtime, "_get_sender", return_value=None),
+        ):
+            response = self.client.get("/admin/api/members/blocks")
+
+        self.assertEqual(response.status_code, 503)
+        data = response.json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["error"], "sender 未初始化")
+
     def test_player_page_does_not_pin_stale_active_area(self) -> None:
         r = _FakeRedis()
         r.set("music:web_access_token", "token-1")

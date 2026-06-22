@@ -6,19 +6,9 @@ import sys
 from types import ModuleType
 from typing import Any
 
+from core.constants import PLUGINS_DIR_NAME
+from core.paths import PROJECT_ROOT, SRC_DIR
 from domain.plugins.base import BotModule
-
-
-PROJECT_ROOT = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(
-            os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))
-            )
-        )
-    )
-)
-SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 
 
 def ensure_src_on_path(project_root: str = PROJECT_ROOT) -> None:
@@ -30,7 +20,7 @@ def ensure_src_on_path(project_root: str = PROJECT_ROOT) -> None:
 
 def plugin_file_path(
     plugin_name: str,
-    plugins_dir: str = "plugins",
+    plugins_dir: str = PLUGINS_DIR_NAME,
     project_root: str = PROJECT_ROOT,
 ) -> str:
     """返回插件源码文件路径。"""
@@ -42,7 +32,7 @@ def plugin_file_path(
 
 
 def discover_plugin_names(
-    plugins_dir: str = "plugins",
+    plugins_dir: str = PLUGINS_DIR_NAME,
     project_root: str = PROJECT_ROOT,
 ) -> list[str]:
     """扫描目录中的插件名。"""
@@ -65,7 +55,7 @@ def discover_plugin_names(
 
 def load_plugin_module(
     plugin_name: str,
-    plugins_dir: str = "plugins",
+    plugins_dir: str = PLUGINS_DIR_NAME,
     project_root: str = PROJECT_ROOT,
 ) -> tuple[ModuleType, str]:
     """按插件名加载模块对象。"""
@@ -106,7 +96,7 @@ def find_plugin_class(module: Any) -> type[BotModule] | None:
 
 def build_plugin_instance(
     plugin_name: str,
-    plugins_dir: str = "plugins",
+    plugins_dir: str = PLUGINS_DIR_NAME,
     project_root: str = PROJECT_ROOT,
 ) -> BotModule:
     """按插件名实例化插件对象。"""

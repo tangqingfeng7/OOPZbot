@@ -163,6 +163,10 @@ nginx/ssl/key.pem    # 私钥
 | GET | `/admin/stats` | 统计页 |
 | GET | `/admin/activity` | 活跃统计页 |
 | GET | `/admin/scheduler` | 定时任务管理页 |
+| GET | `/admin/members` | 成员管理页 |
+| GET | `/admin/areas` | 域配置管理页 |
+| GET | `/admin/plugins` | 插件管理页 |
+| GET | `/admin/setup` | 首启向导页 |
 | GET | `/admin/system` | 系统页 |
 
 ---
@@ -202,8 +206,68 @@ nginx/ssl/key.pem    # 私钥
 | GET | `/admin/api/message-stats/ranking?days=7&limit=10&area_id=` | 用户活跃排行（柱状图数据） |
 | GET | `/admin/api/message-stats/overview` | 消息统计概览（今日消息数、本周消息数、今日活跃用户） |
 | GET | `/admin/api/reminders` | 查看所有待执行提醒 |
+| GET | `/admin/api/scheduled-message-templates` | 获取内置定时消息模板列表 |
+| POST | `/admin/api/scheduled-message-templates/{template_key}/apply` | 套用模板创建定时消息 |
+| GET | `/admin/api/setup/diagnostics` | 首启向导 / 核心依赖体检诊断 |
 
-`/admin/api/config` 当前支持分组：`web_player`、`auto_recall`、`area_join_notify`、`chat`、`profanity`、`oopz`、`netease`、`redis`、`doubao_chat`、`doubao_image`。
+### 插件管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/admin/api/plugins` | 已加载 / 可加载插件列表 |
+| POST | `/admin/api/plugins/{name}/load` | 动态加载插件 |
+| POST | `/admin/api/plugins/{name}/unload` | 动态卸载插件 |
+| POST | `/admin/api/plugins/{name}/reload-config` | 热重载插件配置 |
+| GET | `/admin/api/plugins/{name}/config` | 获取插件配置 |
+| POST | `/admin/api/plugins/{name}/config` | 写入插件配置 |
+
+### 频道管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/admin/api/channels?area=` | 获取指定域的频道列表（含分组） |
+| POST | `/admin/api/channels/create` | 创建频道 |
+| PUT | `/admin/api/channels/{channel_id}` | 修改频道（名称等） |
+| DELETE | `/admin/api/channels/{channel_id}` | 删除频道 |
+| GET | `/admin/api/channels/{channel_id}/settings` | 获取频道设置（权限、私密等） |
+| POST | `/admin/api/channels/{channel_id}/settings` | 编辑频道设置 |
+| GET | `/admin/api/channels/{channel_id}/accessible-members` | 私密频道可访问成员 |
+| GET | `/admin/api/online-members?area=` | 域在线成员 |
+| GET | `/admin/api/voice-channels?area=` | 语音频道在线成员 |
+| POST | `/admin/api/voice-channels/dispatch` | 将用户调度（拖拽）到其他语音频道 |
+
+> 语音调度请求体：`{"area": "域ID", "target": "用户UID", "to_channel": "目标语音频道ID", "from_channel": "源语音频道ID(可选)"}`。
+> `from_channel` 留空时后端会自动探测用户当前所在语音频道；底层调用 `PUT /client/v1/area/v1/member/v1/dragInto`。
+> 在「域管理 → 语音频道监控」中，存在多个语音频道时每位在线成员旁会出现「调度」按钮。
+
+### 域配置 / Bot 管理员
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/admin/api/areas/{area_id}/meta` | 域元信息（频道、身份组等） |
+| GET | `/admin/api/area-configs` | 多域独立配置列表 |
+| GET | `/admin/api/area-configs/{area_id}` | 获取某域配置 |
+| POST | `/admin/api/area-configs/{area_id}` | 写入某域配置 |
+| DELETE | `/admin/api/area-configs/{area_id}` | 删除某域配置 |
+| GET | `/admin/api/bot-admins` | Bot 管理员（`ADMIN_UIDS`）列表 |
+| POST | `/admin/api/bot-admins` | 新增 Bot 管理员 |
+| DELETE | `/admin/api/bot-admins/{uid}` | 移除 Bot 管理员 |
+
+### 第三方账号登录
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/admin/api/oopz/login` | 用账号密码登录 Oopz 并写回凭据 |
+| POST | `/admin/api/netease/login/qr` | 获取网易云登录二维码 |
+| POST | `/admin/api/netease/login/qr/check` | 轮询网易云扫码状态 |
+| GET | `/admin/api/netease/account` | 查看网易云登录账号 |
+| POST | `/admin/api/bilibili/login/qr` | 获取 B 站登录二维码 |
+| POST | `/admin/api/bilibili/login/qr/check` | 轮询 B 站扫码状态 |
+| GET | `/admin/api/bilibili/account` | 查看 B 站登录账号 |
+
+> 成员管理相关接口（`/admin/api/areas`、`/admin/api/members/*`、`/admin/api/send-message`、`/admin/api/send-announcement` 等）见 [命令文档 - 管理后台 API](commands.md#管理后台-api)。
+
+`/admin/api/config` 当前支持分组：`web_player`、`auto_recall`、`area_join_notify`、`chat`、`profanity`、`oopz`、`netease`、`redis`、`doubao_chat`、`doubao_image`、`scheduler`、`reminder`、`music`、`command_cooldown`、`qq_music`、`bilibili_music`、`message_stats`。
 
 ---
 
@@ -212,7 +276,8 @@ nginx/ssl/key.pem    # 私钥
 | 文件 | 职责 |
 |------|------|
 | `src/web/web_player.py` | FastAPI 主应用实例、播放器 API 路由（`/api/*`）、共享状态（Redis / Netease 客户端） |
-| `src/web/web_player_admin.py` | Admin 后台路由（`/admin` + `/admin/api/*`），通过 `APIRouter` 挂载 |
+| `src/web/web_player_admin.py` | Admin 路由入口：聚合 `web.admin` 包路由为 `admin_router`，对 `web_player` 与旧调用方保持稳定 facade |
+| `src/web/admin/` | Admin 后台路由包：`pages`（页面）/`auth`（登录）/`config`（配置+第三方登录）/`music`（播放、统计、系统）/`scheduler`（定时消息、消息统计、提醒）/`plugins`（插件管理）/`members`（成员、频道、域配置、Bot 管理员、消息）/`shared`（共享工具） |
 | `src/web/web_player_config.py` | 配置常量引用、分组定义、基线值、config.py 写回与热更新 |
 | `src/web/assets/` | Web 播放器页面、Agora 浏览器页、Agora Web SDK 本地缓存和 Admin 页面资源 |
 

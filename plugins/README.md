@@ -59,6 +59,15 @@ python tools/export_plugin_config_assets.py
 python tools/export_plugin_config_assets.py delta_force
 ```
 
+## 共享基类
+
+`plugins/_shared/` 提供可复用基类，避免重复造轮子：
+
+- `IntervalWorker`：固定间隔的后台守护线程基类（定时推送 / 轮询监控），子类实现 `_tick()`。
+- `JsonHttpClient`：带重试与 JSON 解析的 HTTP 客户端基类，统一 UA / 超时 / 代理 / 重试。
+
+默认值请以 `config_spec` 为单一来源，不要再单独维护 `_DEFAULT_CONFIG`。详见[插件开发工作流](../docs/plugin-development.md)。
+
 ## 新建插件
 
 推荐直接使用脚手架：

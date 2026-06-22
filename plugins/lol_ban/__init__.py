@@ -1,3 +1,4 @@
+from core.constants import Msg
 from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
@@ -68,7 +69,7 @@ class LolBanPlugin(BotModule):
             )
             return True
         handler.sender.send_message(
-            f"[search] 正在查询 QQ {keyword} 的封号状态...",
+            f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...",
             channel=channel,
             area=area,
         )
@@ -90,7 +91,7 @@ class LolBanPlugin(BotModule):
             )
             return True
         handler.sender.send_message(
-            f"[search] 正在查询 QQ {keyword} 的封号状态...",
+            f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...",
             channel=channel,
             area=area,
         )

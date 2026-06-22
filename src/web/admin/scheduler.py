@@ -124,15 +124,7 @@ def admin_message_stats_ranking(
     limit: int = Query(10, ge=1, le=50),
     area_id: str = Query(""),
 ):
-    if not area_id:
-        from core.database import db_connection as _dbc
-        with _dbc() as conn:
-            row = conn.execute(
-                "SELECT DISTINCT area_id FROM message_stats LIMIT 1"
-            ).fetchone()
-            area_id = row["area_id"] if row else ""
-    if not area_id:
-        return JSONResponse({"ok": True, "ranking": []})
+    # area_id 留空时跨全部域聚合，与日趋势/概览口径一致
     ranking = MessageStatsDB.get_user_ranking(area_id, days=days, limit=limit)
     resolver = get_resolver()
     for item in ranking:

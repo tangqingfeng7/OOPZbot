@@ -11,6 +11,7 @@ from typing import Optional
 from oopz.oopz_sender import OopzSender
 from music.netease import NeteaseCloud
 from core.queue_manager import QueueManager
+from core.redis_keys import VOLUME as KEY_VOLUME, WEB_COMMANDS as KEY_WEB_COMMANDS
 from core.database import ImageCache, SongCache, Statistics
 from oopz.name_resolver import NameResolver
 from music.voice_client import VoiceClient
@@ -32,8 +33,9 @@ _PLATFORM_NETEASE = "netease"
 PLAY_MODE_LIST = "list"
 PLAY_MODE_SINGLE = "single"
 PLAY_MODE_SHUFFLE = "shuffle"
+# autoplay 不再作为可选播放模式，仅作为「队列播完按配置自动续播」时的来源标识。
 PLAY_MODE_AUTOPLAY = "autoplay"
-_VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE, PLAY_MODE_AUTOPLAY}
+_VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE}
 
 _PLATFORM_PREFIX_MAP = {
     "qq:": "qq",
@@ -395,9 +397,9 @@ class MusicHandler(PlaybackMixin):
         if not self.voice or not self.voice.available:
             return
         try:
-            raw = self.queue.redis.get("music:volume")
+            raw = self.queue.redis.get(KEY_VOLUME)
         except Exception as e:
-            logger.debug(f"读取 music:volume 失败，跳过音量恢复: {e}")
+            logger.debug(f"读取 {KEY_VOLUME} 失败，跳过音量恢复: {e}")
             return
         if raw is None:
             return
@@ -1003,9 +1005,7 @@ class MusicHandler(PlaybackMixin):
         next_song = self.queue.play_next()
         if next_song:
             return next_song, "queue"
-        if natural_end and (mode == PLAY_MODE_AUTOPLAY or (
-            mode == PLAY_MODE_LIST and _music_auto_play_enabled()
-        )):
+        if natural_end and mode == PLAY_MODE_LIST and _music_auto_play_enabled():
             return self._build_autoplay_song(current_song), PLAY_MODE_AUTOPLAY
         return None, mode
 
@@ -1029,7 +1029,7 @@ class MusicHandler(PlaybackMixin):
             last_warn_at = 0.0
             while True:
                 try:
-                    result = self.queue.redis.blpop("music:web_commands", timeout=2)
+                    result = self.queue.redis.blpop(KEY_WEB_COMMANDS, timeout=2)
                     if result:
                         _, cmd_raw = result
                         cmd = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)

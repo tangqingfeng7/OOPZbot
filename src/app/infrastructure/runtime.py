@@ -8,11 +8,13 @@ from domain.plugins.plugin_operation import PluginOperationCode, PluginOperation
 from oopz.oopz_sender import OopzSender
 from domain.plugins.base import PluginDescriptor
 
+from core.constants import PLUGINS_DIR_NAME
+from core.paths import DATA_DIR
+
 from .gateways import ChatGateway, SenderGateway
 from .plugin_runtime import PluginRegistry, discover_plugins, load_plugin, load_plugins_dir, reload_plugin_config, unload_plugin
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_DEFAULT_PLUGIN_STATE_PATH = os.path.join(_PROJECT_ROOT, "data", "plugin_runtime_state.json")
+_DEFAULT_PLUGIN_STATE_PATH = os.path.join(DATA_DIR, "plugin_runtime_state.json")
 
 
 class MusicGateway:
@@ -48,7 +50,7 @@ class MusicGateway:
 class PluginRuntime:
     """插件注册、查询和动态装卸的运行时门面。"""
 
-    def __init__(self, plugins_dir: str = "plugins", state_path=None):
+    def __init__(self, plugins_dir: str = PLUGINS_DIR_NAME, state_path=None):
         self._plugins_dir = plugins_dir
         self._registry = PluginRegistry()
         self._state_path = os.fspath(state_path) if state_path else _DEFAULT_PLUGIN_STATE_PATH

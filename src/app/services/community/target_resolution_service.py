@@ -1,6 +1,7 @@
 import re
 from typing import Optional
 
+from core.constants import MENTION_PATTERN, UID_PATTERN
 from oopz.name_resolver import get_resolver
 
 
@@ -115,12 +116,12 @@ class TargetResolutionService:
         if not text:
             return None
 
-        match = re.search(r"\(met\)(\w+)\(met\)", text)
+        match = re.search(MENTION_PATTERN, text)
         if match:
             return match.group(1)
 
         token = text.split()[0]
-        if re.fullmatch(r"[a-f0-9]{32}", token):
+        if re.fullmatch(UID_PATTERN, token):
             return token
 
         uid = get_resolver().find_uid_by_name(token)
@@ -132,7 +133,7 @@ class TargetResolutionService:
     def parse_mute_args(self, text: str, area: Optional[str] = None) -> tuple[Optional[str], int]:
         """解析禁言/禁麦参数，返回 `(uid, duration)`。"""
         text = text.strip()
-        match = re.match(r"\(met\)(\w+)\(met\)\s*(\d+)?", text)
+        match = re.match(MENTION_PATTERN + r"\s*(\d+)?", text)
         if match:
             # mention 形式如果没写时长，默认按 10 分钟处理。
             duration = int(match.group(2)) if match.group(2) else 10

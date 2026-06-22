@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlparse
 
 from config import WEB_PLAYER_CONFIG
+from core.http_constants import HTTP_TIMEOUT_PROBE
 from core.logger_config import get_logger
 from web.web_link_token import ensure_token
 from core.database import SongCache, Statistics
@@ -73,7 +74,7 @@ def _detect_ip() -> str:
     def _query(url: str) -> str:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "curl/7.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_PROBE) as resp:
                 return resp.read().decode().strip()
         except Exception as e:
             logger.debug(f"IP 探测服务请求失败 ({url}): {e}")

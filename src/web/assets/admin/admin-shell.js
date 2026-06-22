@@ -36,7 +36,10 @@
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) {
-      throw new Error(data.error || ("HTTP " + response.status));
+      const detail = Array.isArray(data.errors) && data.errors.length > 0
+        ? data.errors.join(" | ")
+        : "";
+      throw new Error(data.error || detail || ("HTTP " + response.status));
     }
     return data;
   }
@@ -311,10 +314,6 @@
     });
   }
 
-  function bindHoverMotion() {
-    return;
-  }
-
   async function copyText(value) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(value);
@@ -335,7 +334,6 @@
     const settings = options || {};
     const currentPage = settings.page || document.body.dataset.adminPage || "";
     renderNav(currentPage);
-    bindHoverMotion();
     animateEnter();
     if (settings.passwordHandler) {
       bindEnterSubmit(settings.passwordId || "pwd", settings.passwordHandler);
@@ -346,6 +344,74 @@
     };
     window.addEventListener("resize", refreshMarker);
     window.addEventListener("load", refreshMarker);
+  }
+
+  // -------------------------------------------------------------------------
+  // 鉴权三件套（check/login/logout）的统一实现。
+  // 各页只需提供 loggedInText 与登录成功后的 onLogin 加载回调，以及可选的
+  // onLoggedOut（登出态额外状态）/ onLoginError（登录失败额外状态）；本函数
+  // 负责绑定 window.login/window.logout（供 data-action 委托）、init 与首检。
+  // -------------------------------------------------------------------------
+  function bootstrapAuth(options) {
+    const settings = options || {};
+    const loggedInText = settings.loggedInText || "已登录";
+    const loggedOutText = settings.loggedOutText || "等待登录";
+    const statusTargets = settings.statusTargets || ["topStatus", "mobileStatus"];
+    const passwordId = settings.passwordId || "pwd";
+    const loginMsgId = settings.loginMsgId || "loginMsg";
+    const meUrl = settings.meUrl || "/admin/api/me";
+    const loginUrl = settings.loginUrl || "/admin/api/login";
+    const logoutUrl = settings.logoutUrl || "/admin/api/logout";
+    const successMessage =
+      settings.loginSuccessMessage === undefined ? "登录成功" : settings.loginSuccessMessage;
+
+    async function check() {
+      try {
+        await req(meUrl);
+        setAuthState({ loggedIn: true, loggedInText, statusTargets });
+        if (settings.onLogin) {
+          await settings.onLogin();
+        }
+      } catch (error) {
+        setAuthState({ loggedIn: false, loggedOutText, statusTargets });
+        showMessage(loginMsgId, "");
+        if (settings.onLoggedOut) {
+          settings.onLoggedOut(error);
+        }
+      }
+    }
+
+    async function login() {
+      try {
+        const input = byId(passwordId);
+        await req(loginUrl, {
+          method: "POST",
+          body: JSON.stringify({ password: (input && input.value) || "" }),
+        });
+        if (successMessage) {
+          showMessage(loginMsgId, successMessage);
+        }
+        await check();
+      } catch (error) {
+        showMessage(loginMsgId, error.message, true);
+        if (settings.onLoginError) {
+          settings.onLoginError(error);
+        }
+      }
+    }
+
+    async function logout() {
+      try {
+        await req(logoutUrl, { method: "POST", body: "{}" });
+      } catch (_) {}
+      await check();
+    }
+
+    window.login = login;
+    window.logout = logout;
+    init({ page: settings.page, passwordId, passwordHandler: login });
+    check();
+    return { check, login, logout };
   }
 
   // -------------------------------------------------------------------------
@@ -498,15 +564,182 @@
       .replaceAll("'", "&#39;");
   }
 
+  // -------------------------------------------------------------------------
+  // Modal subsystem (shared dialog reused across admin pages)
+  // Pages must provide #modalOverlay / #modalDialog / #modalTitle /
+  // #modalBody / #modalFooter in their markup.
+  // -------------------------------------------------------------------------
+
+  let _modalCloseCb = null;
+
+  function _modalEls() {
+    return {
+      overlay: byId("modalOverlay"),
+      dialog: byId("modalDialog"),
+      title: byId("modalTitle"),
+      body: byId("modalBody"),
+      footer: byId("modalFooter"),
+    };
+  }
+
+  function openModal(title, bodyHtml, footerHtml, onClose) {
+    const els = _modalEls();
+    if (!els.dialog || !els.overlay) {
+      return els;
+    }
+    _modalCloseCb = typeof onClose === "function" ? onClose : null;
+    if (els.title) {
+      els.title.textContent = title || "";
+    }
+    if (els.body) {
+      els.body.innerHTML = bodyHtml || "";
+    }
+    if (els.footer) {
+      els.footer.innerHTML = footerHtml || "";
+    }
+    els.overlay.classList.add("is-open");
+    els.dialog.classList.add("is-open");
+    return els;
+  }
+
+  function closeModal() {
+    const els = _modalEls();
+    if (els.dialog) {
+      els.dialog.classList.remove("is-open");
+    }
+    if (els.overlay) {
+      els.overlay.classList.remove("is-open");
+    }
+    const cb = _modalCloseCb;
+    _modalCloseCb = null;
+    if (cb) {
+      cb();
+    }
+  }
+
+  function confirm(title, message, options) {
+    const opts = options || {};
+    return new Promise((resolve) => {
+      const els = _modalEls();
+      if (!els.dialog || !els.footer) {
+        resolve(false);
+        return;
+      }
+      let settled = false;
+      const done = (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        closeModal();
+        resolve(value);
+      };
+      openModal(
+        title,
+        '<div class="m-confirm-text">' + (message || "") + "</div>",
+        null,
+        () => {
+          if (!settled) {
+            settled = true;
+            resolve(false);
+          }
+        }
+      );
+      els.footer.innerHTML = "";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-ghost";
+      cancelBtn.textContent = opts.cancelText || "取消";
+      cancelBtn.addEventListener("click", () => done(false));
+      const okBtn = document.createElement("button");
+      okBtn.className = "btn " + (opts.danger === false ? "btn-primary" : "btn-danger");
+      okBtn.textContent = opts.okText || "确认";
+      okBtn.addEventListener("click", () => done(true));
+      els.footer.appendChild(cancelBtn);
+      els.footer.appendChild(okBtn);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Action registry (data-action + event delegation)
+  // Pages register handlers by action key; topbar/page buttons carry only
+  // data-action so behavior stays in JS instead of inline onclick markup.
+  // -------------------------------------------------------------------------
+
+  const _actionHandlers = Object.create(null);
+  // 内置动作：所有页面共用的弹窗关闭与登录/登出，免去逐页重复注册。
+  // login/logout 由各页脚本定义为全局函数，点击时已就绪。
+  _actionHandlers["close-modal"] = () => closeModal();
+  _actionHandlers["login"] = () => {
+    if (typeof window.login === "function") {
+      window.login();
+    }
+  };
+  _actionHandlers["logout"] = () => {
+    if (typeof window.logout === "function") {
+      window.logout();
+    }
+  };
+
+  function registerActions(handlers) {
+    Object.assign(_actionHandlers, handlers || {});
+  }
+
+  function _dispatch(trigger, key, event) {
+    const handler = _actionHandlers[key];
+    if (!handler) {
+      return;
+    }
+    Promise.resolve()
+      .then(() => handler(trigger, event))
+      .catch(() => {});
+  }
+
+  document.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-action]");
+    if (!trigger) {
+      return;
+    }
+    event.preventDefault();
+    _dispatch(trigger, trigger.dataset.action, event);
+  });
+
+  // 委托 change 事件：select / checkbox 用 data-change 指定动作键，
+  // 处理函数从入参 el 读取 .value / .checked。
+  document.addEventListener("change", (event) => {
+    const trigger = event.target.closest("[data-change]");
+    if (!trigger) {
+      return;
+    }
+    _dispatch(trigger, trigger.dataset.change, event);
+  });
+
+  // 委托 Enter 键：输入框用 data-enter 指定动作键，仅在按下回车时触发。
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    const trigger = event.target.closest("[data-enter]");
+    if (!trigger) {
+      return;
+    }
+    event.preventDefault();
+    _dispatch(trigger, trigger.dataset.enter, event);
+  });
+
   window.AdminShell = {
     animateNumber,
     animatePanel,
+    bootstrapAuth,
     byId,
+    closeModal,
+    confirm,
     copyText,
     escapeHtml,
     flashUpdate,
     init,
+    openModal,
     refreshCustomSelect,
+    registerActions,
     req,
     setAuthState,
     setMicroStatus,

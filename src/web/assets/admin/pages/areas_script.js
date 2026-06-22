@@ -1,52 +1,12 @@
     let currentArea = "";
     let channelsData = [];
     let areaRolesData = [];
+    let voiceChannelsData = [];
 
     function setState(text, variant) {
       AdminShell.setStatus(text, variant, "topStatus");
       AdminShell.setStatus(text, variant, "mobileStatus");
       AdminShell.setStatus(text, variant, "areaState");
-    }
-
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录域管理",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadAreaManager();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setState("等待操作", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {}
-      await check();
     }
 
     async function loadAreaManager() {
@@ -329,8 +289,8 @@
             <td>${badges}</td>
             <td>
               <div class="a-ch-actions">
-                <button class="btn btn-ghost" onclick="showEditChannel('${esc(ch.id)}','${esc(ch.type)}')">编辑</button>
-                <button class="btn btn-danger" onclick="doDeleteChannel('${esc(ch.id)}','${esc(ch.name)}')">删除</button>
+                <button class="btn btn-ghost" type="button" data-action="show-edit-channel" data-ch-id="${esc(ch.id)}" data-ch-type="${esc(ch.type)}">编辑</button>
+                <button class="btn btn-danger" type="button" data-action="do-delete-channel" data-ch-id="${esc(ch.id)}" data-ch-name="${esc(ch.name)}">删除</button>
               </div>
             </td>
           </tr>`;
@@ -446,7 +406,7 @@
       el.innerHTML = _onlineMembers.map(function(m) {
         var checked = _selectedUids.has(m.uid) ? " checked" : "";
         return '<label class="a-am-item">'
-          + '<input type="checkbox" onchange="toggleAccessMember(\'' + esc(m.uid) + '\', this.checked)"' + checked + ' />'
+          + '<input type="checkbox" data-change="access-member" data-uid="' + esc(m.uid) + '"' + checked + ' />'
           + '<span class="a-am-dot"></span>'
           + '<span class="a-am-name">' + esc(m.name) + '</span>'
           + '</label>';
@@ -527,14 +487,27 @@
       try {
         const data = await AdminShell.req(`/admin/api/voice-channels?area=${encodeURIComponent(currentArea)}`);
         const vcs = data.voice_channels || [];
+        voiceChannelsData = vcs;
         if (!vcs.length) {
           container.innerHTML = '<p class="empty-state">暂无语音频道数据</p>';
           return;
         }
         container.innerHTML = vcs.map((vc) => {
-          const users = (vc.users || []).map((u) =>
-            `<span class="a-voice-user"><span class="a-voice-user__dot"></span>${esc(u.name)}</span>`
-          ).join("");
+          const users = (vc.users || []).map((u) => {
+            const avatar = u.avatar
+              ? `<img class="a-voice-user__avatar" src="${esc(u.avatar)}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'a-voice-user__avatar a-voice-user__avatar--ph',textContent:'?'}))">`
+              : `<span class="a-voice-user__avatar a-voice-user__avatar--ph">${esc((u.name || "?").slice(0, 1))}</span>`;
+            return `<span class="a-voice-user">
+              <span class="a-voice-user__ava">
+                ${avatar}
+                <span class="a-voice-user__dot"></span>
+              </span>
+              <span class="a-voice-user__name">${esc(u.name)}</span>
+              <button class="a-voice-user__move" type="button" title="调度到其他语音频道"
+                data-action="dispatch-user" data-uid="${esc(u.uid)}"
+                data-name="${esc(u.name)}" data-from="${esc(vc.id)}">调度</button>
+            </span>`;
+          }).join("");
           return `<div class="a-voice-ch">
             <div class="a-voice-ch__head">
               <span class="a-voice-ch__name">${esc(vc.name)}</span>
@@ -549,11 +522,84 @@
       }
     }
 
-    AdminShell.init({ page: "areas", passwordHandler: login });
+    // ---- Dispatch member to another voice channel ----
+
+    function showDispatch(uid, name, fromCh) {
+      const targets = voiceChannelsData.filter((vc) => vc.id !== fromCh);
+      const sel = AdminShell.byId("dispatchTarget");
+      sel.innerHTML = targets.length
+        ? targets.map((vc) =>
+            `<option value="${vc.id}">${esc(vc.name)}${vc.group ? " · " + esc(vc.group) : ""}</option>`
+          ).join("")
+        : '<option value="">无其他语音频道</option>';
+      AdminShell.byId("dispatchUid").value = uid;
+      AdminShell.byId("dispatchFrom").value = fromCh || "";
+      const fromVc = voiceChannelsData.find((vc) => vc.id === fromCh);
+      AdminShell.byId("dispatchInfo").textContent =
+        `将「${name}」从「${fromVc ? fromVc.name : "当前频道"}」调度到：`;
+      AdminShell.showMessage("dispatchMsg", targets.length ? "" : "当前域没有其他语音频道可调度", !targets.length);
+      AdminShell.upgradeSelect("dispatchTarget");
+      AdminShell.byId("dispatchOverlay").classList.add("is-open");
+      AdminShell.byId("dispatchDialog").classList.add("is-open");
+    }
+
+    function closeDispatch() {
+      AdminShell.byId("dispatchOverlay").classList.remove("is-open");
+      AdminShell.byId("dispatchDialog").classList.remove("is-open");
+    }
+
+    async function doDispatch() {
+      const uid = AdminShell.byId("dispatchUid").value;
+      const from = AdminShell.byId("dispatchFrom").value;
+      const to = AdminShell.byId("dispatchTarget").value;
+      if (!to) { AdminShell.showMessage("dispatchMsg", "请选择目标语音频道", true); return; }
+      AdminShell.showMessage("dispatchMsg", "调度中...");
+      try {
+        await AdminShell.req("/admin/api/voice-channels/dispatch", {
+          method: "POST",
+          body: JSON.stringify({ area: currentArea, target: uid, to_channel: to, from_channel: from }),
+        });
+        closeDispatch();
+        await loadVoiceChannels();
+        setState("已调度", "success");
+      } catch (e) {
+        AdminShell.showMessage("dispatchMsg", "调度失败: " + e.message, true);
+      }
+    }
+
+    AdminShell.registerActions({
+      "refresh-areas": () => loadAreaManager(),
+      "save-area-config": () => saveAreaConfig(),
+      "delete-area-config": () => deleteAreaConfig(),
+      "show-create-channel": () => showCreateChannel(),
+      "load-voice-channels": () => loadVoiceChannels(),
+      "dispatch-user": (el) => showDispatch(el.dataset.uid, el.dataset.name, el.dataset.from),
+      "close-dispatch": () => closeDispatch(),
+      "do-dispatch": () => doDispatch(),
+      "close-ch-modal": () => closeChModal(),
+      "do-create-channel": () => doCreateChannel(),
+      "close-edit-channel": () => closeEditChannel(),
+      "do-save-channel-settings": () => doSaveChannelSettings(),
+      "show-edit-channel": (el) => showEditChannel(el.dataset.chId, el.dataset.chType),
+      "do-delete-channel": (el) => doDeleteChannel(el.dataset.chId, el.dataset.chName),
+      "area-change": () => onAreaChange(),
+      "default-channel-change": () => onDefaultChannelSelectChange(),
+      "auto-role-change": () => onAutoRoleSelectChange(),
+      "toggle-secret-panel": () => toggleSecretPanel(),
+      "toggle-edit-pwd": () => toggleEditPwd(),
+      "access-member": (el) => toggleAccessMember(el.dataset.uid, el.checked),
+    });
     AdminShell.upgradeSelect("ac_default_channel_select");
     AdminShell.upgradeSelect("ac_auto_role_select");
     AdminShell.upgradeSelect("ac_announcement_style");
     AdminShell.upgradeSelect("newChType");
     AdminShell.upgradeSelect("editChVoiceQuality");
     AdminShell.upgradeSelect("editChVoiceDelay");
-    check();
+    AdminShell.upgradeSelect("dispatchTarget");
+    AdminShell.bootstrapAuth({
+      page: "areas",
+      loggedInText: "已登录域管理",
+      onLogin: () => loadAreaManager(),
+      onLoggedOut: () => setState("等待操作", "warning"),
+      onLoginError: () => setState("登录失败", "error"),
+    });

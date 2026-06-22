@@ -9,48 +9,6 @@
       AdminShell.setMicroStatus(text, variant, "statsState");
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录统计页",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadTop();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setPageState("等待同步", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
-    }
-
     async function loadTop() {
       const data = await AdminShell.req("/admin/api/statistics?days=7&top_page=" + topPage + "&top_page_size=12");
       const rows = (data.top_songs || [])
@@ -99,5 +57,15 @@
       }
     }
 
-    AdminShell.init({ page: "stats", passwordHandler: login });
-    check();
+    AdminShell.registerActions({
+      "refresh-stats": () => loadTop(),
+      "clear-history": () => clearHistory(),
+      "change-top": (el) => changeTop(Number(el.dataset.delta)),
+    });
+    AdminShell.bootstrapAuth({
+      page: "stats",
+      loggedInText: "已登录统计页",
+      onLogin: () => loadTop(),
+      onLoggedOut: () => setPageState("等待同步", "warning"),
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

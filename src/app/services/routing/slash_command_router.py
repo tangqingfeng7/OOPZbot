@@ -1,4 +1,5 @@
 from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
+from domain.routing.command_registry import slash_of
 
 from .builtin_command_actions import build_builtin_command_actions
 
@@ -61,28 +62,28 @@ class SlashCommandRouter:
 
     def _admin_rules(self, channel: str, area: str):
         return (
-            (("/plugins",), lambda: self._actions.plugins.show_plugin_list(channel, area), None),
-            (("/loadplugin",), lambda name: self._actions.plugins.load_plugin(name, channel, area), "用法: /loadplugin <名>"),
-            (("/unloadplugin",), lambda name: self._actions.plugins.unload_plugin(name, channel, area), "用法: /unloadplugin <名>"),
-            (("/reloadplugin",), lambda name: self._actions.plugins.reload_plugin_config(name, channel, area), "用法: /reloadplugin <名>"),
+            (slash_of("plugin_list"), lambda: self._actions.plugins.show_plugin_list(channel, area), None),
+            (slash_of("plugin_load"), lambda name: self._actions.plugins.load_plugin(name, channel, area), "用法: /loadplugin <名>"),
+            (slash_of("plugin_unload"), lambda name: self._actions.plugins.unload_plugin(name, channel, area), "用法: /unloadplugin <名>"),
+            (slash_of("plugin_reload"), lambda name: self._actions.plugins.reload_plugin_config(name, channel, area), "用法: /reloadplugin <名>"),
         )
 
     def _exact_rules(self, channel: str, area: str, user: str, raw: str):
         return (
-            (("/members", "/online"), lambda: self._actions.community.show_members(channel, area)),
-            (("/me",), lambda: self._actions.community.show_profile(channel, area, user)),
-            (("/myinfo",), lambda: self._actions.community.show_myinfo(channel, area, user)),
-            (("/voice",), lambda: self._actions.interaction.show_voice_channels(channel, area)),
-            (("/daily", "/quote"), lambda: self._actions.interaction.show_daily_speech(channel, area)),
-            (("/health", "/doctor"), lambda: self._actions.interaction.show_health_check(channel, area)),
-            (("/setup", "/wizard"), lambda: self._actions.interaction.show_setup_wizard(channel, area)),
-            (("/禁言", "/mute"), lambda: self._actions.moderation.mute_user(raw, channel, area, "用法: /禁言 谁 10")),
-            (("/解禁", "/unmute"), lambda: self._actions.moderation.unmute_user(raw, channel, area, "用法: /解禁 谁")),
-            (("/禁麦", "/mutemic"), lambda: self._actions.moderation.mute_mic(raw, channel, area, "用法: /禁麦 谁")),
-            (("/解麦", "/unmutemic"), lambda: self._actions.moderation.unmute_mic(raw, channel, area, "用法: /解麦 谁")),
-            (("/ban",), lambda: self._actions.moderation.remove_from_area(raw, channel, area, "用法: /ban 用户")),
+            (slash_of("members"), lambda: self._actions.community.show_members(channel, area)),
+            (slash_of("profile"), lambda: self._actions.community.show_profile(channel, area, user)),
+            (slash_of("myinfo"), lambda: self._actions.community.show_myinfo(channel, area, user)),
+            (slash_of("voice"), lambda: self._actions.interaction.show_voice_channels(channel, area)),
+            (slash_of("daily"), lambda: self._actions.interaction.show_daily_speech(channel, area)),
+            (slash_of("health"), lambda: self._actions.interaction.show_health_check(channel, area)),
+            (slash_of("setup"), lambda: self._actions.interaction.show_setup_wizard(channel, area)),
+            (slash_of("mute"), lambda: self._actions.moderation.mute_user(raw, channel, area, "用法: /禁言 谁 10")),
+            (slash_of("unmute"), lambda: self._actions.moderation.unmute_user(raw, channel, area, "用法: /解禁 谁")),
+            (slash_of("mute_mic"), lambda: self._actions.moderation.mute_mic(raw, channel, area, "用法: /禁麦 谁")),
+            (slash_of("unmute_mic"), lambda: self._actions.moderation.unmute_mic(raw, channel, area, "用法: /解麦 谁")),
+            (slash_of("remove_from_area"), lambda: self._actions.moderation.remove_from_area(raw, channel, area, "用法: /ban 用户")),
             (
-                ("/unblock",),
+                slash_of("unblock"),
                 lambda: self._actions.moderation.unblock_in_area(
                     raw,
                     channel,
@@ -90,36 +91,36 @@ class SlashCommandRouter:
                     "用法: /unblock 用户（可先 /blocklist 查看封禁列表）",
                 ),
             ),
-            (("/blocklist",), lambda: self._actions.moderation.show_block_list(channel, area)),
-            (("/autorecall",), lambda: self._actions.recall.configure_auto_recall(raw, channel, area)),
-            (("/recall",), lambda: self._actions.recall.recall(raw or None, channel, area)),
-            (("/ranking", "/活跃", "/活跃排行"), lambda: self._actions.scheduler.show_ranking(channel, area)),
-            (("/chatstats", "/频道统计"), lambda: self._actions.scheduler.show_channel_stats(channel, area)),
-            (("/topsongs", "/点歌排行", "/播放排行"), lambda: self._actions.scheduler.show_music_ranking(channel, area)),
-            (("/recentsongs", "/最近播放"), lambda: self._actions.scheduler.show_recent_songs(channel, area)),
+            (slash_of("blocklist"), lambda: self._actions.moderation.show_block_list(channel, area)),
+            (slash_of("autorecall"), lambda: self._actions.recall.configure_auto_recall(raw, channel, area)),
+            (slash_of("recall"), lambda: self._actions.recall.recall(raw or None, channel, area)),
+            (slash_of("ranking"), lambda: self._actions.scheduler.show_ranking(channel, area)),
+            (slash_of("chatstats"), lambda: self._actions.scheduler.show_channel_stats(channel, area)),
+            (slash_of("topsongs"), lambda: self._actions.scheduler.show_music_ranking(channel, area)),
+            (slash_of("recentsongs"), lambda: self._actions.scheduler.show_recent_songs(channel, area)),
         )
 
     def _arg_rules(self, channel: str, area: str):
         return (
-            (("/whois",), lambda target: self._actions.community.show_whois(target, channel, area, self._current_user), "用法: /whois 用户名"),
-            (("/role",), lambda target: self._actions.community.show_user_roles(target, channel, area), "用法: /role 用户名"),
-            (("/roles",), lambda target: self._actions.community.show_assignable_roles(target, channel, area), "用法: /roles 用户名"),
-            (("/search",), lambda keyword: self._actions.community.search_members(keyword, channel, area, self._current_user), "用法: /search 关键词"),
-            (("/help",), lambda topic: self._actions.interaction.show_help(channel, area, self._current_user, topic), "用法: /help 音乐"),
-            (("/enter",), lambda channel_id: self._actions.interaction.enter_channel(channel_id, channel, area), "用法: /enter 频道ID"),
-            (("/songsearch",), lambda keyword: self._services.interaction.music.search_candidates(keyword, channel, area, self._current_user), "用法: /songsearch 关键词"),
-            (("/pick",), lambda raw: self._handle_pick(raw, channel, area, self._current_user), "用法: /pick <编号>"),
+            (slash_of("whois"), lambda target: self._actions.community.show_whois(target, channel, area, self._current_user), "用法: /whois 用户名"),
+            (slash_of("role"), lambda target: self._actions.community.show_user_roles(target, channel, area), "用法: /role 用户名"),
+            (slash_of("roles"), lambda target: self._actions.community.show_assignable_roles(target, channel, area), "用法: /roles 用户名"),
+            (slash_of("search"), lambda keyword: self._actions.community.search_members(keyword, channel, area, self._current_user), "用法: /search 关键词"),
+            (slash_of("help"), lambda topic: self._actions.interaction.show_help(channel, area, self._current_user, topic), "用法: /help 音乐"),
+            (slash_of("enter"), lambda channel_id: self._actions.interaction.enter_channel(channel_id, channel, area), "用法: /enter 频道ID"),
+            (slash_of("songsearch"), lambda keyword: self._services.interaction.music.search_candidates(keyword, channel, area, self._current_user), "用法: /songsearch 关键词"),
+            (slash_of("pick"), lambda raw: self._handle_pick(raw, channel, area, self._current_user), "用法: /pick <编号>"),
         )
 
     def _pair_rules(self, channel: str, area: str):
         return (
             (
-                ("/addrole",),
+                slash_of("addrole"),
                 lambda target, role_name: self._actions.community.give_role(target, role_name, channel, area),
                 "用法: /addrole 用户 身份组名或ID\n示例: /addrole 谁 管理员",
             ),
             (
-                ("/removerole",),
+                slash_of("removerole"),
                 lambda target, role_name: self._actions.community.remove_role(target, role_name, channel, area),
                 "用法: /removerole 用户 身份组名或ID\n示例: /removerole 谁 管理员",
             ),
@@ -154,7 +155,7 @@ class SlashCommandRouter:
                 if usage is not None and self._dispatch_required_arg(command, aliases, raw, callback, usage, channel, area):
                     return
 
-        if not raw and self._dispatch_exact(command, ("/help",), lambda: self._actions.interaction.show_help(channel, area, user)):
+        if not raw and self._dispatch_exact(command, slash_of("help"), lambda: self._actions.interaction.show_help(channel, area, user)):
             return
         if self._services.interaction.music.handle_slash(command, subcommand, arg, parts, channel, area, user):
             return
@@ -171,11 +172,11 @@ class SlashCommandRouter:
             if self._dispatch_required_pair(command, aliases, parts, callback, usage, channel, area):
                 return
 
-        if command == "/clear" and subcommand == "history":
+        if command in slash_of("clear_history") and subcommand == "history":
             self._actions.recall.clear_history(channel, area)
             return
 
-        if command in ("/remind", "/提醒"):
+        if command in slash_of("remind"):
             if subcommand == "list":
                 self._actions.scheduler.list_reminders(channel, area, user)
             elif subcommand == "del" and arg:
@@ -189,7 +190,7 @@ class SlashCommandRouter:
                 )
             return
 
-        if command == "/schedule":
+        if command in slash_of("schedule"):
             if subcommand == "list" or not subcommand:
                 self._actions.scheduler.list_scheduled(channel, area)
             elif subcommand == "add":
@@ -218,7 +219,7 @@ class SlashCommandRouter:
                 )
             return
 
-        if command in ("/clearai", "/清除记忆", "/重置对话"):
+        if command in slash_of("clear_ai_memory"):
             cleared = self._services.interaction.chat.clear_memory(user, channel)
             if cleared:
                 self._sender.send_message("对话记忆已清除", channel=channel, area=area)

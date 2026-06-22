@@ -1,7 +1,7 @@
 import threading
 
-from config import WEB_PLAYER_CONFIG
 from core.logger_config import setup_logger
+from web import web_player_config as web_cfg
 from web.web_player import run_server as run_web_player
 
 from app.lifecycle.context import AppContext
@@ -34,16 +34,17 @@ class BackgroundServiceRunner:
         logger.info("自动播放监控已启动。")
 
     def _start_web_player(self, context: AppContext) -> None:
-        from web.web_player import register_runtime_dependencies, set_sender
+        from web.web_player import register_runtime_dependencies, set_oopz_client, set_sender
         set_sender(context.sender)
+        set_oopz_client(context.client)
         register_runtime_dependencies(
             music=context.handler.infrastructure.music,
             plugins=context.handler.infrastructure.plugins,
             plugin_host=context.handler.plugin_host,
         )
         self._warmup_members_cache(context.sender)
-        web_host = WEB_PLAYER_CONFIG.get("host", "0.0.0.0")
-        web_port = WEB_PLAYER_CONFIG.get("port", 8080)
+        web_host = web_cfg.web_host()
+        web_port = web_cfg.web_port()
         threading.Thread(
             target=run_web_player,
             kwargs={"host": web_host, "port": web_port},

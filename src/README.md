@@ -8,6 +8,7 @@
 - `domain/`：纯业务规则、插件契约和数据结构。
 - `music/`：音乐搜索、播放控制、平台适配和语音推流。
 - `oopz/`：OOPZ WebSocket、HTTP API、消息发送、上传、登录和名称解析。
+- `onebot_v11/`：OneBot v11 旁路适配（adapter / server / store / message / config）。
 - `services/`：聊天、定时任务、入退通知等独立服务。
 - `web/`：Web 播放器、Admin 后台和前端资源。
 

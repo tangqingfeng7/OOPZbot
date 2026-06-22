@@ -500,6 +500,10 @@ thead th,
   align-items: start;
 }
 
+.config-layout--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .system-grid {
   grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.1fr);
 }

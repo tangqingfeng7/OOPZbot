@@ -81,6 +81,15 @@ python tools/export_plugin_config_assets.py
 python tools/export_plugin_config_assets.py delta_force lol_ban
 ```
 
+## 共享基类
+
+`plugins/_shared/` 提供了插件间复用的基类，避免每个插件重复造轮子：
+
+- `IntervalWorker`（`_shared/background.py`）：按固定间隔运行的守护线程基类，统一封装「启动一次 / 停止 / 间隔轮询」生命周期。子类只需实现 `_tick()`，并在合适时机调用 `_start_thread()` 与 `stop()`；线程以「先等待 `interval` 再执行一轮」驱动，`_tick` 抛出的异常会被记录而不致线程退出，长循环里可用 `self.stopping` 提前退出。适合做定时推送 / 轮询监控（参考 `delta_force/daily_push.py`、`steam_price/monitor.py`）。
+- `JsonHttpClient`（`_shared/http_client.py`）：带重试与 JSON 解析的 HTTP 客户端基类，统一封装 User-Agent、超时、代理与重试循环。通过 `request_json(method, url, ...)` 发起请求，成功返回解析后的 JSON，网络异常重试耗尽或 JSON 解析失败返回 `{"_error": ...}`；`on_status` 回调可在 `raise_for_status` 之前拦截 404/429 等状态码自定义返回（参考 `apex/api.py`、`steam_price/api.py`）。
+
+另外，默认值应以 `config_spec` 为单一来源——若需要在 service 层拿到默认配置，可从 `config_spec.fields` 派生，而不要再单独维护一份 `_DEFAULT_CONFIG` 字典（参考 `lol_ban` / `lol_fa8`）。
+
 ## 新建插件
 
 推荐直接使用脚手架工具：
@@ -118,7 +127,7 @@ python tools/create_plugin_scaffold.py admin_demo --admin-only
 
 ```bash
 python tools/export_plugin_config_assets.py
-python -m unittest tests.test_plugin_contract_behavior tests.test_plugin_config_assets tests.test_plugin_scaffold
+python -m unittest tests.test_plugin_config_layout tests.test_plugin_runtime_state
 ```
 
 如果插件改动影响主链，再跑全量测试。
