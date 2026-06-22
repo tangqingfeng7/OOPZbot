@@ -3,24 +3,24 @@ import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from core.constants import Msg
 from core.logger_config import get_logger
 from core.proxy_utils import resolve_requests_proxies
 
 logger = get_logger("LolQuery")
 
-_DEFAULT_CONFIG = {
-    "enabled": False,
-    "api_url": "",
-    "token": "",
-    "proxy": "",
-}
+def _default_config() -> dict:
+    """从插件 config_spec 派生默认配置 —— 默认值的单一来源在 __init__.py。"""
+    from plugins.lol_ban import LolBanPlugin
+
+    return {field.name: field.default for field in LolBanPlugin().config_spec.fields}
 
 
 class LolQueryHandler:
     """英雄联盟封号查询处理器"""
 
     def __init__(self, config: dict | None = None):
-        self._config = _DEFAULT_CONFIG.copy()
+        self._config = _default_config()
         if config:
             self._config.update(config)
 
@@ -112,16 +112,16 @@ class LolQueryHandler:
         status = ban_data.get("return", "未知")
         msg = data.get("msg", "")
 
-        lines = [f"[search] QQ {qq} 封号查询结果:\n"]
+        lines = [f"{Msg.SEARCH} QQ {qq} 封号查询结果:\n"]
 
         if status == "封禁":
-            lines.append(f"[x] 状态: 已封禁")
+            lines.append(f"{Msg.ERR} 状态: 已封禁")
             if ban_data.get("banmsg"):
                 lines.append(f"[detail] {ban_data['banmsg']}")
             if ban_data.get("rammsg"):
                 lines.append(f"[time] {ban_data['rammsg']}")
         elif status == "正常":
-            lines.append(f"[ok] 状态: 正常（未封禁）")
+            lines.append(f"{Msg.OK} 状态: 正常（未封禁）")
         else:
             lines.append(f"状态: {status}")
 

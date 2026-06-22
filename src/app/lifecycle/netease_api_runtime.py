@@ -10,6 +10,7 @@ from typing import Optional
 import requests
 
 from config import NETEASE_CLOUD
+from core.http_constants import HTTP_TIMEOUT_HEALTH
 from core.logger_config import setup_logger
 
 logger = setup_logger("NeteaseApiRuntime")
@@ -21,7 +22,8 @@ class NeteaseApiRuntime:
 
     @staticmethod
     def _project_root() -> Path:
-        return Path(__file__).resolve().parents[3]
+        from core.paths import PROJECT_ROOT_PATH
+        return PROJECT_ROOT_PATH
 
     @classmethod
     def _resolve_api_dir(cls, raw_path: str) -> Path:
@@ -98,7 +100,7 @@ class NeteaseApiRuntime:
                 logger.warning("网易云 API 子进程已退出 (code=%s)，放弃等待。", self._process.returncode)
                 return
             try:
-                response = requests.get(url, timeout=2)
+                response = requests.get(url, timeout=HTTP_TIMEOUT_HEALTH)
             except requests.RequestException:
                 continue
             if response.status_code < 500:

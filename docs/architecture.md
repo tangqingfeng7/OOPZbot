@@ -98,6 +98,11 @@ NeteaseCloud API (:3000)
 │   │   ├── database.py          # SQLite 数据层
 │   │   ├── logger_config.py     # 日志配置
 │   │   ├── queue_manager.py     # Redis 播放队列管理
+│   │   ├── redis_keys.py        # Redis 键名与域隔离键（单一来源）
+│   │   ├── constants.py         # 跨模块常量（消息前缀 Msg、@提及、UA）
+│   │   ├── json_utils.py        # 紧凑 JSON 序列化（保证签名字节一致）
+│   │   ├── paths.py             # 项目路径唯一来源
+│   │   ├── http_constants.py    # HTTP 客户端默认超时分档（单一来源）
 │   │   ├── proxy_utils.py       # 代理配置
 │   │   └── area_config.py       # 域配置
 │   ├── music/                   # 音乐与语音播放
@@ -113,18 +118,23 @@ NeteaseCloud API (:3000)
 │   │   ├── oopz_sender.py       # 消息发送核心
 │   │   ├── oopz_upload.py       # 文件/图片/音频上传
 │   │   ├── oopz_api.py          # OOPZ 平台 API 交互
+│   │   ├── responses.py         # API 响应归一化（ApiResult / parse_*）
+│   │   ├── signing.py           # 请求签名唯一来源（RSA + Oopz-* 头）
 │   │   ├── oopz_password_login.py # OOPZ 账号密码登录
 │   │   └── name_resolver.py     # ID → 名称解析
+│   ├── onebot_v11/              # OneBot v11 旁路适配（adapter / server / store / message / config）
 │   ├── services/                # 独立服务
 │   │   ├── chat.py              # AI 聊天 + 图片生成
 │   │   ├── area_join_notifier.py # 域成员加入/退出通知
 │   │   ├── scheduler_service.py # 定时任务服务
+│   │   ├── scheduler_templates.py # 定时消息模板预设
 │   │   └── conversation_memory.py # AI 上下文记忆
 │   ├── web/                     # Web 播放器与 Admin 后台
 │   │   ├── web_player.py        # FastAPI 主应用
-│   │   ├── web_player_admin.py  # Admin 后台路由
+│   │   ├── web_player_admin.py  # Admin 路由入口（聚合 web.admin 包，对外稳定 facade）
 │   │   ├── web_player_config.py # Web / Admin 配置管理
 │   │   ├── web_link_token.py    # Web 播放器访问令牌
+│   │   ├── admin/               # Admin 后台路由包（pages / auth / config / music / scheduler / plugins / members / shared）
 │   │   └── assets/              # Web 前端资源
 │   │       ├── player.html      # Web 播放器前端
 │   │       ├── agora_player.html # Agora RTC 浏览器端
@@ -147,11 +157,18 @@ NeteaseCloud API (:3000)
 │   │   └── assets/              # 静态资源
 │   ├── lol_ban/                 # LOL 封号查询插件
 │   ├── lol_fa8/                 # LOL 战绩查询插件
-│   ├── _shared/                 # 插件间共用的小工具
+│   ├── apex/                    # Apex Legends 战绩与游戏信息查询插件
+│   ├── arc_raiders/             # ARC Raiders 物品与掉率查询插件
+│   ├── steam_price/             # Steam 游戏价格查询与降价提醒插件
+│   ├── _shared/                 # 插件共享基类与小工具（IntervalWorker 后台线程 / JsonHttpClient）
 │   └── README.md                # 插件说明
 │
 ├── tools/                       # 独立工具
 │   ├── credential_tool.py       # 凭据获取工具（RSA 私钥、UID、设备 ID、JWT Token）
+│   ├── create_plugin_scaffold.py # 插件脚手架生成
+│   ├── export_plugin_config_assets.py # 导出插件配置示例与 schema
+│   ├── prepare_clash_config.py  # 规整 Clash/Mihomo 本地启动配置
+│   ├── convert_subscription.py  # 代理订阅转 Clash/Mihomo 配置
 │   └── audio_service.py         # 音频播放服务（ffplay + FastAPI）
 │
 ├── nginx/                       # Nginx 反向代理配置
@@ -176,11 +193,13 @@ NeteaseCloud API (:3000)
 
 | 模块 | 职责 |
 |------|------|
-| `oopz_sender.py` | 核心发送器，RSA 签名、HTTP 请求基础设施（`_request` 统一方法）、消息发送 |
+| `oopz_sender.py` | 核心发送器，HTTP 请求基础设施（`_request` 统一方法）、消息发送 |
 | `oopz_upload.py` | `UploadMixin`：文件上传、图片上传、音频上传、图片信息获取 |
 | `oopz_api.py` | `OopzApiMixin`：所有 Oopz 平台 API 交互（成员管理、频道操作、角色分配等） |
 
 `OopzSender` 继承 `UploadMixin` 和 `OopzApiMixin`，外部调用方式不变。
+
+签名与响应解析已各自收口到单一来源：`signing.py` 提供 `oopz_auth_headers` / `build_oopz_sign`（`oopz_sender`、`name_resolver`、`oopz_password_login` 共用）；`responses.py` 提供 `ApiResult` / `parse_api_response` / `parse_mutation_response`，`oopz_api` 与 `oopz_sender` 统一经其归一化状态码、JSON 与业务 `status` 字段。
 
 ### Music 模块拆分
 

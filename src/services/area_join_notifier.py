@@ -6,6 +6,7 @@ from typing import Optional, Tuple, Callable, Set
 
 from config import OOPZ_CONFIG
 from oopz.oopz_sender import OopzSender
+from core.constants import build_mention
 from core.logger_config import get_logger
 
 logger = get_logger("AreaJoinNotifier")
@@ -104,7 +105,7 @@ def _build_member_mention(uid: str) -> Tuple[str, list]:
     if not uid:
         return "", []
     return (
-        f" (met){uid}(met)",
+        f" {build_mention(uid)}",
         [{
             "person": uid,
             "isBot": False,

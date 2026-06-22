@@ -73,7 +73,7 @@
         const action = step.actions && step.actions.length ? escapeHtml(step.actions[0]) : "当前无需额外操作";
         const page = step.page || "";
         const button = page
-          ? `<button class="btn btn-ghost" type="button" onclick="openAdminPage('${escapeHtml(page)}')">打开页面</button>`
+          ? `<button class="btn btn-ghost" type="button" data-action="open-page" data-page="${escapeHtml(page)}">打开页面</button>`
           : "";
         return `
           <article class="surface-card">
@@ -107,7 +107,7 @@
       }
       root.innerHTML = items.map((item) => {
         const button = item.page
-          ? `<button class="btn btn-ghost btn-sm" type="button" onclick="openAdminPage('${escapeHtml(item.page)}')">打开</button>`
+          ? `<button class="btn btn-ghost btn-sm" type="button" data-action="open-page" data-page="${escapeHtml(item.page)}">打开</button>`
           : "";
         return `
           <tr>
@@ -146,47 +146,14 @@
       renderDiagnostics(data);
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录体检页",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadDiagnostics();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setPageState("等待体检", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
-    }
-
-    AdminShell.init({ page: "setup", passwordHandler: login });
-    check();
+    AdminShell.registerActions({
+      "refresh-diagnostics": () => loadDiagnostics(),
+      "open-page": (el) => openAdminPage(el.dataset.page),
+    });
+    AdminShell.bootstrapAuth({
+      page: "setup",
+      loggedInText: "已登录体检页",
+      onLogin: () => loadDiagnostics(),
+      onLoggedOut: () => setPageState("等待体检", "warning"),
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

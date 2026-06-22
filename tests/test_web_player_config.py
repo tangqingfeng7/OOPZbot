@@ -27,6 +27,45 @@ class WebPlayerConfigPersistTest(unittest.TestCase):
                     values[target.id] = ast.literal_eval(node.value)
         return values
 
+    def _config_example_dicts(self) -> dict:
+        tree = ast.parse((REPO_ROOT / "config.example.py").read_text(encoding="utf-8"))
+        result = {}
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    result[target.id] = ast.literal_eval(node.value)
+        return result
+
+    def test_schema_defaults_match_config_example(self) -> None:
+        """CONFIG_FIELD_SCHEMA 的默认值是单一来源，必须与 config.example.py 完全一致。"""
+        example = self._config_example_dicts()
+        for group, fields in cfg.GROUP_DEFAULTS.items():
+            source_name = cfg.CONFIG_GROUP_SOURCES[group]
+            self.assertIn(source_name, example, f"config.example.py 缺少 {source_name}")
+            for field, default in fields.items():
+                self.assertEqual(
+                    example[source_name].get(field),
+                    default,
+                    f"{group}.{field} 默认值与 config.example.py 漂移",
+                )
+
+    def test_config_field_schema_omits_sensitive_defaults(self) -> None:
+        """敏感字段不下发明文默认；普通字段必须带 type 与 default。"""
+        schema = cfg.config_field_schema()
+        self.assertNotIn("default", schema["web_player"]["admin_password"])
+        self.assertEqual(schema["web_player"]["port"]["default"], 8080)
+        self.assertEqual(schema["web_player"]["host"]["default"], "0.0.0.0")
+        self.assertEqual(schema["music"]["default_volume"]["default"], 50)
+        self.assertEqual(schema["web_player"]["port"]["type"], "int")
+
+    def test_web_host_port_fall_back_to_schema_defaults(self) -> None:
+        self.assertEqual(cfg.config_default("web_player", "port"), 8080)
+        self.assertEqual(cfg.config_default("web_player", "host"), "0.0.0.0")
+        self.assertIsInstance(cfg.web_port(), int)
+        self.assertTrue(cfg.web_host())
+
     def test_persist_config_updates_creates_missing_music_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.py"

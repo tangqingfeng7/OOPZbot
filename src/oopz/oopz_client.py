@@ -9,6 +9,7 @@ import websocket
 from config import OOPZ_CONFIG, DEFAULT_HEADERS
 from core.logger_config import get_logger
 from oopz.name_resolver import get_resolver
+from oopz.oopz_sender import SensitiveContentError
 from core.proxy_utils import get_websocket_proxy_kwargs
 
 logger = get_logger("OopzClient")
@@ -271,6 +272,7 @@ class OopzClient:
         return fallback if fallback is not None else {}
 
     def _handle_chat(self, data: dict):
+        # 第一阶段：解析消息体。解析失败才算「解析聊天消息失败」。
         try:
             body = self._safe_json_parse(data.get("body", {}))
             msg_data = self._safe_json_parse(body.get("data", {}))
@@ -299,9 +301,17 @@ class OopzClient:
                 f"用户={user_display} "
                 f"内容={msg_data.get('content', '')[:100]}"
             )
-
-            if self.on_chat_message:
-                self.on_chat_message(msg_data)
-
         except Exception as e:
             logger.error(f"解析聊天消息失败: {e}")
+            return
+
+        # 第二阶段：业务处理（含回复发送）。与解析分开，避免发送被风控
+        # 拦截时误报为「解析失败」；风控拦截已在发送层记录，这里静默放行。
+        if not self.on_chat_message:
+            return
+        try:
+            self.on_chat_message(msg_data)
+        except SensitiveContentError:
+            logger.debug("回复被平台风控拦截，已忽略（发送层已记录）")
+        except Exception as e:
+            logger.error(f"处理聊天消息失败: {e}")

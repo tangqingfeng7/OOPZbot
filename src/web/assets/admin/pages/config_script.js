@@ -9,13 +9,12 @@
       var row = document.createElement("div");
       row.className = "kw-row";
       row.innerHTML =
-        '<input class="kw-key" type="text" placeholder="关键词" value="' + _kwEsc(key) + '">' +
-        '<input class="kw-val" type="text" placeholder="回复内容" value="' + _kwEsc(val) + '">' +
+        '<input class="kw-key" type="text" placeholder="关键词" value="' + AdminShell.escapeHtml(key) + '">' +
+        '<input class="kw-val" type="text" placeholder="回复内容" value="' + AdminShell.escapeHtml(val) + '">' +
         '<button type="button" class="kw-del" title="删除">&times;</button>';
       row.querySelector(".kw-del").onclick = function() { row.remove(); };
       list.appendChild(row);
     }
-    function _kwEsc(s) { return String(s || "").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;"); }
     window._kwAdd = function() {
       var list = AdminShell.byId("cfg_kw_list");
       if (!list) return;
@@ -65,10 +64,84 @@
       return !!AdminShell.byId(id).checked;
     }
 
+    // ---- OOPZ 代理：单字符串配置 <-> 「开关 + 协议 + 地址 + 端口」 ----
+    // oopz.proxy 语义：""=系统/未启用、"direct"/false=直连、url 或别名(clash...)=启用。
+    const PROXY_DEFAULT_HOST = "127.0.0.1";
+    const PROXY_HTTP_PORT = 7890;
+    const PROXY_SOCKS_PORT = 7891;
+    const PROXY_ALIASES = {
+      "clash": "http://127.0.0.1:7890",
+      "clash-http": "http://127.0.0.1:7890",
+      "clash-mixed": "http://127.0.0.1:7890",
+      "clash-socks": "socks5://127.0.0.1:7891",
+      "mihomo": "http://127.0.0.1:7890",
+      "mihomo-socks": "socks5://127.0.0.1:7891",
+    };
+
+    // mode: "direct"=直连忽略环境、"system"=跟随系统/环境变量代理、"manual"=手动指定。
+    function _parseProxyValue(raw) {
+      const out = { mode: "direct", scheme: "http", host: PROXY_DEFAULT_HOST, port: PROXY_HTTP_PORT };
+      if (raw === false) {
+        return out;
+      }
+      const value = (raw == null ? "" : String(raw)).trim();
+      if (value === "") {
+        out.mode = "system";
+        return out;
+      }
+      if (value.toLowerCase() === "direct") {
+        return out;
+      }
+      let urlStr = PROXY_ALIASES[value.toLowerCase()] || value;
+      if (urlStr.indexOf("://") === -1) {
+        urlStr = "http://" + urlStr;
+      }
+      const m = urlStr.match(/^([a-zA-Z0-9]+):\/\/(?:[^@/]*@)?([^:/\s]+)(?::(\d+))?/);
+      if (!m) {
+        return out;
+      }
+      out.mode = "manual";
+      out.scheme = m[1].toLowerCase().indexOf("socks") === 0 ? "socks5" : "http";
+      out.host = m[2] || PROXY_DEFAULT_HOST;
+      out.port = m[3] ? Number(m[3]) : (out.scheme === "socks5" ? PROXY_SOCKS_PORT : PROXY_HTTP_PORT);
+      return out;
+    }
+
+    function _applyProxyModeState() {
+      const manual = val("cfg_proxy_mode") === "manual";
+      document.querySelectorAll(".js-proxy-detail").forEach(function (el) {
+        el.style.opacity = manual ? "" : "0.45";
+      });
+    }
+
+    function _loadProxy(config) {
+      const p = _parseProxyValue(config && config.oopz ? config.oopz.proxy : "");
+      setVal("cfg_proxy_mode", p.mode);
+      setVal("cfg_proxy_scheme", p.scheme);
+      setVal("cfg_proxy_host", p.host);
+      setVal("cfg_proxy_port", p.port);
+      AdminShell.refreshCustomSelect("cfg_proxy_mode");
+      AdminShell.refreshCustomSelect("cfg_proxy_scheme");
+      _applyProxyModeState();
+    }
+
+    function _buildProxyValue() {
+      const mode = val("cfg_proxy_mode") || "direct";
+      if (mode === "system") {
+        return "";
+      }
+      if (mode !== "manual") {
+        return "direct";
+      }
+      const scheme = val("cfg_proxy_scheme") || "http";
+      const host = val("cfg_proxy_host") || PROXY_DEFAULT_HOST;
+      const port = getInt("cfg_proxy_port") || (scheme === "socks5" ? PROXY_SOCKS_PORT : PROXY_HTTP_PORT);
+      return scheme + "://" + host + ":" + port;
+    }
+
     function setPageState(text, variant) {
       AdminShell.setStatus(text, variant, "topStatus");
       AdminShell.setStatus(text, variant, "mobileStatus");
-      AdminShell.setStatus(text, variant, "railState");
     }
 
     function renderMusicAreaHint(info) {
@@ -83,402 +156,316 @@
       hint.textContent = "当前音乐域：" + area + "；来源：" + sourceText + "；活跃域：" + activeArea + "；默认域：" + defaultArea;
     }
 
-    let neteaseQrTimer = null;
-    let neteaseQrKey = "";
-    let neteaseQrBaseUrl = "";
+    // 扫码登录通用控制器：网易云 / B 站共用同一套二维码刷新、轮询、
+    // 账号状态与 Cookie 回填逻辑，仅通过 config 注入各自的 DOM id、
+    // 接口端点和文案差异。
+    function createQrLoginController(config) {
+      let timer = null;
+      let key = "";
+      let baseUrl = "";
 
-    function setNeteaseQrStatus(text, isError) {
-      const element = AdminShell.byId("cfg_netease_qr_status");
-      if (!element) {
-        return;
-      }
-      element.textContent = text || "";
-      element.style.color = isError ? "var(--danger)" : "var(--ink-faint)";
-    }
-
-    function renderNeteaseAccount(profile, message, isError) {
-      const targets = Array.from(document.querySelectorAll("[data-netease-account-status]"));
-      if (!targets.length) return;
-      if (profile && profile.user_id) {
-        const nickname = profile.nickname || "未命名账号";
-        const text = "当前网易云账号：" + nickname + "（ID：" + profile.user_id + "）";
-        targets.forEach(function (element) {
-          element.textContent = text;
-          element.style.color = "var(--success)";
-        });
-        return;
-      }
-      const text = "当前网易云账号：" + (message || "未登录");
-      targets.forEach(function (element) {
-        element.textContent = text;
+      function setStatus(text, isError) {
+        const element = AdminShell.byId(config.ids.status);
+        if (!element) {
+          return;
+        }
+        element.textContent = text || "";
         element.style.color = isError ? "var(--danger)" : "var(--ink-faint)";
-      });
-    }
+      }
 
-    async function loadNeteaseAccountStatus(configured) {
-      if (!configured) {
-        renderNeteaseAccount(null, "未登录", false);
-        return;
-      }
-      renderNeteaseAccount(null, "检测中...", false);
-      try {
-        const data = await AdminShell.req("/admin/api/netease/account");
-        if (data.logged_in) {
-          renderNeteaseAccount(data.profile || null, "", false);
-        } else {
-          renderNeteaseAccount(null, data.message || "未登录或 Cookie 已过期", false);
-        }
-      } catch (error) {
-        renderNeteaseAccount(null, error.message || "账号状态检测失败", true);
-      }
-    }
-
-    function setNeteaseQrSaveEnabled(enabled) {
-      const runtimeButton = AdminShell.byId("cfg_netease_qr_save_runtime");
-      if (runtimeButton) {
-        runtimeButton.disabled = !enabled;
-      }
-    }
-
-    function stopNeteaseQrPolling() {
-      if (neteaseQrTimer) {
-        window.clearInterval(neteaseQrTimer);
-        neteaseQrTimer = null;
-      }
-    }
-
-    function resetNeteaseQrView(text) {
-      const image = AdminShell.byId("cfg_netease_qr_img");
-      const empty = AdminShell.byId("cfg_netease_qr_empty");
-      const link = AdminShell.byId("cfg_netease_qr_link");
-      if (image) {
-        image.hidden = true;
-        image.removeAttribute("src");
-      }
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = text || "等待刷新";
-      }
-      if (link) {
-        link.hidden = true;
-        link.href = "#";
-      }
-    }
-
-    function fillNeteaseCookie(cookie) {
-      setSecretValue("cfg_netease_cookie", cookie, true);
-      setNeteaseQrSaveEnabled(!!cookie);
-    }
-
-    async function checkNeteaseQr() {
-      if (!neteaseQrKey) {
-        stopNeteaseQrPolling();
-        return;
-      }
-      try {
-        const data = await AdminShell.req("/admin/api/netease/login/qr/check", {
-          method: "POST",
-          body: JSON.stringify({
-            base_url: neteaseQrBaseUrl || val("cfg_netease_base_url"),
-            key: neteaseQrKey,
-          }),
-        });
-        if (data.status === "waiting") {
-          setNeteaseQrStatus(data.message || "等待扫码", false);
-          return;
-        }
-        if (data.status === "scanned") {
-          setNeteaseQrStatus(data.message || "已扫码，请在手机上确认", false);
-          return;
-        }
-        if (data.status === "expired") {
-          stopNeteaseQrPolling();
-          neteaseQrKey = "";
-          setNeteaseQrStatus(data.message || "二维码已过期", true);
-          resetNeteaseQrView("已过期");
-          setPageState("网易云二维码过期", "warning");
-          return;
-        }
-        if (data.status === "success") {
-          stopNeteaseQrPolling();
-          neteaseQrKey = "";
-          fillNeteaseCookie(data.cookie || "");
-          renderNeteaseAccount(data.profile || null, data.profile_message || "已登录，账号信息待保存后刷新", false);
-          setNeteaseQrStatus("登录成功，Cookie 已填入", false);
-          AdminShell.showMessage("msg", "网易云 Cookie 已填入，可选择保存方式");
-          setPageState("网易云登录成功", "success");
-          return;
-        }
-        setNeteaseQrStatus(data.message || "等待网易云返回登录状态", false);
-      } catch (error) {
-        stopNeteaseQrPolling();
-        neteaseQrKey = "";
-        setNeteaseQrStatus(error.message || "登录状态检查失败", true);
-        setPageState("网易云登录检查失败", "error");
-      }
-    }
-
-    async function refreshNeteaseQr() {
-      const button = AdminShell.byId("cfg_netease_qr_refresh");
-      stopNeteaseQrPolling();
-      neteaseQrKey = "";
-      neteaseQrBaseUrl = "";
-      setNeteaseQrSaveEnabled(false);
-      resetNeteaseQrView("刷新中");
-      setNeteaseQrStatus("正在获取二维码...", false);
-      setPageState("网易云二维码刷新中", "warning");
-      if (button) {
-        button.disabled = true;
-        button.textContent = "刷新中...";
-      }
-      try {
-        const data = await AdminShell.req("/admin/api/netease/login/qr", {
-          method: "POST",
-          body: JSON.stringify({ base_url: val("cfg_netease_base_url") }),
-        });
-        neteaseQrKey = data.key || "";
-        neteaseQrBaseUrl = data.base_url || val("cfg_netease_base_url");
-        const image = AdminShell.byId("cfg_netease_qr_img");
-        const empty = AdminShell.byId("cfg_netease_qr_empty");
-        const link = AdminShell.byId("cfg_netease_qr_link");
-        if (image && data.qrimg) {
-          image.src = data.qrimg;
-          image.hidden = false;
-        }
-        if (empty) {
-          empty.hidden = !!data.qrimg;
-          empty.textContent = data.qrimg ? "" : "二维码链接已生成";
-        }
-        if (link && data.qrurl) {
-          link.href = data.qrurl;
-          link.hidden = false;
-        }
-        setNeteaseQrStatus(data.message || "等待扫码", false);
-        neteaseQrTimer = window.setInterval(checkNeteaseQr, 2500);
-        window.setTimeout(checkNeteaseQr, 900);
-      } catch (error) {
-        resetNeteaseQrView("刷新失败");
-        setNeteaseQrStatus(error.message || "二维码刷新失败", true);
-        setPageState("网易云二维码刷新失败", "error");
-      } finally {
-        if (button) {
-          button.disabled = false;
-          button.textContent = "刷新二维码";
-        }
-      }
-    }
-
-    async function saveNeteaseQrCookie(persist) {
-      if (!val("cfg_netease_cookie")) {
-        setNeteaseQrStatus("请先完成扫码登录", true);
-        return;
-      }
-      await saveConfig(true);
-    }
-
-    let bilibiliQrTimer = null;
-    let bilibiliQrKey = "";
-
-    function setBilibiliQrStatus(text, isError) {
-      const element = AdminShell.byId("cfg_bilibili_qr_status");
-      if (!element) {
-        return;
-      }
-      element.textContent = text || "";
-      element.style.color = isError ? "var(--danger)" : "var(--ink-faint)";
-    }
-
-    function renderBilibiliAccount(profile, message, isError) {
-      const targets = Array.from(document.querySelectorAll("[data-bilibili-account-status]"));
-      let text = "";
-      if (!targets.length) {
+      function accountText(profile, message) {
         if (profile && profile.user_id) {
           const nickname = profile.nickname || "未命名账号";
-          setBilibiliQrStatus("当前B站账号：" + nickname + "（ID：" + profile.user_id + "）", false);
-        } else if (message) {
-          setBilibiliQrStatus("当前B站账号：" + message, !!isError);
+          return config.accountLabel + nickname + "（ID：" + profile.user_id + "）";
         }
-        return;
+        return message || config.accountLabel + "已登录，账号信息待保存后刷新";
       }
-      if (profile && profile.user_id) {
-        const nickname = profile.nickname || "未命名账号";
-        text = "当前B站账号：" + nickname + "（ID：" + profile.user_id + "）";
+
+      function renderAccount(profile, message, isError) {
+        const targets = Array.from(document.querySelectorAll(config.accountSelector));
+        if (!targets.length) {
+          return;
+        }
+        let text;
+        let color;
+        if (profile && profile.user_id) {
+          text = config.accountLabel + (profile.nickname || "未命名账号") + "（ID：" + profile.user_id + "）";
+          color = "var(--success)";
+        } else {
+          text = config.accountLabel + (message || "未登录");
+          color = isError ? "var(--danger)" : "var(--ink-faint)";
+        }
         targets.forEach(function (element) {
           element.textContent = text;
-          element.style.color = "var(--success)";
+          element.style.color = color;
         });
-        return;
       }
-      text = "当前B站账号：" + (message || "未登录");
-      targets.forEach(function (element) {
-        element.textContent = text;
-        element.style.color = isError ? "var(--danger)" : "var(--ink-faint)";
-      });
-    }
 
-    function bilibiliAccountText(profile, fallback) {
-      if (profile && profile.user_id) {
-        const nickname = profile.nickname || "未命名账号";
-        return "当前B站账号：" + nickname + "（ID：" + profile.user_id + "）";
-      }
-      return fallback || "当前B站账号：已登录，账号信息待保存后刷新";
-    }
-
-    async function loadBilibiliAccountStatus(configured) {
-      if (!configured) {
-        renderBilibiliAccount(null, "未登录", false);
-        return;
-      }
-      renderBilibiliAccount(null, "检测中...", false);
-      try {
-        const data = await AdminShell.req("/admin/api/bilibili/account");
-        if (data.logged_in) {
-          renderBilibiliAccount(data.profile || null, "", false);
-        } else {
-          renderBilibiliAccount(null, data.message || "未登录或 Cookie 已过期", false);
-        }
-      } catch (error) {
-        renderBilibiliAccount(null, error.message || "账号状态检测失败", true);
-      }
-    }
-
-    function setBilibiliQrSaveEnabled(enabled) {
-      const runtimeButton = AdminShell.byId("cfg_bilibili_qr_save_runtime");
-      if (runtimeButton) {
-        runtimeButton.disabled = !enabled;
-      }
-    }
-
-    function stopBilibiliQrPolling() {
-      if (bilibiliQrTimer) {
-        window.clearInterval(bilibiliQrTimer);
-        bilibiliQrTimer = null;
-      }
-    }
-
-    function resetBilibiliQrView(text) {
-      const image = AdminShell.byId("cfg_bilibili_qr_img");
-      const empty = AdminShell.byId("cfg_bilibili_qr_empty");
-      const link = AdminShell.byId("cfg_bilibili_qr_link");
-      if (image) {
-        image.hidden = true;
-        image.removeAttribute("src");
-      }
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = text || "等待刷新";
-      }
-      if (link) {
-        link.hidden = true;
-        link.href = "#";
-      }
-    }
-
-    function fillBilibiliCookie(cookie) {
-      setSecretValue("cfg_bilibili_cookie", cookie, true);
-      setBilibiliQrSaveEnabled(!!cookie);
-    }
-
-    async function checkBilibiliQr() {
-      if (!bilibiliQrKey) {
-        stopBilibiliQrPolling();
-        return;
-      }
-      try {
-        const data = await AdminShell.req("/admin/api/bilibili/login/qr/check", {
-          method: "POST",
-          body: JSON.stringify({ key: bilibiliQrKey }),
-        });
-        if (data.status === "waiting") {
-          setBilibiliQrStatus(data.message || "等待扫码", false);
+      async function loadAccountStatus(configured) {
+        if (!configured) {
+          renderAccount(null, "未登录", false);
           return;
         }
-        if (data.status === "scanned") {
-          setBilibiliQrStatus(data.message || "已扫码，请在手机上确认", false);
-          return;
+        renderAccount(null, "检测中...", false);
+        try {
+          const data = await AdminShell.req(config.endpoints.account);
+          if (data.logged_in) {
+            renderAccount(data.profile || null, "", false);
+          } else {
+            renderAccount(null, data.message || "未登录或 Cookie 已过期", false);
+          }
+        } catch (error) {
+          renderAccount(null, error.message || "账号状态检测失败", true);
         }
-        if (data.status === "expired") {
-          stopBilibiliQrPolling();
-          bilibiliQrKey = "";
-          setBilibiliQrStatus(data.message || "二维码已过期", true);
-          resetBilibiliQrView("已过期");
-          setPageState("B 站二维码过期", "warning");
-          return;
-        }
-        if (data.status === "success") {
-          stopBilibiliQrPolling();
-          bilibiliQrKey = "";
-          fillBilibiliCookie(data.cookie || "");
-          const accountText = bilibiliAccountText(data.profile || null, data.profile_message || "");
-          renderBilibiliAccount(data.profile || null, data.profile_message || "已登录，账号信息待保存后刷新", false);
-          setBilibiliQrStatus("登录成功，Cookie 已填入", false);
-          AdminShell.showMessage("msg", "B 站 Cookie 已填入，可选择保存方式；" + accountText);
-          setPageState("B 站登录成功", "success");
-          return;
-        }
-        setBilibiliQrStatus(data.message || "等待 B 站返回登录状态", false);
-      } catch (error) {
-        stopBilibiliQrPolling();
-        bilibiliQrKey = "";
-        setBilibiliQrStatus(error.message || "登录状态检查失败", true);
-        setPageState("B 站登录检查失败", "error");
       }
-    }
 
-    async function refreshBilibiliQr() {
-      const button = AdminShell.byId("cfg_bilibili_qr_refresh");
-      stopBilibiliQrPolling();
-      bilibiliQrKey = "";
-      setBilibiliQrSaveEnabled(false);
-      resetBilibiliQrView("刷新中");
-      setBilibiliQrStatus("正在获取二维码...", false);
-      setPageState("B 站二维码刷新中", "warning");
-      if (button) {
-        button.disabled = true;
-        button.textContent = "刷新中...";
+      function setSaveEnabled(enabled) {
+        const runtimeButton = AdminShell.byId(config.ids.saveBtn);
+        if (runtimeButton) {
+          runtimeButton.disabled = !enabled;
+        }
       }
-      try {
-        const data = await AdminShell.req("/admin/api/bilibili/login/qr", {
-          method: "POST",
-          body: "{}",
-        });
-        bilibiliQrKey = data.key || "";
-        const image = AdminShell.byId("cfg_bilibili_qr_img");
-        const empty = AdminShell.byId("cfg_bilibili_qr_empty");
-        const link = AdminShell.byId("cfg_bilibili_qr_link");
-        if (image && data.qrimg) {
-          image.src = data.qrimg;
-          image.hidden = false;
+
+      function stopPolling() {
+        if (timer) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+      }
+
+      function resetView(text) {
+        const image = AdminShell.byId(config.ids.img);
+        const empty = AdminShell.byId(config.ids.empty);
+        const link = AdminShell.byId(config.ids.link);
+        if (image) {
+          image.hidden = true;
+          image.removeAttribute("src");
         }
         if (empty) {
-          empty.hidden = !!data.qrimg;
-          empty.textContent = data.qrimg ? "" : "二维码链接已生成";
+          empty.hidden = false;
+          empty.textContent = text || "等待刷新";
         }
-        if (link && data.qrurl) {
-          link.href = data.qrurl;
-          link.hidden = false;
-        }
-        setBilibiliQrStatus(data.message || "等待扫码", false);
-        bilibiliQrTimer = window.setInterval(checkBilibiliQr, 2500);
-        window.setTimeout(checkBilibiliQr, 900);
-      } catch (error) {
-        resetBilibiliQrView("刷新失败");
-        setBilibiliQrStatus(error.message || "二维码刷新失败", true);
-        setPageState("B 站二维码刷新失败", "error");
-      } finally {
-        if (button) {
-          button.disabled = false;
-          button.textContent = "刷新二维码";
+        if (link) {
+          link.hidden = true;
+          link.href = "#";
         }
       }
+
+      function fillCookie(cookie) {
+        setSecretValue(config.ids.cookie, cookie, true);
+        setSaveEnabled(!!cookie);
+      }
+
+      async function check() {
+        if (!key) {
+          stopPolling();
+          return;
+        }
+        try {
+          const data = await AdminShell.req(config.endpoints.check, {
+            method: "POST",
+            body: config.buildCheckBody({ key: key, baseUrl: baseUrl }),
+          });
+          if (data.status === "waiting") {
+            setStatus(data.message || "等待扫码", false);
+            return;
+          }
+          if (data.status === "scanned") {
+            setStatus(data.message || "已扫码，请在手机上确认", false);
+            return;
+          }
+          if (data.status === "expired") {
+            stopPolling();
+            key = "";
+            setStatus(data.message || "二维码已过期", true);
+            resetView("已过期");
+            setPageState(config.platform + "二维码过期", "warning");
+            return;
+          }
+          if (data.status === "success") {
+            stopPolling();
+            key = "";
+            fillCookie(data.cookie || "");
+            const profileMessage = data.profile_message || "";
+            renderAccount(data.profile || null, profileMessage || "已登录，账号信息待保存后刷新", false);
+            setStatus("登录成功，Cookie 已填入", false);
+            AdminShell.showMessage(
+              "msg",
+              config.buildSuccessMessage(
+                data.profile || null,
+                profileMessage,
+                accountText(data.profile || null, profileMessage)
+              )
+            );
+            setPageState(config.platform + "登录成功", "success");
+            return;
+          }
+          setStatus(data.message || config.waitingDefault, false);
+        } catch (error) {
+          stopPolling();
+          key = "";
+          setStatus(error.message || "登录状态检查失败", true);
+          setPageState(config.platform + "登录检查失败", "error");
+        }
+      }
+
+      async function refresh() {
+        const button = AdminShell.byId(config.ids.refreshBtn);
+        stopPolling();
+        key = "";
+        baseUrl = "";
+        setSaveEnabled(false);
+        resetView("刷新中");
+        setStatus("正在获取二维码...", false);
+        setPageState(config.platform + "二维码刷新中", "warning");
+        if (button) {
+          button.disabled = true;
+          button.textContent = "刷新中...";
+        }
+        try {
+          const data = await AdminShell.req(config.endpoints.refresh, {
+            method: "POST",
+            body: config.buildRefreshBody(),
+          });
+          key = data.key || "";
+          baseUrl = config.resolveBaseUrl ? config.resolveBaseUrl(data) : "";
+          const image = AdminShell.byId(config.ids.img);
+          const empty = AdminShell.byId(config.ids.empty);
+          const link = AdminShell.byId(config.ids.link);
+          if (image && data.qrimg) {
+            image.src = data.qrimg;
+            image.hidden = false;
+          }
+          if (empty) {
+            empty.hidden = !!data.qrimg;
+            empty.textContent = data.qrimg ? "" : "二维码链接已生成";
+          }
+          if (link && data.qrurl) {
+            link.href = data.qrurl;
+            link.hidden = false;
+          }
+          setStatus(data.message || "等待扫码", false);
+          timer = window.setInterval(check, 2500);
+          window.setTimeout(check, 900);
+        } catch (error) {
+          resetView("刷新失败");
+          setStatus(error.message || "二维码刷新失败", true);
+          setPageState(config.platform + "二维码刷新失败", "error");
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.textContent = "刷新二维码";
+          }
+        }
+      }
+
+      async function save() {
+        if (!val(config.ids.cookie)) {
+          setStatus("请先完成扫码登录", true);
+          return;
+        }
+        await saveConfig(true);
+      }
+
+      return {
+        renderAccount: renderAccount,
+        loadAccountStatus: loadAccountStatus,
+        setSaveEnabled: setSaveEnabled,
+        check: check,
+        refresh: refresh,
+        save: save,
+      };
     }
 
-    async function saveBilibiliQrCookie(persist) {
-      if (!val("cfg_bilibili_cookie")) {
-        setBilibiliQrStatus("请先完成扫码登录", true);
-        return;
-      }
-      await saveConfig(true);
+    const neteaseQr = createQrLoginController({
+      platform: "网易云",
+      accountLabel: "当前网易云账号：",
+      accountSelector: "[data-netease-account-status]",
+      waitingDefault: "等待网易云返回登录状态",
+      ids: {
+        status: "cfg_netease_qr_status",
+        img: "cfg_netease_qr_img",
+        empty: "cfg_netease_qr_empty",
+        link: "cfg_netease_qr_link",
+        refreshBtn: "cfg_netease_qr_refresh",
+        saveBtn: "cfg_netease_qr_save_runtime",
+        cookie: "cfg_netease_cookie",
+      },
+      endpoints: {
+        refresh: "/admin/api/netease/login/qr",
+        check: "/admin/api/netease/login/qr/check",
+        account: "/admin/api/netease/account",
+      },
+      buildRefreshBody: function () {
+        return JSON.stringify({ base_url: val("cfg_netease_base_url") });
+      },
+      resolveBaseUrl: function (data) {
+        return data.base_url || val("cfg_netease_base_url");
+      },
+      buildCheckBody: function (state) {
+        return JSON.stringify({
+          base_url: state.baseUrl || val("cfg_netease_base_url"),
+          key: state.key,
+        });
+      },
+      buildSuccessMessage: function () {
+        return "网易云 Cookie 已填入，可选择保存方式";
+      },
+    });
+
+    const bilibiliQr = createQrLoginController({
+      platform: "B 站",
+      accountLabel: "当前B站账号：",
+      accountSelector: "[data-bilibili-account-status]",
+      waitingDefault: "等待 B 站返回登录状态",
+      ids: {
+        status: "cfg_bilibili_qr_status",
+        img: "cfg_bilibili_qr_img",
+        empty: "cfg_bilibili_qr_empty",
+        link: "cfg_bilibili_qr_link",
+        refreshBtn: "cfg_bilibili_qr_refresh",
+        saveBtn: "cfg_bilibili_qr_save_runtime",
+        cookie: "cfg_bilibili_cookie",
+      },
+      endpoints: {
+        refresh: "/admin/api/bilibili/login/qr",
+        check: "/admin/api/bilibili/login/qr/check",
+        account: "/admin/api/bilibili/account",
+      },
+      buildRefreshBody: function () {
+        return "{}";
+      },
+      buildCheckBody: function (state) {
+        return JSON.stringify({ key: state.key });
+      },
+      buildSuccessMessage: function (profile, profileMessage, accountText) {
+        return "B 站 Cookie 已填入，可选择保存方式；" + accountText;
+      },
+    });
+
+    // 以下全局包装函数供 config_content.html 内联 onclick 调用。
+    function loadNeteaseAccountStatus(configured) {
+      return neteaseQr.loadAccountStatus(configured);
+    }
+
+    function refreshNeteaseQr() {
+      return neteaseQr.refresh();
+    }
+
+    function saveNeteaseQrCookie(persist) {
+      return neteaseQr.save(persist);
+    }
+
+    function loadBilibiliAccountStatus(configured) {
+      return bilibiliQr.loadAccountStatus(configured);
+    }
+
+    function refreshBilibiliQr() {
+      return bilibiliQr.refresh();
+    }
+
+    function saveBilibiliQrCookie(persist) {
+      return bilibiliQr.save(persist);
     }
 
     function setSecretState(id, configured) {
@@ -489,10 +476,7 @@
       element.type = "password";
       element.value = "";
       element.placeholder = configured ? "已配置，留空表示不修改" : "未配置";
-      const button = element.parentElement && element.parentElement.querySelector("button");
-      if (button) {
-        button.textContent = "显示";
-      }
+      resetSecretToggle(element, id);
     }
 
     function setSecretValue(id, value, configured) {
@@ -503,7 +487,19 @@
       element.type = "password";
       element.value = value || "";
       element.placeholder = configured && !value ? "已配置，留空表示不修改" : "";
-      const button = element.parentElement && element.parentElement.querySelector("button");
+      resetSecretToggle(element, id);
+    }
+
+    // 仅复位该字段自己的「显示/隐藏」切换按钮；避免误改同容器内的其它按钮
+    // （如 OOPZ 登录区与密码框共用容器的「登录并获取」按钮）。
+    function resetSecretToggle(element, id) {
+      const container = element.parentElement;
+      if (!container) {
+        return;
+      }
+      const button = container.querySelector(
+        'button[data-action="toggle-secret"][data-secret="' + id + '"]'
+      );
       if (button) {
         button.textContent = "显示";
       }
@@ -519,48 +515,6 @@
       if (button) {
         button.textContent = show ? "隐藏" : "显示";
       }
-    }
-
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录配置页",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadConfig();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setPageState("等待操作", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
     }
 
     function setOopzLoginStatus(text, variant) {
@@ -620,98 +574,191 @@
       }
     }
 
+    // 配置字段声明表：loadConfig 与 build 共用同一份定义，避免两侧手写映射漂移。
+    // 普通字段在此声明；密钥、关键词回复、撤回排除命令等特殊字段单独处理。
+    function _cfgGet(obj, path) {
+      return path.split(".").reduce(function (acc, key) {
+        return acc == null ? undefined : acc[key];
+      }, obj);
+    }
+
+    function _cfgSet(obj, path, value) {
+      const keys = path.split(".");
+      let cur = obj;
+      for (let i = 0; i < keys.length - 1; i++) {
+        if (typeof cur[keys[i]] !== "object" || cur[keys[i]] === null) {
+          cur[keys[i]] = {};
+        }
+        cur = cur[keys[i]];
+      }
+      cur[keys[keys.length - 1]] = value;
+    }
+
+    // 字段类型与默认值由后端 /admin/api/config 的 schema 下发（单一来源），
+    // 这里只保留「DOM id ↔ 配置路径」绑定及少量纯前端展示标记：
+    //   nullish:             加载时用 ?? 取默认（保留 0 等有意义的假值），否则用 ||。
+    //   buildDefault:        保存时输入为空/0 则回退到后端默认（仅个别字段需要）。
+    //   placeholderFromDefault: 用后端默认值作为输入占位提示。
+    let CONFIG_SCHEMA = {};
+
+    function _schemaMeta(path) {
+      const parts = path.split(".");
+      const group = CONFIG_SCHEMA[parts[0]];
+      return (group && group[parts[1]]) || {};
+    }
+
+    // 后端类型 → 前端控件类型：str/str_list/json_dict 统一按 text 控件处理，
+    // 其余 int/float/bool 原样透传。
+    function _fieldType(field) {
+      const t = _schemaMeta(field.path).type;
+      return (t === "int" || t === "float" || t === "bool") ? t : "text";
+    }
+
+    function _fieldDefault(field) {
+      const d = _schemaMeta(field.path).default;
+      return d === undefined ? "" : d;
+    }
+
+    const CONFIG_FIELDS = [
+      { id: "cfg_web_url", path: "web_player.url" },
+      { id: "cfg_web_host", path: "web_player.host", buildDefault: true, placeholderFromDefault: true },
+      { id: "cfg_web_port", path: "web_player.port", buildDefault: true, placeholderFromDefault: true },
+      { id: "cfg_web_token_ttl", path: "web_player.token_ttl_seconds", nullish: true },
+      { id: "cfg_web_cookie_age", path: "web_player.cookie_max_age_seconds", nullish: true },
+      { id: "cfg_link_idle", path: "web_player.link_idle_release_seconds", nullish: true },
+      { id: "cfg_cookie_secure", path: "web_player.cookie_secure" },
+      { id: "cfg_admin_session_ttl", path: "web_player.admin_session_ttl_seconds", nullish: true },
+      { id: "cfg_admin_cookie_secure", path: "web_player.admin_cookie_secure" },
+
+      { id: "cfg_auto_recall_enabled", path: "auto_recall.enabled" },
+      { id: "cfg_auto_recall_delay", path: "auto_recall.delay" },
+
+      { id: "cfg_area_notify_enabled", path: "area_join_notify.enabled" },
+      { id: "cfg_area_poll", path: "area_join_notify.poll_interval_seconds" },
+      { id: "cfg_area_auto_role_id", path: "area_join_notify.auto_assign_role_id" },
+      { id: "cfg_area_auto_role_name", path: "area_join_notify.auto_assign_role_name" },
+      { id: "cfg_notify_join_tpl", path: "area_join_notify.message_template" },
+      { id: "cfg_notify_leave_tpl", path: "area_join_notify.message_template_leave" },
+
+      { id: "cfg_chat_enabled", path: "chat.enabled" },
+
+      { id: "cfg_profanity_enabled", path: "profanity.enabled" },
+      { id: "cfg_profanity_recall", path: "profanity.recall_message" },
+      { id: "cfg_mute_duration", path: "profanity.mute_duration" },
+      { id: "cfg_warn_before_mute", path: "profanity.warn_before_mute" },
+      { id: "cfg_skip_admins", path: "profanity.skip_admins" },
+      { id: "cfg_context_detection", path: "profanity.context_detection" },
+      { id: "cfg_context_window", path: "profanity.context_window" },
+      { id: "cfg_context_max_messages", path: "profanity.context_max_messages" },
+      { id: "cfg_ai_detection", path: "profanity.ai_detection" },
+      { id: "cfg_ai_min_length", path: "profanity.ai_min_length" },
+
+      { id: "cfg_oopz_default_area", path: "oopz.default_area" },
+      { id: "cfg_oopz_default_channel", path: "oopz.default_channel" },
+      { id: "cfg_oopz_login_phone", path: "oopz.login_phone" },
+      { id: "cfg_agora_app_id", path: "oopz.agora_app_id" },
+      { id: "cfg_agora_timeout", path: "oopz.agora_init_timeout", buildDefault: true },
+
+      { id: "cfg_netease_base_url", path: "netease.base_url", placeholderFromDefault: true },
+      { id: "cfg_netease_timeout", path: "netease.audio_download_timeout" },
+      { id: "cfg_netease_retries", path: "netease.audio_download_retries" },
+      { id: "cfg_netease_quality", path: "netease.audio_quality", buildDefault: true },
+
+      { id: "cfg_redis_host", path: "redis.host" },
+      { id: "cfg_redis_port", path: "redis.port" },
+      { id: "cfg_redis_db", path: "redis.db" },
+      { id: "cfg_redis_decode", path: "redis.decode_responses" },
+
+      { id: "cfg_doubao_enabled", path: "doubao_chat.enabled" },
+      { id: "cfg_doubao_base_url", path: "doubao_chat.base_url" },
+      { id: "cfg_doubao_model", path: "doubao_chat.model" },
+      { id: "cfg_doubao_max_tokens", path: "doubao_chat.max_tokens" },
+      { id: "cfg_doubao_temperature", path: "doubao_chat.temperature", nullish: true },
+      { id: "cfg_doubao_system_prompt", path: "doubao_chat.system_prompt" },
+      { id: "cfg_doubao_context_rounds", path: "doubao_chat.context_max_rounds", nullish: true },
+      { id: "cfg_doubao_context_ttl", path: "doubao_chat.context_ttl_seconds", nullish: true },
+
+      { id: "cfg_doubao_img_enabled", path: "doubao_image.enabled" },
+      { id: "cfg_doubao_img_base_url", path: "doubao_image.base_url" },
+      { id: "cfg_doubao_img_model", path: "doubao_image.model" },
+      { id: "cfg_doubao_img_size", path: "doubao_image.size" },
+      { id: "cfg_doubao_img_watermark", path: "doubao_image.watermark" },
+
+      { id: "cfg_music_auto_play", path: "music.auto_play_enabled" },
+      { id: "cfg_music_volume", path: "music.default_volume", nullish: true },
+
+      { id: "cfg_cooldown_enabled", path: "command_cooldown.enabled" },
+      { id: "cfg_cooldown_seconds", path: "command_cooldown.default_seconds", nullish: true },
+      { id: "cfg_cooldown_exempt_admins", path: "command_cooldown.exempt_admins" },
+
+      { id: "cfg_qq_music_enabled", path: "qq_music.enabled" },
+      { id: "cfg_qq_music_base_url", path: "qq_music.base_url", placeholderFromDefault: true },
+
+      { id: "cfg_bilibili_enabled", path: "bilibili_music.enabled" },
+
+      { id: "cfg_stats_enabled", path: "message_stats.enabled" },
+
+      { id: "cfg_scheduler_enabled", path: "scheduler.enabled" },
+      { id: "cfg_scheduler_interval", path: "scheduler.check_interval_seconds", nullish: true },
+      { id: "cfg_reminder_enabled", path: "reminder.enabled" },
+      { id: "cfg_reminder_max_per_user", path: "reminder.max_per_user", nullish: true },
+      { id: "cfg_reminder_max_delay", path: "reminder.max_delay_hours", nullish: true },
+      { id: "cfg_reminder_interval", path: "reminder.check_interval_seconds", nullish: true },
+    ];
+
+    function _loadField(config, field) {
+      if (_fieldType(field) === "bool") {
+        setVal(field.id, _cfgGet(config, field.path));
+        return;
+      }
+      const raw = _cfgGet(config, field.path);
+      const def = _fieldDefault(field);
+      setVal(field.id, field.nullish ? (raw ?? def) : (raw || def));
+      if (field.placeholderFromDefault) {
+        const element = AdminShell.byId(field.id);
+        if (element && def !== "" && def != null) {
+          element.placeholder = String(def);
+        }
+      }
+    }
+
+    function _buildField(updates, field) {
+      const type = _fieldType(field);
+      let value;
+      if (type === "bool") {
+        value = chk(field.id);
+      } else if (type === "int") {
+        value = getInt(field.id);
+        if (field.buildDefault) {
+          value = value || Number(_fieldDefault(field));
+        }
+      } else if (type === "float") {
+        value = getFloat(field.id);
+      } else {
+        value = val(field.id);
+        if (field.buildDefault) {
+          value = value || _fieldDefault(field);
+        }
+      }
+      _cfgSet(updates, field.path, value);
+    }
+
     async function loadConfig() {
       const data = await AdminShell.req("/admin/api/config");
       const config = data.config || {};
       const runtime = data.runtime || {};
+      CONFIG_SCHEMA = data.schema || CONFIG_SCHEMA;
 
-      setVal("cfg_web_url", config.web_player?.url || "");
-      setVal("cfg_web_host", config.web_player?.host || "0.0.0.0");
-      setVal("cfg_web_port", config.web_player?.port || 8080);
-      setVal("cfg_web_token_ttl", config.web_player?.token_ttl_seconds || 0);
-      setVal("cfg_web_cookie_age", config.web_player?.cookie_max_age_seconds || 0);
-      setVal("cfg_link_idle", config.web_player?.link_idle_release_seconds || 0);
-      setVal("cfg_cookie_secure", config.web_player?.cookie_secure);
-      setVal("cfg_admin_session_ttl", config.web_player?.admin_session_ttl_seconds || 0);
-      setVal("cfg_admin_cookie_secure", config.web_player?.admin_cookie_secure);
+      CONFIG_FIELDS.forEach(function (field) {
+        _loadField(config, field);
+      });
 
-      setVal("cfg_auto_recall_enabled", config.auto_recall?.enabled);
-      setVal("cfg_auto_recall_delay", config.auto_recall?.delay || 30);
+      // 特殊字段：撤回排除命令以逗号串展示，关键词回复用键值编辑器渲染，代理拆成开关组。
       setVal("cfg_auto_recall_exclude", (config.auto_recall?.exclude_commands || []).join(", "));
-      setVal("cfg_area_notify_enabled", config.area_join_notify?.enabled);
-      setVal("cfg_area_poll", config.area_join_notify?.poll_interval_seconds || 2);
-      setVal("cfg_area_auto_role_id", config.area_join_notify?.auto_assign_role_id || "");
-      setVal("cfg_area_auto_role_name", config.area_join_notify?.auto_assign_role_name || "");
-      setVal("cfg_chat_enabled", config.chat?.enabled);
       window._kwRender(config.chat?.keyword_replies || {});
-      setVal("cfg_profanity_enabled", config.profanity?.enabled);
-      setVal("cfg_profanity_recall", config.profanity?.recall_message);
-      setVal("cfg_mute_duration", config.profanity?.mute_duration || 5);
-      setVal("cfg_warn_before_mute", config.profanity?.warn_before_mute);
-      setVal("cfg_skip_admins", config.profanity?.skip_admins);
-      setVal("cfg_context_detection", config.profanity?.context_detection);
-      setVal("cfg_context_window", config.profanity?.context_window || 30);
-      setVal("cfg_context_max_messages", config.profanity?.context_max_messages || 10);
-      setVal("cfg_ai_detection", config.profanity?.ai_detection);
-      setVal("cfg_ai_min_length", config.profanity?.ai_min_length || 2);
+      _loadProxy(config);
 
-      setVal("cfg_oopz_default_area", config.oopz?.default_area || "");
-      setVal("cfg_oopz_default_channel", config.oopz?.default_channel || "");
-      setVal("cfg_oopz_proxy", config.oopz?.proxy || "");
-      setVal("cfg_oopz_login_phone", config.oopz?.login_phone || "");
-      setVal("cfg_agora_app_id", config.oopz?.agora_app_id || "");
-      setVal("cfg_agora_timeout", config.oopz?.agora_init_timeout || 1800);
-
-      setVal("cfg_netease_base_url", config.netease?.base_url || "");
-      setVal("cfg_netease_timeout", config.netease?.audio_download_timeout || 120);
-      setVal("cfg_netease_retries", config.netease?.audio_download_retries || 2);
-      setVal("cfg_netease_quality", config.netease?.audio_quality || "standard");
-
-      setVal("cfg_redis_host", config.redis?.host || "");
-      setVal("cfg_redis_port", config.redis?.port || 6379);
-      setVal("cfg_redis_db", config.redis?.db || 0);
-      setVal("cfg_redis_decode", config.redis?.decode_responses);
-
-      setVal("cfg_doubao_enabled", config.doubao_chat?.enabled);
-      setVal("cfg_doubao_base_url", config.doubao_chat?.base_url || "");
-      setVal("cfg_doubao_model", config.doubao_chat?.model || "");
-      setVal("cfg_doubao_max_tokens", config.doubao_chat?.max_tokens || 256);
-      setVal("cfg_doubao_temperature", config.doubao_chat?.temperature ?? 0.7);
-      setVal("cfg_doubao_system_prompt", config.doubao_chat?.system_prompt || "");
-
-      setVal("cfg_doubao_context_rounds", config.doubao_chat?.context_max_rounds ?? 0);
-      setVal("cfg_doubao_context_ttl", config.doubao_chat?.context_ttl_seconds ?? 0);
-
-      setVal("cfg_doubao_img_enabled", config.doubao_image?.enabled);
-      setVal("cfg_doubao_img_base_url", config.doubao_image?.base_url || "");
-      setVal("cfg_doubao_img_model", config.doubao_image?.model || "");
-      setVal("cfg_doubao_img_size", config.doubao_image?.size || "");
-      setVal("cfg_doubao_img_watermark", config.doubao_image?.watermark);
-
-      setVal("cfg_music_auto_play", config.music?.auto_play_enabled);
-      setVal("cfg_music_volume", config.music?.default_volume ?? 50);
-
-      setVal("cfg_qq_music_enabled", config.qq_music?.enabled);
-      setVal("cfg_qq_music_base_url", config.qq_music?.base_url || "");
-
-      setVal("cfg_bilibili_enabled", config.bilibili_music?.enabled);
-
-      setVal("cfg_stats_enabled", config.message_stats?.enabled);
-
-      setVal("cfg_cooldown_enabled", config.command_cooldown?.enabled);
-      setVal("cfg_cooldown_seconds", config.command_cooldown?.default_seconds ?? 3);
-      setVal("cfg_cooldown_exempt_admins", config.command_cooldown?.exempt_admins);
-
-      setVal("cfg_scheduler_enabled", config.scheduler?.enabled);
-      setVal("cfg_scheduler_interval", config.scheduler?.check_interval_seconds ?? 30);
-      setVal("cfg_reminder_enabled", config.reminder?.enabled);
-      setVal("cfg_reminder_max_per_user", config.reminder?.max_per_user ?? 5);
-      setVal("cfg_reminder_max_delay", config.reminder?.max_delay_hours ?? 72);
-      setVal("cfg_reminder_interval", config.reminder?.check_interval_seconds ?? 15);
-
-      setVal("cfg_notify_join_tpl", config.area_join_notify?.message_template || "");
-      setVal("cfg_notify_leave_tpl", config.area_join_notify?.message_template_leave || "");
-
+      // 密钥字段：仅展示是否已配置，不回填明文（Cookie 类回填便于复用）。
       setSecretState("cfg_admin_password", config.web_player?.admin_password_configured);
       setSecretState("cfg_oopz_login_password", config.oopz?.login_password_configured);
       setSecretValue("cfg_netease_cookie", config.netease?.cookie || "", config.netease?.cookie_configured);
@@ -720,8 +767,8 @@
       setSecretValue("cfg_doubao_img_api_key", config.doubao_image?.api_key || "", config.doubao_image?.api_key_configured);
       setSecretValue("cfg_qq_music_cookie", config.qq_music?.cookie || "", config.qq_music?.cookie_configured);
       setSecretValue("cfg_bilibili_cookie", config.bilibili_music?.cookie || "", config.bilibili_music?.cookie_configured);
-      setNeteaseQrSaveEnabled(false);
-      setBilibiliQrSaveEnabled(false);
+      neteaseQr.setSaveEnabled(false);
+      bilibiliQr.setSaveEnabled(false);
       renderMusicAreaHint(runtime.music_area || {});
       await loadNeteaseAccountStatus(!!config.netease?.cookie_configured);
       await loadBilibiliAccountStatus(!!config.bilibili_music?.cookie_configured);
@@ -730,117 +777,17 @@
     }
 
     function build() {
-      var keywordsObj = window._kwCollect();
+      const updates = {};
+      CONFIG_FIELDS.forEach(function (field) {
+        _buildField(updates, field);
+      });
 
-      const updates = {
-        web_player: {
-          url: val("cfg_web_url"),
-          host: val("cfg_web_host") || "0.0.0.0",
-          port: getInt("cfg_web_port") || 8080,
-          token_ttl_seconds: getInt("cfg_web_token_ttl"),
-          cookie_max_age_seconds: getInt("cfg_web_cookie_age"),
-          link_idle_release_seconds: getInt("cfg_link_idle"),
-          cookie_secure: chk("cfg_cookie_secure"),
-          admin_session_ttl_seconds: getInt("cfg_admin_session_ttl"),
-          admin_cookie_secure: chk("cfg_admin_cookie_secure"),
-        },
-        auto_recall: {
-          enabled: chk("cfg_auto_recall_enabled"),
-          delay: getInt("cfg_auto_recall_delay"),
-          exclude_commands: val("cfg_auto_recall_exclude"),
-        },
-        area_join_notify: {
-          enabled: chk("cfg_area_notify_enabled"),
-          poll_interval_seconds: getInt("cfg_area_poll"),
-          message_template: val("cfg_notify_join_tpl"),
-          message_template_leave: val("cfg_notify_leave_tpl"),
-          auto_assign_role_id: val("cfg_area_auto_role_id"),
-          auto_assign_role_name: val("cfg_area_auto_role_name"),
-        },
-        chat: {
-          enabled: chk("cfg_chat_enabled"),
-          keyword_replies: keywordsObj,
-        },
-        profanity: {
-          enabled: chk("cfg_profanity_enabled"),
-          recall_message: chk("cfg_profanity_recall"),
-          mute_duration: getInt("cfg_mute_duration"),
-          warn_before_mute: chk("cfg_warn_before_mute"),
-          skip_admins: chk("cfg_skip_admins"),
-          context_detection: chk("cfg_context_detection"),
-          context_window: getInt("cfg_context_window"),
-          context_max_messages: getInt("cfg_context_max_messages"),
-          ai_detection: chk("cfg_ai_detection"),
-          ai_min_length: getInt("cfg_ai_min_length"),
-        },
-        oopz: {
-          login_phone: val("cfg_oopz_login_phone"),
-          login_password: val("cfg_oopz_login_password"),
-          default_area: val("cfg_oopz_default_area"),
-          default_channel: val("cfg_oopz_default_channel"),
-          proxy: val("cfg_oopz_proxy"),
-          agora_app_id: val("cfg_agora_app_id"),
-          agora_init_timeout: getInt("cfg_agora_timeout") || 1800,
-        },
-        netease: {
-          base_url: val("cfg_netease_base_url"),
-          audio_download_timeout: getInt("cfg_netease_timeout"),
-          audio_download_retries: getInt("cfg_netease_retries"),
-          audio_quality: val("cfg_netease_quality") || "standard",
-        },
-        redis: {
-          host: val("cfg_redis_host"),
-          port: getInt("cfg_redis_port"),
-          db: getInt("cfg_redis_db"),
-          decode_responses: chk("cfg_redis_decode"),
-        },
-        doubao_chat: {
-          enabled: chk("cfg_doubao_enabled"),
-          base_url: val("cfg_doubao_base_url"),
-          model: val("cfg_doubao_model"),
-          max_tokens: getInt("cfg_doubao_max_tokens"),
-          temperature: getFloat("cfg_doubao_temperature"),
-          system_prompt: val("cfg_doubao_system_prompt"),
-          context_max_rounds: getInt("cfg_doubao_context_rounds"),
-          context_ttl_seconds: getInt("cfg_doubao_context_ttl"),
-        },
-        doubao_image: {
-          enabled: chk("cfg_doubao_img_enabled"),
-          base_url: val("cfg_doubao_img_base_url"),
-          model: val("cfg_doubao_img_model"),
-          size: val("cfg_doubao_img_size"),
-          watermark: chk("cfg_doubao_img_watermark"),
-        },
-        music: {
-          auto_play_enabled: chk("cfg_music_auto_play"),
-          default_volume: getInt("cfg_music_volume"),
-        },
-        command_cooldown: {
-          enabled: chk("cfg_cooldown_enabled"),
-          default_seconds: getInt("cfg_cooldown_seconds"),
-          exempt_admins: chk("cfg_cooldown_exempt_admins"),
-        },
-        qq_music: {
-          enabled: chk("cfg_qq_music_enabled"),
-          base_url: val("cfg_qq_music_base_url"),
-        },
-        bilibili_music: {
-          enabled: chk("cfg_bilibili_enabled"),
-        },
-        message_stats: {
-          enabled: chk("cfg_stats_enabled"),
-        },
-        scheduler: {
-          enabled: chk("cfg_scheduler_enabled"),
-          check_interval_seconds: getInt("cfg_scheduler_interval"),
-        },
-        reminder: {
-          enabled: chk("cfg_reminder_enabled"),
-          max_per_user: getInt("cfg_reminder_max_per_user"),
-          max_delay_hours: getInt("cfg_reminder_max_delay"),
-          check_interval_seconds: getInt("cfg_reminder_interval"),
-        },
-      };
+      // 特殊字段：撤回排除命令为原始字符串（后端负责拆分）、关键词回复为键值对、
+      // OOPZ 登录密码始终随表单提交（不走「留空不修改」逻辑）。
+      _cfgSet(updates, "auto_recall.exclude_commands", val("cfg_auto_recall_exclude"));
+      _cfgSet(updates, "chat.keyword_replies", window._kwCollect());
+      _cfgSet(updates, "oopz.login_password", val("cfg_oopz_login_password"));
+      _cfgSet(updates, "oopz.proxy", _buildProxyValue());
 
       const adminPassword = val("cfg_admin_password");
       const neteaseCookie = val("cfg_netease_cookie");
@@ -891,7 +838,7 @@
         await loadConfig();
       } catch (error) {
         AdminShell.showMessage("msg", error.message, true);
-        setPageState("配置保存失败", "error");
+        setPageState(error.message || "配置保存失败", "error");
       }
     }
 
@@ -903,6 +850,7 @@
         await loadConfig();
       } catch (error) {
         AdminShell.showMessage("msg", error.message, true);
+        setPageState(error.message || "恢复运行配置失败", "error");
       }
     }
 
@@ -918,6 +866,26 @@
       });
     }
 
-    AdminShell.init({ page: "config", passwordHandler: login });
+    AdminShell.registerActions({
+      "refresh-config": () => loadConfig(),
+      "reset-overrides": () => resetOverrides(),
+      "save-config": () => saveConfig(true),
+      "toggle-secret": (el) => toggleSecret(el.dataset.secret, el),
+      "kw-add": () => window._kwAdd(),
+      "oopz-login": () => loginOopzAccount(),
+      "netease-qr-refresh": () => refreshNeteaseQr(),
+      "netease-qr-save": () => saveNeteaseQrCookie(true),
+      "bilibili-qr-refresh": () => refreshBilibiliQr(),
+      "bilibili-qr-save": () => saveBilibiliQrCookie(true),
+      "proxy-mode": () => _applyProxyModeState(),
+    });
     initTabs();
-    check();
+    AdminShell.upgradeSelect("cfg_proxy_mode");
+    AdminShell.upgradeSelect("cfg_proxy_scheme");
+    AdminShell.bootstrapAuth({
+      page: "config",
+      loggedInText: "已登录配置页",
+      onLogin: () => loadConfig(),
+      onLoggedOut: () => setPageState("等待操作", "warning"),
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

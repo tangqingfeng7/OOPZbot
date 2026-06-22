@@ -36,52 +36,6 @@
       AdminShell.byId("musicActiveAreaText").textContent = "活跃域：" + activeArea;
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录音乐页",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadQueue();
-        if (searchKeyword) {
-          await searchSongs(false);
-        }
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        AdminShell.setMicroStatus("等待操作", "neutral", "ctlState");
-        renderMusicArea({});
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
-    }
-
     async function control(action) {
       try {
         await AdminShell.req("/admin/api/control", {
@@ -134,8 +88,8 @@
             "<td>" + escapeHtml(item.durationText || "-") + "</td>" +
             "<td>" +
               '<div class="action-row">' +
-                '<button class="btn btn-sm btn-ghost" type="button" onclick="queueAction(\'top\', ' + item.index + ')">置顶</button>' +
-                '<button class="btn btn-sm btn-danger" type="button" onclick="queueAction(\'remove\', ' + item.index + ')">删除</button>' +
+                '<button class="btn btn-sm btn-ghost" type="button" data-action="queue-action" data-queue-action="top" data-index="' + item.index + '">置顶</button>' +
+                '<button class="btn btn-sm btn-danger" type="button" data-action="queue-action" data-queue-action="remove" data-index="' + item.index + '">删除</button>' +
               "</div>" +
             "</td>" +
           "</tr>"
@@ -195,7 +149,7 @@
                   "<td>" + escapeHtml(item.name || "-") + "</td>" +
                   "<td>" + escapeHtml(item.artists || "-") + "</td>" +
                   "<td>" + escapeHtml(item.album || "-") + "</td>" +
-                  '<td><button class="btn btn-sm btn-primary" type="button" onclick="addSong(' + index + ')">加入队列</button></td>' +
+                  '<td><button class="btn btn-sm btn-primary" type="button" data-action="add-song" data-index="' + index + '">加入队列</button></td>' +
                 "</tr>"
               );
             })
@@ -235,5 +189,28 @@
       }
     }
 
-    AdminShell.init({ page: "music", passwordHandler: login });
-    check();
+    AdminShell.registerActions({
+      "refresh-queue": () => loadQueue(),
+      "control": (el) => control(el.dataset.control),
+      "clear-queue": () => clearQueue(),
+      "search-songs": () => searchSongs(true),
+      "change-search": (el) => changeSearch(Number(el.dataset.delta)),
+      "change-queue": (el) => changeQueue(Number(el.dataset.delta)),
+      "queue-action": (el) => queueAction(el.dataset.queueAction, Number(el.dataset.index)),
+      "add-song": (el) => addSong(Number(el.dataset.index)),
+    });
+    AdminShell.bootstrapAuth({
+      page: "music",
+      loggedInText: "已登录音乐页",
+      onLogin: async () => {
+        await loadQueue();
+        if (searchKeyword) {
+          await searchSongs(false);
+        }
+      },
+      onLoggedOut: () => {
+        AdminShell.setMicroStatus("等待操作", "neutral", "ctlState");
+        renderMusicArea({});
+      },
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

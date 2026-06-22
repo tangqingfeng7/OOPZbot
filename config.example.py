@@ -35,6 +35,14 @@ OOPZ_CONFIG = {
 
 }
 
+# 本地代理客户端别名端口：proxy 填 "clash"/"mihomo" 等别名时使用。
+# 改了 Clash/mihomo 的监听端口时，只需在这里调整，无需改动代码。
+PROXY_ALIAS_CONFIG = {
+    "host": "127.0.0.1",
+    "http_port": 7890,   # clash / clash-http / clash-mixed / mihomo
+    "socks_port": 7891,  # clash-socks / mihomo-socks
+}
+
 # HTTP 请求头模板
 DEFAULT_HEADERS = {
     "Accept": "*/*",
@@ -267,6 +275,7 @@ ONEBOT_V11_CONFIG = {
 AUTO_RECALL_CONFIG = {
     "enabled": False,
     "delay": 30,                   # 自动撤回延迟（秒）
+    "max_pending": 1000,           # 最多等待撤回的消息数，防止刷屏时占用过多内存
     "exclude_commands": [          # 不自动撤回的命令类型
         "ai_chat",                 # AI 聊天回复
         "ai_image",                # AI 生成图片

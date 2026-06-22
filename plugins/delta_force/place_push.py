@@ -1,41 +1,33 @@
 from __future__ import annotations
 
-import threading
 from typing import Optional
 
 from core.logger_config import get_logger
+
+from plugins._shared.background import IntervalWorker
 
 from .api import describe_common_failure
 
 logger = get_logger("DeltaForcePlacePush")
 
 
-class DeltaForcePlacePushManager:
+class DeltaForcePlacePushManager(IntervalWorker):
+    _NAME = "DeltaForcePlacePush"
+
     def __init__(self, config: dict, api_client, store) -> None:
         self._config = config or {}
         self._api = api_client
         self._store = store
-        self._interval = max(15, int(self._config.get("place_push_interval_sec", 60) or 60))
+        super().__init__(int(self._config.get("place_push_interval_sec", 60) or 60))
+        self._interval = max(15, self._interval)
         self._handler = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
 
     def ensure_started(self, handler) -> None:
         self._handler = handler
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._loop, name="DeltaForcePlacePush", daemon=True)
-            self._thread.start()
+        self._start_thread()
 
     def stop(self) -> None:
-        self._stop_event.set()
-        thread = self._thread
-        if thread and thread.is_alive():
-            thread.join(timeout=2)
-        self._thread = None
+        super().stop(join_timeout=2)
 
     def subscribe(self, user_id: str, channel_id: str, area_id: str, initial_snapshot: Optional[list[dict]] = None) -> None:
         self._store.upsert_place_push_subscription(user_id, channel_id, area_id, initial_snapshot or [])
@@ -46,17 +38,16 @@ class DeltaForcePlacePushManager:
     def is_subscribed(self, user_id: str, channel_id: str, area_id: str) -> bool:
         return self._store.has_place_push_subscription(user_id, channel_id, area_id)
 
-    def _loop(self) -> None:
-        while not self._stop_event.wait(self._interval):
-            if not self._handler:
-                continue
-            for sub in self._store.list_place_push_subscriptions():
-                if self._stop_event.is_set():
-                    return
-                try:
-                    self._process_subscription(sub)
-                except Exception:
-                    logger.exception("DeltaForcePlacePush: process subscription failed: %s", sub)
+    def _tick(self) -> None:
+        if not self._handler:
+            return
+        for sub in self._store.list_place_push_subscriptions():
+            if self.stopping:
+                return
+            try:
+                self._process_subscription(sub)
+            except Exception:
+                logger.exception("DeltaForcePlacePush: process subscription failed: %s", sub)
 
     def _process_subscription(self, sub: dict) -> None:
         user_id = str(sub.get("user_id") or "")

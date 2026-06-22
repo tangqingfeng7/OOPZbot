@@ -9,47 +9,6 @@
       AdminShell.setStatus(text, variant, "pluginState");
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录插件管理",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadPlugins();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setState("等待操作", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {}
-      await check();
-    }
-
     // ---- Plugin list ----
 
     async function loadPlugins() {
@@ -78,10 +37,10 @@
 
             var actions = [];
             if (!p.builtin) {
-              actions.push('<button class="btn btn-danger" onclick="unloadPlugin(\'' + esc(p.name) + '\')">卸载</button>');
+              actions.push('<button class="btn btn-danger" type="button" data-action="unload-plugin" data-name="' + esc(p.name) + '">卸载</button>');
             }
-            actions.push('<button class="btn btn-ghost" onclick="reloadConfig(\'' + esc(p.name) + '\')">重载配置</button>');
-            actions.push('<button class="btn btn-ghost" onclick="openConfigEditor(\'' + esc(p.name) + '\')">编辑配置</button>');
+            actions.push('<button class="btn btn-ghost" type="button" data-action="reload-config" data-name="' + esc(p.name) + '">重载配置</button>');
+            actions.push('<button class="btn btn-ghost" type="button" data-action="open-config-editor" data-name="' + esc(p.name) + '">编辑配置</button>');
 
             return '<tr>' +
               '<td style="font-weight:600">' + esc(p.name) + '</td>' +
@@ -99,7 +58,7 @@
           availTbody.innerHTML = available.map(function (name) {
             return '<tr>' +
               '<td style="font-weight:600">' + esc(name) + '</td>' +
-              '<td><div class="p-actions"><button class="btn btn-primary" onclick="loadPlugin(\'' + esc(name) + '\')">加载</button></div></td>' +
+              '<td><div class="p-actions"><button class="btn btn-primary" type="button" data-action="load-plugin" data-name="' + esc(name) + '">加载</button></div></td>' +
               '</tr>';
           }).join("");
         } else {
@@ -442,5 +401,19 @@
       }
     }
 
-    AdminShell.init({ page: "plugins", passwordHandler: login });
-    check();
+    AdminShell.registerActions({
+      "refresh-plugins": () => loadPlugins(),
+      "load-plugin": (el) => loadPlugin(el.dataset.name),
+      "unload-plugin": (el) => unloadPlugin(el.dataset.name),
+      "reload-config": (el) => reloadConfig(el.dataset.name),
+      "open-config-editor": (el) => openConfigEditor(el.dataset.name),
+      "plugin-cfg-close": () => closeConfigEditor(),
+      "plugin-cfg-save": () => saveConfig(),
+    });
+    AdminShell.bootstrapAuth({
+      page: "plugins",
+      loggedInText: "已登录插件管理",
+      onLogin: () => loadPlugins(),
+      onLoggedOut: () => setState("等待操作", "warning"),
+      onLoginError: () => setState("登录失败", "error"),
+    });

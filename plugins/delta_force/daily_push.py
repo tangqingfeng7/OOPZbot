@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-import threading
 from datetime import datetime
-from typing import Optional
 
 from core.logger_config import get_logger
+
+from plugins._shared.background import IntervalWorker
 
 logger = get_logger("DeltaForceDailyPush")
 
 
-class DeltaForceDailyKeywordPushManager:
+class DeltaForceDailyKeywordPushManager(IntervalWorker):
+    _NAME = "DeltaForceDailyKeywordPush"
+
     def __init__(self, config: dict, api_client, store) -> None:
         self._config = config or {}
         self._api = api_client
         self._store = store
         self._handler = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
-        self._interval = max(30, int(self._config.get("daily_keyword_push_check_interval_sec", 60) or 60))
+        super().__init__(int(self._config.get("daily_keyword_push_check_interval_sec", 60) or 60))
+        self._interval = max(30, self._interval)
         self._push_hour, self._push_minute = self._parse_push_time(
             str(self._config.get("daily_keyword_push_time") or "08:00")
         )
@@ -35,19 +35,10 @@ class DeltaForceDailyKeywordPushManager:
 
     def ensure_started(self, handler) -> None:
         self._handler = handler
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._loop, name="DeltaForceDailyKeywordPush", daemon=True)
-            self._thread.start()
+        self._start_thread()
 
     def stop(self) -> None:
-        self._stop_event.set()
-        thread = self._thread
-        if thread and thread.is_alive():
-            thread.join(timeout=2)
-        self._thread = None
+        super().stop(join_timeout=2)
 
     def subscribe(self, channel_id: str, area_id: str) -> None:
         self._store.upsert_daily_keyword_push_subscription(channel_id, area_id)
@@ -58,21 +49,20 @@ class DeltaForceDailyKeywordPushManager:
     def is_subscribed(self, channel_id: str, area_id: str) -> bool:
         return self._store.has_daily_keyword_push_subscription(channel_id, area_id)
 
-    def _loop(self) -> None:
-        while not self._stop_event.wait(self._interval):
-            if not self._handler:
+    def _tick(self) -> None:
+        if not self._handler:
+            return
+        now = datetime.now()
+        if (now.hour, now.minute) < (self._push_hour, self._push_minute):
+            return
+        today = now.strftime("%Y-%m-%d")
+        for sub in self._store.list_daily_keyword_push_subscriptions():
+            if self.stopping:
+                return
+            last_push_date = str(sub.get("last_push_date") or "")
+            if last_push_date == today:
                 continue
-            now = datetime.now()
-            if (now.hour, now.minute) < (self._push_hour, self._push_minute):
-                continue
-            today = now.strftime("%Y-%m-%d")
-            for sub in self._store.list_daily_keyword_push_subscriptions():
-                if self._stop_event.is_set():
-                    return
-                last_push_date = str(sub.get("last_push_date") or "")
-                if last_push_date == today:
-                    continue
-                self._push_to_subscription(sub, today)
+            self._push_to_subscription(sub, today)
 
     def _push_to_subscription(self, sub: dict, today: str) -> None:
         payload = self._api.get_daily_keyword()

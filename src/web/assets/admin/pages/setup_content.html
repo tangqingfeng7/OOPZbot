@@ -2,9 +2,9 @@
         <article class="surface-card">
           <div class="action-row">
             <span id="setupState" class="status-text is-warning">等待体检</span>
-            <button class="btn btn-primary" type="button" onclick="loadDiagnostics().catch(() => {})">开始体检</button>
-            <button class="btn btn-ghost" type="button" onclick="openAdminPage('/admin/config')">前往配置中心</button>
-            <button class="btn btn-ghost" type="button" onclick="openAdminPage('/admin/system')">查看系统页</button>
+            <button class="btn btn-primary" type="button" data-action="refresh-diagnostics">开始体检</button>
+            <button class="btn btn-ghost" type="button" data-action="open-page" data-page="/admin/config">前往配置中心</button>
+            <button class="btn btn-ghost" type="button" data-action="open-page" data-page="/admin/system">查看系统页</button>
           </div>
         </article>
 

@@ -3,9 +3,9 @@
           <article class="surface-card">
             <div class="action-row">
               <span id="overviewLiveHint" class="micro-status is-warning">等待连接</span>
-              <button class="btn btn-primary" type="button" onclick="loadOverview().catch(() => {})">同步</button>
-              <button class="btn btn-ghost" type="button" onclick="startOverviewStream()">恢复实时流</button>
-              <button class="btn btn-ghost" type="button" onclick="stopOverviewStream()">暂停实时流</button>
+              <button class="btn btn-primary" type="button" data-action="refresh-overview">同步</button>
+              <button class="btn btn-ghost" type="button" data-action="stream-resume">恢复实时流</button>
+              <button class="btn btn-ghost" type="button" data-action="stream-pause">暂停实时流</button>
             </div>
           </article>
 

@@ -3,6 +3,7 @@ import time
 from typing import Optional
 
 from config import AUTO_RECALL_CONFIG
+from core.constants import Msg
 from core.database import SongCache
 from core.logger_config import LOG_FILE, get_logger
 from app.services.runtime import CommandRuntimeView, sender_of
@@ -25,7 +26,7 @@ class RecallService:
         if not message_id or message_id.lower() in ("last", "最后", "最后一条", "上一条"):
             if not self._runtime.recent_messages:
                 self._sender.send_message(
-                    "[x] 没有可撤回的消息记录",
+                    f"{Msg.ERR} 没有可撤回的消息记录",
                     channel=channel,
                     area=area,
                 )
@@ -38,7 +39,7 @@ class RecallService:
 
             if not recent:
                 self._sender.send_message(
-                    "[x] 在当前频道没有找到可撤回的消息\n请使用 /recall <消息ID> 或 @bot 撤回 <消息ID>",
+                    f"{Msg.ERR} 在当前频道没有找到可撤回的消息\n请使用 /recall <消息ID> 或 @bot 撤回 <消息ID>",
                     channel=channel,
                     area=area,
                 )
@@ -61,7 +62,7 @@ class RecallService:
                 hint = "\n提示: 该消息可能已撤回/过期，或消息 ID 无效（请用长按消息复制得到的完整 ID）。"
             mid_preview = (message_id[:24] + "...") if len(str(message_id)) > 24 else str(message_id)
             self._sender.send_message(
-                f"[x] 撤回失败: {error}\n消息ID: {mid_preview}{hint}",
+                f"{Msg.ERR} 撤回失败: {error}\n消息ID: {mid_preview}{hint}",
                 channel=channel,
                 area=area,
             )
@@ -69,7 +70,7 @@ class RecallService:
 
         preview = f" ({content_preview}...)" if content_preview else ""
         self._sender.send_message(
-            f"[ok] 消息已撤回{preview}\n消息ID: {message_id[:20]}...",
+            f"{Msg.OK} 消息已撤回{preview}\n消息ID: {message_id[:20]}...",
             channel=channel,
             area=area,
         )
@@ -77,11 +78,11 @@ class RecallService:
     def recall_multiple(self, count: int, channel: str, area: str) -> None:
         """批量撤回多条消息。"""
         if count <= 0:
-            self._sender.send_message("[x] 撤回数量必须大于 0", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 撤回数量必须大于 0", channel=channel, area=area)
             return
 
         if count > 100:
-            self._sender.send_message("[x] 最多只能一次撤回 100 条消息", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 最多只能一次撤回 100 条消息", channel=channel, area=area)
             return
 
         channel_messages = [
@@ -105,14 +106,14 @@ class RecallService:
             channel_messages.sort(key=lambda message: message.get("timestamp") or "0")
 
         if not channel_messages:
-            self._sender.send_message("[x] 在当前频道没有找到可撤回的消息", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.ERR} 在当前频道没有找到可撤回的消息", channel=channel, area=area)
             return
 
         to_recall = channel_messages[-count:]
         success_count = 0
         fail_count = 0
 
-        self._sender.send_message(f"[sync] 正在撤回 {len(to_recall)} 条消息...", channel=channel, area=area)
+        self._sender.send_message(f"{Msg.SYNC} 正在撤回 {len(to_recall)} 条消息...", channel=channel, area=area)
 
         for message in reversed(to_recall):
             timestamp = message.get("timestamp") or self._runtime.services.safety.message_lookup.resolve_timestamp(
@@ -132,7 +133,7 @@ class RecallService:
                 success_count += 1
             time.sleep(0.3)
 
-        result_message = f"[ok] 批量撤回完成:\n成功: {success_count} 条"
+        result_message = f"{Msg.OK} 批量撤回完成:\n成功: {success_count} 条"
         if fail_count > 0:
             result_message += f"\n失败: {fail_count} 条"
         self._sender.send_message(result_message, channel=channel, area=area)
@@ -174,12 +175,12 @@ class RecallService:
                 AUTO_RECALL_CONFIG["delay"] = int(rest)
             AUTO_RECALL_CONFIG["enabled"] = True
             delay = AUTO_RECALL_CONFIG["delay"]
-            self._sender.send_message(f"[ok] 自动撤回已开启，延迟 {delay} 秒", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.OK} 自动撤回已开启，延迟 {delay} 秒", channel=channel, area=area)
             return
 
         if arg in ("关", "关闭", "off"):
             AUTO_RECALL_CONFIG["enabled"] = False
-            self._sender.send_message("[ok] 自动撤回已关闭", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.OK} 自动撤回已关闭", channel=channel, area=area)
             return
 
         if arg.startswith("on"):
@@ -188,16 +189,16 @@ class RecallService:
                 AUTO_RECALL_CONFIG["delay"] = int(rest)
             AUTO_RECALL_CONFIG["enabled"] = True
             delay = AUTO_RECALL_CONFIG["delay"]
-            self._sender.send_message(f"[ok] 自动撤回已开启，延迟 {delay} 秒", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.OK} 自动撤回已开启，延迟 {delay} 秒", channel=channel, area=area)
             return
 
         if arg.isdigit():
             seconds = int(arg)
             if seconds <= 0:
-                self._sender.send_message("[x] 延迟秒数必须大于 0", channel=channel, area=area)
+                self._sender.send_message(f"{Msg.ERR} 延迟秒数必须大于 0", channel=channel, area=area)
                 return
             AUTO_RECALL_CONFIG["delay"] = seconds
-            self._sender.send_message(f"[ok] 自动撤回延迟已设为 {seconds} 秒", channel=channel, area=area)
+            self._sender.send_message(f"{Msg.OK} 自动撤回延迟已设为 {seconds} 秒", channel=channel, area=area)
             return
 
         if arg.startswith("排除"):
@@ -207,10 +208,10 @@ class RecallService:
                 return
             exclude = AUTO_RECALL_CONFIG.setdefault("exclude_commands", [])
             if command_type in exclude:
-                self._sender.send_message(f"[info] {command_type} 已在排除列表中", channel=channel, area=area)
+                self._sender.send_message(f"{Msg.INFO} {command_type} 已在排除列表中", channel=channel, area=area)
             else:
                 exclude.append(command_type)
-                self._sender.send_message(f"[ok] 已将 {command_type} 加入排除列表", channel=channel, area=area)
+                self._sender.send_message(f"{Msg.OK} 已将 {command_type} 加入排除列表", channel=channel, area=area)
             return
 
         if arg.startswith("取消排除"):
@@ -221,9 +222,9 @@ class RecallService:
             exclude = AUTO_RECALL_CONFIG.get("exclude_commands", [])
             if command_type in exclude:
                 exclude.remove(command_type)
-                self._sender.send_message(f"[ok] 已将 {command_type} 从排除列表移除", channel=channel, area=area)
+                self._sender.send_message(f"{Msg.OK} 已将 {command_type} 从排除列表移除", channel=channel, area=area)
             else:
-                self._sender.send_message(f"[info] {command_type} 不在排除列表中", channel=channel, area=area)
+                self._sender.send_message(f"{Msg.INFO} {command_type} 不在排除列表中", channel=channel, area=area)
             return
 
         self._sender.send_message(
@@ -238,10 +239,10 @@ class RecallService:
 
         try:
             count = SongCache.clear_play_history()
-            results.append(f"[ok] 播放历史记录: 已删除 {count} 条")
+            results.append(f"{Msg.OK} 播放历史记录: 已删除 {count} 条")
         except Exception as exc:
             logger.error("清理播放历史记录失败: %s", exc)
-            results.append("[x] 播放历史记录: 清理失败")
+            results.append(f"{Msg.ERR} 播放历史记录: 清理失败")
 
         try:
             log_count = 0
@@ -250,15 +251,15 @@ class RecallService:
                     log_count = len(file.readlines())
                 with open(LOG_FILE, "w", encoding="utf-8") as file:
                     file.write("")
-                results.append(f"[ok] 日志文件: 已清空 ({log_count} 行)")
+                results.append(f"{Msg.OK} 日志文件: 已清空 ({log_count} 行)")
             else:
-                results.append("[info] 日志文件: 不存在")
+                results.append(f"{Msg.INFO} 日志文件: 不存在")
         except Exception as exc:
             logger.error("清理日志文件失败: %s", exc)
-            results.append("[x] 日志文件: 清理失败")
+            results.append(f"{Msg.ERR} 日志文件: 清理失败")
 
         message_count = self._runtime.recent_messages.clear()
-        results.append(f"[ok] 消息历史记录: 已清空 ({message_count} 条)")
+        results.append(f"{Msg.OK} 消息历史记录: 已清空 ({message_count} 条)")
 
         message = "清理完成:\n" + "\n".join(results)
         self._sender.send_message(message, channel=channel, area=area)

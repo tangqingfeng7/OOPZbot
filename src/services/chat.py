@@ -8,6 +8,7 @@ logger = get_logger("Chat")
 
 _AI_TIMEOUT = 15
 _IMAGE_TIMEOUT = 60
+_MODERATION_TIMEOUT = 5  # AI 审核请求短小（max_tokens=32），快速失败避免拖慢消息处理
 
 
 def _normalize_ai_base(raw: str, *known_suffixes: str) -> str:
@@ -230,7 +231,7 @@ class ChatHandler:
                     "max_tokens": 32,
                     "temperature": 0.0,
                 },
-                timeout=5,
+                timeout=_MODERATION_TIMEOUT,
             )
             resp.raise_for_status()
             result = _extract_chat_content(resp.json())

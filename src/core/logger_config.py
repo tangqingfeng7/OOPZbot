@@ -6,9 +6,7 @@ import logging
 import time
 from logging.handlers import RotatingFileHandler
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LOG_DIR = os.path.join(_PROJECT_ROOT, "logs")
-LOG_FILE = os.path.join(LOG_DIR, "oopz_bot.log")
+from core.paths import LOGS_DIR as LOG_DIR, LOG_FILE
 
 LOG_RETENTION_DAYS = 7
 

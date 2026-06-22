@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.json_utils import compact_json
+
 
 @dataclass(frozen=True, slots=True)
 class OneBotId:
@@ -116,7 +118,7 @@ class OneBotStore:
             return None
 
     def save_message(self, record: MessageRecord) -> None:
-        raw = json.dumps(record.raw or {}, ensure_ascii=False, separators=(",", ":"))
+        raw = compact_json(record.raw or {})
         with closing(self._connect()) as conn:
             conn.execute(
                 """

@@ -1,7 +1,9 @@
 import base64
 import json
+import os
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -258,6 +260,15 @@ class OopzApiPasswordLoginTest(unittest.TestCase):
         self.assertIsNone(result)
         api_login.assert_not_called()
 
+    def test_config_login_account_accepts_legacy_phone_password_fields(self) -> None:
+        with patch.dict(os.environ, {"OOPZ_PHONE": "", "OOPZ_PASSWORD": ""}):
+            phone, password = password_login._config_login_account(
+                {"phone": "13800138000", "password": "plain-password"}
+            )
+
+        self.assertEqual(phone, "13800138000")
+        self.assertEqual(password, "plain-password")
+
 
 class OopzPasswordLoginFlowTest(unittest.IsolatedAsyncioTestCase):
     async def test_login_with_password_falls_back_to_browser_when_api_is_retryable(self) -> None:
@@ -351,6 +362,83 @@ class OopzClientCredentialsTest(unittest.TestCase):
             self.assertTrue(client._ws.closed)
 
         sys.modules.pop("oopz_client", None)
+
+
+class _SenderResponse:
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        self.content = b""
+        self.headers = {}
+
+
+class _SenderSession:
+    def __init__(self, responses):
+        self.headers = {}
+        self._responses = list(responses)
+        self.calls = []
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        self.calls.append({
+            "method": "GET",
+            "url": url,
+            "headers": headers or {},
+            "params": params,
+            "timeout": timeout,
+        })
+        return self._responses.pop(0)
+
+
+class _SenderSigner:
+    def __init__(self):
+        self.private_key = "old-private-key"
+
+    def oopz_headers(self, url_path: str, body_str: str):
+        return {
+            "X-Signer-Key": self.private_key,
+            "X-Sign-Path": url_path,
+            "X-Sign-Body": body_str,
+        }
+
+
+class OopzSenderAuthRefreshTest(unittest.TestCase):
+    def test_get_refreshes_credentials_once_after_428_and_retries(self) -> None:
+        from oopz.oopz_sender import OopzSender
+
+        sender = OopzSender.__new__(OopzSender)
+        sender.signer = _SenderSigner()
+        sender.session = _SenderSession([_SenderResponse(428), _SenderResponse(200)])
+        sender._area_members_cache = {"stale": {"data": {}}}
+        sender._rate_lock = threading.Lock()
+        sender._auth_refresh_lock = threading.Lock()
+        sender._last_request_time = 0.0
+        sender._RATE_LIMIT_INTERVAL = 0.0
+
+        credentials = {
+            "person_uid": "person-new",
+            "device_id": "device-new",
+            "jwt_token": "jwt-new",
+            "private_key_pem": PRIVATE_KEY_PEM,
+            "app_version": "73817",
+        }
+
+        with (
+            patch(
+                "oopz.oopz_password_login.refresh_credentials_from_config_password",
+                return_value=credentials,
+            ) as refresh,
+            patch(
+                "oopz.oopz_password_login.load_private_key_from_pem",
+                return_value="new-private-key",
+            ),
+        ):
+            response = sender._get("/userSubscribeArea/v1/list")
+
+        self.assertEqual(response.status_code, 200)
+        refresh.assert_called_once_with(timeout=20, save=True)
+        self.assertEqual(len(sender.session.calls), 2)
+        self.assertEqual(sender.session.calls[0]["headers"]["X-Signer-Key"], "old-private-key")
+        self.assertEqual(sender.session.calls[1]["headers"]["X-Signer-Key"], "new-private-key")
+        self.assertEqual(sender._area_members_cache, {})
 
 
 if __name__ == "__main__":

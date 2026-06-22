@@ -5,6 +5,7 @@ import uuid
 
 from core.database import SongCache, Statistics
 from core.logger_config import get_logger
+from core.redis_keys import VOLUME as KEY_VOLUME
 
 logger = get_logger("MusicWebControl")
 
@@ -214,15 +215,15 @@ class WebControlExecutor:
             return
         vol = max(0, min(100, vol))
         try:
-            self.h.queue.redis.set("music:volume", str(vol))
+            self.h.queue.redis.set(KEY_VOLUME, str(vol))
         except Exception as e:
-            logger.debug(f"Persist volume failed: {e}")
+            logger.debug(f"持久化音量失败: {e}")
         if not (self.h.voice and self.h.voice.available):
             return
         if not self.h.voice.set_volume(vol):
             return
         try:
-            self.h.queue.redis.set("music:volume", str(vol))
+            self.h.queue.redis.set(KEY_VOLUME, str(vol))
         except Exception as e:
             logger.debug(f"持久化音量失败: {e}")
 

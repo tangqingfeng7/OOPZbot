@@ -8,22 +8,16 @@ import redis
 
 from config import REDIS_CONFIG
 from core.logger_config import get_logger
+from core.redis_keys import (
+    CURRENT as KEY_CURRENT,
+    DEFAULT_CHANNEL as KEY_DEFAULT_CHANNEL,
+    PLAY_MODE as KEY_PLAY_MODE,
+    PLAY_STATE as KEY_PLAY_STATE,
+    QUEUE as KEY_QUEUE,
+    area_key as _area_key,
+)
 
 logger = get_logger("QueueManager")
-
-# Redis 键名（全局，用于向后兼容无 area 场景）
-KEY_QUEUE = "music:queue"
-KEY_CURRENT = "music:current"
-KEY_DEFAULT_CHANNEL = "music:default_channel"
-KEY_PLAY_STATE = "music:play_state"
-KEY_PLAY_MODE = "music:play_mode"
-
-
-def _area_key(base: str, area: str) -> str:
-    """生成域隔离的 Redis 键。area 为空时回退到全局键。"""
-    if not area:
-        return base
-    return f"music:{area}:{base.split(':', 1)[1]}"
 
 _redis_client = None
 _redis_lock = threading.Lock()

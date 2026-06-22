@@ -5,8 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from core.paths import PROJECT_ROOT_PATH as _PROJECT_ROOT
 
 
 @dataclass(slots=True)

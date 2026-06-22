@@ -9,6 +9,7 @@ from typing import Any, Literal, Mapping
 
 from aiohttp import ClientConnectorError, ClientSession, WSMsgType, WSServerHandshakeError, web
 
+from core.json_utils import compact_json
 from core.logger_config import get_logger
 from onebot_v11.config import OneBotV11ServerConfig
 
@@ -158,7 +159,7 @@ class OneBotV11Server:
     async def _broadcast_http_post(self, event: JsonDict) -> None:
         if not self.config.enable_http_post or self._session is None or not self.config.http_post_urls:
             return
-        raw = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        raw = compact_json(event).encode("utf-8")
         headers = self._http_post_headers(raw)
         timeout = self.config.http_post_timeout or None
         for url in self.config.http_post_urls:

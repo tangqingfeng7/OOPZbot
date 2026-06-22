@@ -13,14 +13,45 @@ from urllib.parse import unquote, urlparse
 _log = logging.getLogger("ProxyUtils")
 
 _DIRECT_VALUES = {"0", "false", "no", "none", "off", "direct"}
-_PROXY_ALIASES = {
-    "clash": "http://127.0.0.1:7890",
-    "clash-http": "http://127.0.0.1:7890",
-    "clash-mixed": "http://127.0.0.1:7890",
-    "clash-socks": "socks5://127.0.0.1:7891",
-    "mihomo": "http://127.0.0.1:7890",
-    "mihomo-socks": "socks5://127.0.0.1:7891",
-}
+
+# 本地代理客户端（Clash / mihomo）的默认监听端口与回环地址。
+# 集中定义，避免在多个别名里重复写死同一组端口；可被 config.PROXY_ALIAS_CONFIG 覆盖。
+_DEFAULT_LOCAL_PROXY_HOST = "127.0.0.1"
+_DEFAULT_CLASH_HTTP_PORT = 7890
+_DEFAULT_CLASH_SOCKS_PORT = 7891
+
+
+def _build_proxy_aliases() -> dict[str, str]:
+    """构建 clash/mihomo 等别名 → 代理 URL 的映射。
+
+    端口与回环地址默认沿用 Clash 习惯值，可通过 ``config.PROXY_ALIAS_CONFIG``
+    覆盖（改了本地代理监听端口时无需改代码）。config 不可用时回退默认值。
+    """
+    host = _DEFAULT_LOCAL_PROXY_HOST
+    http_port = _DEFAULT_CLASH_HTTP_PORT
+    socks_port = _DEFAULT_CLASH_SOCKS_PORT
+    try:
+        from config import PROXY_ALIAS_CONFIG  # type: ignore
+
+        host = str(PROXY_ALIAS_CONFIG.get("host") or host)
+        http_port = int(PROXY_ALIAS_CONFIG.get("http_port") or http_port)
+        socks_port = int(PROXY_ALIAS_CONFIG.get("socks_port") or socks_port)
+    except Exception:
+        pass
+
+    http = f"http://{host}:{http_port}"
+    socks = f"socks5://{host}:{socks_port}"
+    return {
+        "clash": http,
+        "clash-http": http,
+        "clash-mixed": http,
+        "clash-socks": socks,
+        "mihomo": http,
+        "mihomo-socks": socks,
+    }
+
+
+_PROXY_ALIASES = _build_proxy_aliases()
 _DEFAULT_PORTS = {
     "http": 80,
     "https": 443,

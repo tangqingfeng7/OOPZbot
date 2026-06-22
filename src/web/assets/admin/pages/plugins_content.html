@@ -59,11 +59,11 @@
         </article>
 
         <!-- 配置编辑模态框 -->
-        <div id="cfgOverlay" class="m-modal-overlay" onclick="closeConfigEditor()"></div>
+        <div id="cfgOverlay" class="m-modal-overlay" data-action="plugin-cfg-close"></div>
         <div id="cfgDialog" class="m-modal" style="width:min(760px,94vw)">
           <header class="m-modal__head">
             <h3 id="cfgTitle" class="m-modal__title">编辑插件配置</h3>
-            <button class="m-modal__close" onclick="closeConfigEditor()" aria-label="关闭">&times;</button>
+            <button class="m-modal__close" type="button" data-action="plugin-cfg-close" aria-label="关闭">&times;</button>
           </header>
           <div class="m-modal__body">
             <div id="cfgSchemaHint" class="p-schema-hint" style="display:none"></div>
@@ -75,8 +75,8 @@
             <div id="cfgMsg" class="msg" style="margin-top:8px"></div>
           </div>
           <footer class="m-modal__foot">
-            <button class="btn btn-ghost" type="button" onclick="closeConfigEditor()">取消</button>
-            <button class="btn btn-primary" type="button" onclick="saveConfig()">保存并重载</button>
+            <button class="btn btn-ghost" type="button" data-action="plugin-cfg-close">取消</button>
+            <button class="btn btn-primary" type="button" data-action="plugin-cfg-save">保存并重载</button>
           </footer>
         </div>
       </section>
