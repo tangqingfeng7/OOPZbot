@@ -121,6 +121,7 @@ NeteaseCloud API (:3000)
 │   │   ├── signing.py           # 请求签名唯一来源（RSA + Oopz-* 头）
 │   │   ├── oopz_password_login.py # OOPZ 账号密码登录
 │   │   └── name_resolver.py     # ID → 名称解析
+│   ├── onebot_v11/              # OneBot v11 旁路适配（adapter / server / store / message / config）
 │   ├── services/                # 独立服务
 │   │   ├── chat.py              # AI 聊天 + 图片生成
 │   │   ├── area_join_notifier.py # 域成员加入/退出通知
@@ -153,11 +154,18 @@ NeteaseCloud API (:3000)
 │   │   └── assets/              # 静态资源
 │   ├── lol_ban/                 # LOL 封号查询插件
 │   ├── lol_fa8/                 # LOL 战绩查询插件
+│   ├── apex/                    # Apex Legends 战绩与游戏信息查询插件
+│   ├── arc_raiders/             # ARC Raiders 物品与掉率查询插件
+│   ├── steam_price/             # Steam 游戏价格查询与降价提醒插件
 │   ├── _shared/                 # 插件共享基类与小工具（IntervalWorker 后台线程 / JsonHttpClient）
 │   └── README.md                # 插件说明
 │
 ├── tools/                       # 独立工具
 │   ├── credential_tool.py       # 凭据获取工具（RSA 私钥、UID、设备 ID、JWT Token）
+│   ├── create_plugin_scaffold.py # 插件脚手架生成
+│   ├── export_plugin_config_assets.py # 导出插件配置示例与 schema
+│   ├── prepare_clash_config.py  # 规整 Clash/Mihomo 本地启动配置
+│   ├── convert_subscription.py  # 代理订阅转 Clash/Mihomo 配置
 │   └── audio_service.py         # 音频播放服务（ffplay + FastAPI）
 │
 ├── nginx/                       # Nginx 反向代理配置

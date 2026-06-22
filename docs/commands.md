@@ -33,6 +33,10 @@
 |------|------|
 | `@bot 查封号 <QQ号>` | 查询 LOL 封号状态 |
 | `@bot 战绩 <召唤师名#编号>` | 查询 LOL 战绩 |
+| `@bot apex <玩家名> [平台]` | 查询 Apex Legends 玩家战绩（数据源 apexlegendsstatus.com） |
+| `@bot apex 地图` / `@bot apex 合成` / `@bot apex 猎杀者` | 查询地图轮换 / 复制器合成 / 猎杀者门槛 |
+| `@bot apex 帮助` | 查看 Apex 插件帮助 |
+| `@bot arc <物品关键词或ID>` | 查询 ARC Raiders 物品信息与掉率 |
 | `@bot 三角洲帮助` | 查看三角洲插件帮助；对应 `/df help` |
 | `@bot 三角洲登录 [qq|微信]` | 发起三角洲二维码登录；二维码投递方式由 `login_delivery_mode` 配置决定；对应 `/df login [qq|wechat]` |
 | `@bot 三角洲角色绑定` | 绑定三角洲游戏角色；对应 `/df bind-character` |
@@ -150,6 +154,11 @@
 |------|------|
 | `/lol <QQ号>` | 查询 LOL 封号状态 |
 | `/zj <召唤师名#编号>` | 查询 LOL 战绩 |
+| `/apex <玩家名>` | 查询 Apex Legends 玩家战绩 |
+| `/apex map` / `/apex crafting` / `/apex predator` | 地图轮换 / 复制器合成 / 猎杀者门槛 |
+| `/apex help` | 查看 Apex 插件帮助 |
+| `/arc <关键词或ID>` | 查询 ARC Raiders 物品信息与掉率 |
+| `/arcevent` | 查询 ARC Raiders 地图事件（截图） |
 | `/df help` | 查看三角洲插件帮助 |
 | `/df login [qq|wechat]` | 发起三角洲二维码登录（投递方式由 `login_delivery_mode` 配置决定） |
 | `/df bind-character` | 绑定三角洲游戏角色 |

@@ -238,6 +238,8 @@ docker-compose up -d
 - LOL 封号查询
 - LOL 战绩查询
 - Steam 游戏价格查询和降价提醒
+- Apex Legends 战绩与游戏信息查询
+- ARC Raiders 物品与掉率查询
 
 创建新插件：
 
