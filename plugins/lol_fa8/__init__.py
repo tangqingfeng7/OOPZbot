@@ -6,10 +6,22 @@ from domain.plugins.base import (
     PluginConfigSpec,
     PluginMetadata,
 )
-from .._shared.lol_common import extract_keyword_from_mention
+from plugins._shared.command_mixin import PluginCommandMixin
 
 
-class LolFa8Plugin(BotModule):
+_HELP_TEXT = (
+    "请输入召唤师名称\n"
+    "格式: @bot 战绩 召唤师名#编号  |  /zj 召唤师名#编号\n"
+    "示例: @bot 战绩 艺术就是充钱丶#72269\n"
+    "指定大区: @bot 战绩 班德尔城 召唤师名#编号  |  /zj 班德尔城 召唤师名#编号\n"
+    "按区搜索: @bot 战绩 3 召唤师名#编号 (1-5对应联盟一~五区)"
+)
+
+
+class LolFa8Plugin(PluginCommandMixin, BotModule):
+    command_error_prefix = "战绩查询出错"
+    command_log_name = "LolFa8Plugin"
+
     def __init__(self):
         self._handler = None
         self._config: dict = {}
@@ -64,49 +76,11 @@ class LolFa8Plugin(BotModule):
             self._handler = FA8Handler(self._config)
         return self._handler
 
-    def _keyword(self, text: str) -> str:
-        return extract_keyword_from_mention(text, self.command_capabilities.mention_prefixes)
-
-    def handle_mention(self, text, channel, area, user, handler):
-        keyword = self._keyword(text)
+    def dispatch_command(self, command_text, channel, area, user, handler) -> None:
+        keyword = command_text.strip()
         if not keyword:
-            handler.sender.send_message(
-                "请输入召唤师名称\n"
-                "格式: @bot 战绩 召唤师名#编号\n"
-                "示例: @bot 战绩 艺术就是充钱丶#72269\n"
-                "指定大区: @bot 战绩 班德尔城 召唤师名#编号\n"
-                "按区搜索: @bot 战绩 3 召唤师名#编号 (1-5对应联盟一~五区)",
-                channel=channel,
-                area=area,
-            )
-            return True
-        handler.sender.send_message(
-            f"{Msg.SEARCH} 正在查询 {keyword} 的战绩...",
-            channel=channel,
-            area=area,
-        )
+            self._send(handler, _HELP_TEXT, channel, area)
+            return
+        self._send(handler, f"{Msg.SEARCH} 正在查询 {keyword} 的战绩...", channel, area)
         reply = self._service().query_and_format(keyword)
-        handler.sender.send_message(reply, channel=channel, area=area)
-        return True
-
-    def handle_slash(self, command, subcommand, arg, channel, area, user, handler):
-        keyword = (subcommand or "").strip()
-        if arg:
-            keyword = f"{keyword} {arg}".strip() if keyword else arg.strip()
-        if not keyword:
-            handler.sender.send_message(
-                "用法: /zj 召唤师名#编号\n"
-                "示例: /zj 艺术就是充钱丶#72269\n"
-                "指定大区: /zj 班德尔城 召唤师名#编号",
-                channel=channel,
-                area=area,
-            )
-            return True
-        handler.sender.send_message(
-            f"{Msg.SEARCH} 正在查询 {keyword} 的战绩...",
-            channel=channel,
-            area=area,
-        )
-        reply = self._service().query_and_format(keyword)
-        handler.sender.send_message(reply, channel=channel, area=area)
-        return True
+        self._send(handler, reply, channel, area)

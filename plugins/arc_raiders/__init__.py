@@ -22,6 +22,8 @@ from domain.plugins.base import (
     validate_min,
 )
 
+from plugins._shared.command_mixin import PluginCommandMixin
+
 logger = get_logger("ArcRaidersPlugin")
 
 RARITY_ZH = {
@@ -62,7 +64,10 @@ MAP_ZH = {
 }
 
 
-class ArcRaidersPlugin(BotModule):
+class ArcRaidersPlugin(PluginCommandMixin, BotModule):
+    command_error_prefix = "Arc 查询出错"
+    command_log_name = "ArcRaidersPlugin"
+
     def __init__(self) -> None:
         self._handler = None
         self._config: dict[str, Any] = {}
@@ -171,14 +176,6 @@ class ArcRaidersPlugin(BotModule):
         self._handler = handler
         self._config = (config or {}).copy()
 
-    def handle_mention(self, text, channel, area, user, handler) -> bool:
-        raw = (text or "").strip()
-        for prefix in self.command_capabilities.mention_prefixes:
-            if raw.lower().startswith(prefix.lower()):
-                query = raw[len(prefix):].strip()
-                return self._dispatch(query, channel, area, handler)
-        return False
-
     def handle_slash(self, command, subcommand, arg, channel, area, user, handler) -> bool:
         if (command or "").strip().lower() == "/arcevent":
             if not self._config.get("enabled", False):
@@ -204,18 +201,9 @@ class ArcRaidersPlugin(BotModule):
                 except Exception:
                     pass
             return True
+        return super().handle_slash(command, subcommand, arg, channel, area, user, handler)
 
-        if (command or "").strip().lower() != "/arc":
-            return False
-        parts = []
-        if subcommand:
-            parts.append(subcommand)
-        if arg:
-            parts.append(arg)
-        query = " ".join(parts).strip()
-        return self._dispatch(query, channel, area, handler)
-
-    def _dispatch(self, query: str, channel: str, area: str, handler) -> bool:
+    def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
         if not self._config.get("enabled", False):
             self._send(
                 handler,
@@ -223,32 +211,32 @@ class ArcRaidersPlugin(BotModule):
                 channel,
                 area,
             )
-            return True
+            return
 
-        q = (query or "").strip()
+        q = (command_text or "").strip()
         force_text_mode = False
         if q.endswith(" 1"):
             q = q[:-2].strip()
             force_text_mode = True
         elif q == "1":
             self._send(handler, "用法: /arc <物品名> 或 /arc <物品名> 1（文字模式）", channel, area)
-            return True
+            return
 
         if not q or q.lower() in {"help", "帮助"}:
             self._send(handler, "用法: @bot arc <物品名> 或 /arc <物品名>", channel, area)
-            return True
+            return
 
         try:
             items = self._load_items()
         except Exception as exc:
             logger.warning("ArcRaiders: load index failed: %s", exc)
             self._send(handler, "Arc物品索引加载失败，请稍后重试。", channel, area)
-            return True
+            return
 
         matches = self._search_items(items, q)
         if not matches:
             self._send(handler, f"未找到与“{q}”相关的物品。", channel, area)
-            return True
+            return
 
         max_candidates = int(self._config.get("max_candidates", 6) or 6)
         if len(matches) > 1:
@@ -258,24 +246,23 @@ class ArcRaidersPlugin(BotModule):
                 rarity_zh = self._to_rarity_zh(str(item.get("rarity") or "?"))
                 lines.append(f"{idx}. {item.get('name','?')} ({item_type_zh} / {rarity_zh})")
             self._send(handler, "\n".join(lines), channel, area)
-            return True
+            return
 
         item = matches[0]
         item_id = str(item.get("id") or "").strip()
         if not item_id:
             self._send(handler, "命中物品缺少ID，暂时无法查询。", channel, area)
-            return True
+            return
 
         stats = self._fetch_drop_stats(item_id)
         locations = self._fetch_locations(item_id)
         if bool(self._config.get("image_mode", True)) and not force_text_mode:
             self._send(handler, "正在使用直观截图模式查询，查询时间可能较长，请耐心等待", channel, area)
             if self._send_item_image(handler, item_id, channel, area):
-                return True
+                return
             if self._send_fallback_card_image(handler, item, stats, locations, channel, area):
-                return True
+                return
         self._send(handler, self._format_result(item, stats, locations), channel, area)
-        return True
 
     def _send_item_image(self, handler, item_id: str, channel: str, area: str) -> bool:
         png_path = self._render_item_page_image(item_id)
@@ -587,10 +574,6 @@ class ArcRaidersPlugin(BotModule):
 
         lines.append(f"详情页: https://arctracker.io/zh-CN/items/{item_id}")
         return "\n".join(lines)
-
-    @staticmethod
-    def _send(handler, text: str, channel: str, area: str) -> None:
-        handler.sender.send_message(text, channel=channel, area=area)
 
     @staticmethod
     def _to_type_zh(value: str) -> str:

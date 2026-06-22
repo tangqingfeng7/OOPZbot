@@ -103,8 +103,13 @@ from domain.plugins.base import (
     PluginMetadata,
 )
 
+from plugins._shared.command_mixin import PluginCommandMixin
 
-class {class_name}(BotModule):
+
+class {class_name}(PluginCommandMixin, BotModule):
+    command_error_prefix = "{plugin_name} 出错"
+    command_log_name = "{class_name}"
+
     @property
     def metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -139,9 +144,7 @@ class {class_name}(BotModule):
         self._handler = handler
         self._config = (config or {{}}).copy()
 
-    def handle_mention(self, text, channel, area, user, handler) -> bool:
-        return False
-
-    def handle_slash(self, command, subcommand, arg, channel, area, user, handler) -> bool:
-        return False
+    def dispatch_command(self, command_text, channel, area, user, handler) -> None:
+        # TODO: 解析并执行具体命令；mention 前缀与 slash 命令已由 mixin 剥离。
+        self._send(handler, "{plugin_name} 暂未实现命令", channel, area)
 '''

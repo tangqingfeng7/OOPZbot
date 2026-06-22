@@ -20,10 +20,31 @@
 - `metadata`
 - `command_capabilities`
 - `config_spec`
-- `handle_mention`
-- `handle_slash`
+- `dispatch_command`（继承 `PluginCommandMixin`，见下方「命令入口」）
 - `on_load`
 - `on_unload`
+
+### 命令入口
+
+命令入口统一走 `plugins/_shared/command_mixin.py` 的 `PluginCommandMixin`：插件类同时继承
+`PluginCommandMixin` 和 `BotModule`，只需实现 `dispatch_command`，mention 前缀与 slash 命令名
+会按 `command_capabilities` 自动剥离匹配，异常也由 mixin 统一捕获并回复。错误文案与日志通道
+用类属性 `command_error_prefix` / `command_log_name` 定制：
+
+```python
+from plugins._shared.command_mixin import PluginCommandMixin
+
+
+class FooPlugin(PluginCommandMixin, BotModule):
+    command_error_prefix = "Foo 查询出错"
+    command_log_name = "FooPlugin"
+
+    def dispatch_command(self, command_text, channel, area, user, handler):
+        ...
+```
+
+只有需要特殊路由的插件（例如 arc 的 `/arcevent` 走独立截图逻辑）才自行覆盖 `handle_slash`；
+普通插件不要再手写 `handle_mention` / `handle_slash`。
 
 最核心的几个模型：
 
@@ -85,6 +106,7 @@ python tools/export_plugin_config_assets.py delta_force lol_ban
 
 `plugins/_shared/` 提供了插件间复用的基类，避免每个插件重复造轮子：
 
+- `PluginCommandMixin`（`_shared/command_mixin.py`）：统一的 mention/slash 命令入口。插件继承它后只需实现 `dispatch_command`，前缀剥离、slash 匹配、异常包装与统一发送都由 mixin 完成。当前全部插件均采用此写法（参考 `apex`、`steam_price`、`lol_ban` 等），新插件请遵循。
 - `IntervalWorker`（`_shared/background.py`）：按固定间隔运行的守护线程基类，统一封装「启动一次 / 停止 / 间隔轮询」生命周期。子类只需实现 `_tick()`，并在合适时机调用 `_start_thread()` 与 `stop()`；线程以「先等待 `interval` 再执行一轮」驱动，`_tick` 抛出的异常会被记录而不致线程退出，长循环里可用 `self.stopping` 提前退出。适合做定时推送 / 轮询监控（参考 `delta_force/daily_push.py`、`steam_price/monitor.py`）。
 - `JsonHttpClient`（`_shared/http_client.py`）：带重试与 JSON 解析的 HTTP 客户端基类，统一封装 User-Agent、超时、代理与重试循环。通过 `request_json(method, url, ...)` 发起请求，成功返回解析后的 JSON，网络异常重试耗尽或 JSON 解析失败返回 `{"_error": ...}`；`on_status` 回调可在 `raise_for_status` 之前拦截 404/429 等状态码自定义返回（参考 `apex/api.py`、`steam_price/api.py`）。
 
