@@ -19,6 +19,7 @@ import requests
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from core.browser_launch import login_browser_args
 from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_LOGIN
 from core.json_utils import compact_json
@@ -105,24 +106,8 @@ _CLIENT_PASSWORD_MODULUS_DATA = {
     ],
 }
 
-try:
-    from music.voice_client import _BROWSER_ARGS as _VOICE_BROWSER_ARGS
-except Exception:
-    _VOICE_BROWSER_ARGS = []
-
-# 复用语音推流的 Chromium 参数，但登录页需要遵循 OOPZ/系统代理设置。
-_BROWSER_ARGS = [arg for arg in _VOICE_BROWSER_ARGS if arg != "--no-proxy-server"]
-for _arg in (
-    "--disable-blink-features=AutomationControlled",
-    "--autoplay-policy=no-user-gesture-required",
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-crash-reporter",
-    "--disable-crashpad",
-):
-    if _arg not in _BROWSER_ARGS:
-        _BROWSER_ARGS.append(_arg)
+# Chromium 启动参数来自 core 单一来源，避免反向依赖 music.voice_client。
+_BROWSER_ARGS = login_browser_args()
 
 
 def _get_chromium_executable_path() -> Optional[str]:

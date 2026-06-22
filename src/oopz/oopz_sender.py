@@ -475,11 +475,8 @@ class OopzSender(UploadMixin, OopzApiMixin):
         body = {"target": target}
 
         try:
-            self._throttle()
-            body_str = compact_json(body)
-            headers = {**self.session.headers, **self.signer.oopz_headers(full_path, body_str)}
-            url = OOPZ_CONFIG["base_url"] + full_path
-            resp = self.session.patch(url, headers=headers, data=body_str.encode("utf-8"))
+            # 走统一签名通道 _request，复用 401/403/428 登录态自动刷新与重试。
+            resp = self._request("PATCH", full_path, body)
         except Exception as e:
             logger.error(f"打开私信会话异常: {e}")
             return {"error": str(e)}
@@ -555,11 +552,8 @@ class OopzSender(UploadMixin, OopzApiMixin):
         url_path = "/im/session/v2/sendImMessage"
 
         try:
-            self._throttle()
-            body_str = compact_json(body)
-            headers = {**self.session.headers, **self.signer.oopz_headers(url_path, body_str)}
-            url = OOPZ_CONFIG["base_url"] + url_path
-            resp = self.session.post(url, headers=headers, data=body_str.encode("utf-8"))
+            # 走统一签名通道 _request，复用 401/403/428 登录态自动刷新与重试。
+            resp = self._request("POST", url_path, body)
         except Exception as e:
             logger.error(f"发送私信异常: {e}")
             return {"error": str(e)}
