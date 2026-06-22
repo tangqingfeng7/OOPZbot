@@ -102,6 +102,7 @@ NeteaseCloud API (:3000)
 │   │   ├── constants.py         # 跨模块常量（消息前缀 Msg、@提及、UA）
 │   │   ├── json_utils.py        # 紧凑 JSON 序列化（保证签名字节一致）
 │   │   ├── paths.py             # 项目路径唯一来源
+│   │   ├── http_constants.py    # HTTP 客户端默认超时分档（单一来源）
 │   │   ├── proxy_utils.py       # 代理配置
 │   │   └── area_config.py       # 域配置
 │   ├── music/                   # 音乐与语音播放
@@ -126,12 +127,14 @@ NeteaseCloud API (:3000)
 │   │   ├── chat.py              # AI 聊天 + 图片生成
 │   │   ├── area_join_notifier.py # 域成员加入/退出通知
 │   │   ├── scheduler_service.py # 定时任务服务
+│   │   ├── scheduler_templates.py # 定时消息模板预设
 │   │   └── conversation_memory.py # AI 上下文记忆
 │   ├── web/                     # Web 播放器与 Admin 后台
 │   │   ├── web_player.py        # FastAPI 主应用
-│   │   ├── web_player_admin.py  # Admin 后台路由
+│   │   ├── web_player_admin.py  # Admin 路由入口（聚合 web.admin 包，对外稳定 facade）
 │   │   ├── web_player_config.py # Web / Admin 配置管理
 │   │   ├── web_link_token.py    # Web 播放器访问令牌
+│   │   ├── admin/               # Admin 后台路由包（pages / auth / config / music / scheduler / plugins / members / shared）
 │   │   └── assets/              # Web 前端资源
 │   │       ├── player.html      # Web 播放器前端
 │   │       ├── agora_player.html # Agora RTC 浏览器端

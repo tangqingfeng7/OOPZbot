@@ -127,7 +127,7 @@ python tools/create_plugin_scaffold.py admin_demo --admin-only
 
 ```bash
 python tools/export_plugin_config_assets.py
-python -m unittest tests.test_plugin_contract_behavior tests.test_plugin_config_assets tests.test_plugin_scaffold
+python -m unittest tests.test_plugin_config_layout tests.test_plugin_runtime_state
 ```
 
 如果插件改动影响主链，再跑全量测试。
