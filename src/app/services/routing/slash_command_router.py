@@ -109,7 +109,7 @@ class SlashCommandRouter:
             (slash_of("help"), lambda topic: self._actions.interaction.show_help(channel, area, self._current_user, topic), "用法: /help 音乐"),
             (slash_of("enter"), lambda channel_id: self._actions.interaction.enter_channel(channel_id, channel, area), "用法: /enter 频道ID"),
             (slash_of("songsearch"), lambda keyword: self._services.interaction.music.search_candidates(keyword, channel, area, self._current_user), "用法: /songsearch 关键词"),
-            (slash_of("pick"), lambda raw: self._handle_pick(raw, channel, area, self._current_user), "用法: /pick <编号>"),
+            (slash_of("pick"), lambda raw: self._actions.interaction.handle_pick(raw, channel, area, self._current_user, "用法: /pick <编号>"), "用法: /pick <编号>"),
         )
 
     def _pair_rules(self, channel: str, area: str):
@@ -220,11 +220,7 @@ class SlashCommandRouter:
             return
 
         if command in slash_of("clear_ai_memory"):
-            cleared = self._services.interaction.chat.clear_memory(user, channel)
-            if cleared:
-                self._sender.send_message("对话记忆已清除", channel=channel, area=area)
-            else:
-                self._sender.send_message("当前没有对话记忆", channel=channel, area=area)
+            self._actions.interaction.clear_ai_memory(user, channel, area)
             return
 
         self._services.interaction.chat.send_unknown_command(
@@ -233,15 +229,3 @@ class SlashCommandRouter:
             area,
             suggestions=self._services.interaction.help.suggest_commands(command),
         )
-
-    def _handle_pick(self, raw: str, channel: str, area: str, user: str) -> None:
-        token = (raw or "").strip()
-        if not token.isdigit():
-            self._sender.send_message("用法: /pick <编号>", channel=channel, area=area)
-            return
-        index = int(token)
-        if self._services.interaction.music.handle_pick(index, channel, area, user):
-            return
-        if self._services.community.member.handle_pick(index, channel, area, user):
-            return
-        self._sender.send_message("当前没有可选择的候选结果，请先搜索或搜歌", channel=channel, area=area)

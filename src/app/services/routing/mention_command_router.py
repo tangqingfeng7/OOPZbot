@@ -88,7 +88,7 @@ class MentionCommandRouter:
             # 定时消息为「1 slash 命令 : 5 mention 动词」形态不对称，mention 子动作别名保留字面量（另见 _raw_rules）
             (("定时消息列表", "定时消息"), lambda: self._actions.scheduler.list_scheduled(channel, area)),
             (mention_of("reminders_list"), lambda: self._actions.scheduler.list_reminders(channel, area, user)),
-            (mention_of("clear_ai_memory"), lambda: self._clear_ai_memory(user, channel, area)),
+            (mention_of("clear_ai_memory"), lambda: self._actions.interaction.clear_ai_memory(user, channel, area)),
         )
 
     def _arg_rules(self, channel: str, area: str, user: str):
@@ -156,29 +156,9 @@ class MentionCommandRouter:
             (("删除定时消息", "移除定时消息"), lambda raw: self._actions.scheduler.delete_scheduled(raw, channel, area)),
             (("开启定时消息", "启用定时消息"), lambda raw: self._actions.scheduler.toggle_scheduled(raw, channel, area, True)),
             (("关闭定时消息", "停用定时消息"), lambda raw: self._actions.scheduler.toggle_scheduled(raw, channel, area, False)),
-            (mention_of("pick"), lambda raw: self._handle_pick(raw, channel, area, user)),
+            (mention_of("pick"), lambda raw: self._actions.interaction.handle_pick(raw, channel, area, user, "用法: @bot 选择 <编号>")),
             (mention_of("songsearch"), lambda raw: self._services.interaction.music.search_candidates(raw, channel, area, user)),
         )
-
-    def _clear_ai_memory(self, user: str, channel: str, area: str) -> None:
-        """清除用户在当前频道的 AI 对话记忆。"""
-        cleared = self._services.interaction.chat.clear_memory(user, channel)
-        if cleared:
-            self._sender.send_message("对话记忆已清除", channel=channel, area=area)
-        else:
-            self._sender.send_message("当前没有对话记忆", channel=channel, area=area)
-
-    def _handle_pick(self, raw: str, channel: str, area: str, user: str) -> None:
-        token = (raw or "").strip()
-        if not token.isdigit():
-            self._sender.send_message("用法: @bot 选择 <编号>", channel=channel, area=area)
-            return
-        index = int(token)
-        if self._services.interaction.music.handle_pick(index, channel, area, user):
-            return
-        if self._services.community.member.handle_pick(index, channel, area, user):
-            return
-        self._sender.send_message("当前没有可选择的候选结果，请先搜索或搜歌", channel=channel, area=area)
 
     def _should_treat_as_unknown_command(self, text: str) -> bool:
         from app.services.interaction.help_catalog import suggest_command_usages
