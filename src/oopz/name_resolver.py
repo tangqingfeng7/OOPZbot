@@ -1,25 +1,21 @@
 import os
 import atexit
 import json
-import hashlib
-import time
-import uuid
-import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List
 
 import requests
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 
 from core.http_constants import HTTP_TIMEOUT_DEFAULT
+from core.json_utils import compact_json
 from core.logger_config import get_logger
+from core.paths import DATA_DIR
+from oopz.signing import oopz_auth_headers
 
 logger = get_logger("NameResolver")
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-NAMES_FILE = os.path.join(_PROJECT_ROOT, "data", "names.json")
+NAMES_FILE = os.path.join(DATA_DIR, "names.json")
 
 # Oopz API: 获取用户信息的端点
 PERSON_INFOS_PATH = "/client/v1/person/v1/personInfos"
@@ -181,31 +177,9 @@ class NameResolver:
             logger.warning(f"API 初始化失败（将使用手动映射）: {e}")
             self._api_ready = False
 
-    def _sign(self, data: str) -> str:
-        sig = self._private_key.sign(
-            data.encode("utf-8"),
-            asym_padding.PKCS1v15(),
-            hashes.SHA256(),
-        )
-        return base64.b64encode(sig).decode("utf-8")
-
     def _make_headers(self, url_path: str, body_str: str) -> dict:
-        ts = str(int(time.time() * 1000))
-        md5 = hashlib.md5((url_path + body_str).encode("utf-8")).hexdigest()
-        signature = self._sign(md5 + ts)
         h = dict(self._default_headers)
-        h.update({
-            "Oopz-Sign": signature,
-            "Oopz-Request-Id": str(uuid.uuid4()),
-            "Oopz-Time": ts,
-            "Oopz-App-Version-Number": self._config["app_version"],
-            "Oopz-Channel": self._config["channel"],
-            "Oopz-Device-Id": self._config["device_id"],
-            "Oopz-Platform": self._config["platform"],
-            "Oopz-Web": str(self._config["web"]).lower(),
-            "Oopz-Person": self._config["person_uid"],
-            "Oopz-Signature": self._config["jwt_token"],
-        })
+        h.update(oopz_auth_headers(self._private_key, self._config, url_path, body_str))
         return h
 
     def _fetch_user_name(self, uid: str):
@@ -233,7 +207,7 @@ class NameResolver:
                 return
 
             body = {"persons": to_fetch, "commonIds": []}
-            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+            body_str = compact_json(body)
             url = self._config["base_url"] + PERSON_INFOS_PATH
             headers = self._make_headers(PERSON_INFOS_PATH, body_str)
 

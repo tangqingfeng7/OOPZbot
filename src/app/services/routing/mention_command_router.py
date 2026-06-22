@@ -1,6 +1,7 @@
 import re
 
 from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
+from domain.routing.command_registry import mention_of
 
 from .builtin_command_actions import build_builtin_command_actions
 
@@ -69,43 +70,45 @@ class MentionCommandRouter:
 
     def _exact_rules(self, channel: str, area: str, user: str):
         return (
-            (("成员", "在线", "成员列表", "谁在线"), lambda: self._actions.community.show_members(channel, area)),
-            (("个人信息", "我是谁", "信息"), lambda: self._actions.community.show_profile(channel, area, user)),
-            (("我的资料", "我的详细资料", "我的信息"), lambda: self._actions.community.show_myinfo(channel, area, user)),
-            (("语音", "语音频道", "语音在线", "谁在语音"), lambda: self._actions.interaction.show_voice_channels(channel, area)),
-            (("每日一句", "一句", "名言", "语录", "鸡汤"), lambda: self._actions.interaction.show_daily_speech(channel, area)),
-            (("体检", "系统体检", "健康检查"), lambda: self._actions.interaction.show_health_check(channel, area)),
-            (("首启向导", "向导"), lambda: self._actions.interaction.show_setup_wizard(channel, area)),
-            (("清理历史", "清理记录", "清除历史", "清空历史", "清理数据"), lambda: self._actions.recall.clear_history(channel, area)),
-            (("封禁列表", "封禁名单", "黑名单"), lambda: self._actions.moderation.show_block_list(channel, area)),
-            (("插件列表", "扩展列表", "插件"), lambda: self._actions.plugins.show_plugin_list(channel, area)),
-            (("帮助", "help", "指令", "命令"), lambda: self._actions.interaction.show_help(channel, area, user)),
-            (("活跃排行", "活跃榜", "排行榜"), lambda: self._actions.scheduler.show_ranking(channel, area)),
-            (("频道统计", "消息统计"), lambda: self._actions.scheduler.show_channel_stats(channel, area)),
-            (("点歌排行", "播放排行", "热歌榜"), lambda: self._actions.scheduler.show_music_ranking(channel, area)),
-            (("最近播放", "播放历史"), lambda: self._actions.scheduler.show_recent_songs(channel, area)),
+            (mention_of("members"), lambda: self._actions.community.show_members(channel, area)),
+            (mention_of("profile"), lambda: self._actions.community.show_profile(channel, area, user)),
+            (mention_of("myinfo"), lambda: self._actions.community.show_myinfo(channel, area, user)),
+            (mention_of("voice"), lambda: self._actions.interaction.show_voice_channels(channel, area)),
+            (mention_of("daily"), lambda: self._actions.interaction.show_daily_speech(channel, area)),
+            (mention_of("health"), lambda: self._actions.interaction.show_health_check(channel, area)),
+            (mention_of("setup"), lambda: self._actions.interaction.show_setup_wizard(channel, area)),
+            (mention_of("clear_history"), lambda: self._actions.recall.clear_history(channel, area)),
+            (mention_of("blocklist"), lambda: self._actions.moderation.show_block_list(channel, area)),
+            (mention_of("plugin_list"), lambda: self._actions.plugins.show_plugin_list(channel, area)),
+            (mention_of("help"), lambda: self._actions.interaction.show_help(channel, area, user)),
+            (mention_of("ranking"), lambda: self._actions.scheduler.show_ranking(channel, area)),
+            (mention_of("chatstats"), lambda: self._actions.scheduler.show_channel_stats(channel, area)),
+            (mention_of("topsongs"), lambda: self._actions.scheduler.show_music_ranking(channel, area)),
+            (mention_of("recentsongs"), lambda: self._actions.scheduler.show_recent_songs(channel, area)),
+            # 定时消息为「1 slash 命令 : 5 mention 动词」形态不对称，mention 子动作别名保留字面量（另见 _raw_rules）
             (("定时消息列表", "定时消息"), lambda: self._actions.scheduler.list_scheduled(channel, area)),
-            (("我的提醒", "提醒列表"), lambda: self._actions.scheduler.list_reminders(channel, area, user)),
-            (("清除记忆", "重置对话", "清除对话", "清空记忆"), lambda: self._clear_ai_memory(user, channel, area)),
+            (mention_of("reminders_list"), lambda: self._actions.scheduler.list_reminders(channel, area, user)),
+            (mention_of("clear_ai_memory"), lambda: self._clear_ai_memory(user, channel, area)),
         )
 
     def _arg_rules(self, channel: str, area: str, user: str):
         return (
-            (("查看", "资料", "查询资料"), lambda target: self._actions.community.show_whois(target, channel, area, user), "用法: @bot 查看用户名"),
-            (("角色",), lambda target: self._actions.community.show_user_roles(target, channel, area), "用法: @bot 角色用户名"),
+            (mention_of("whois"), lambda target: self._actions.community.show_whois(target, channel, area, user), "用法: @bot 查看用户名"),
+            (mention_of("role"), lambda target: self._actions.community.show_user_roles(target, channel, area), "用法: @bot 角色用户名"),
             (
-                ("可分配角色", "分配角色"),
+                mention_of("roles"),
                 lambda target: self._actions.community.show_assignable_roles(target, channel, area),
                 "用法: @bot 可分配角色用户名",
             ),
-            (("搜索成员", "搜索", "找人"), lambda keyword: self._actions.community.search_members(keyword, channel, area, user), "用法: @bot 搜索用户名"),
+            (mention_of("search"), lambda keyword: self._actions.community.search_members(keyword, channel, area, user), "用法: @bot 搜索用户名"),
+            # help 的全部别名见 _exact_rules；仅「帮助/help」接受主题参数，故此处保留字面量子集
             (("帮助", "help"), lambda topic: self._actions.interaction.show_help(channel, area, user, topic), "用法: @bot 帮助 音乐"),
-            (("进入频道", "进入"), lambda channel_id: self._actions.interaction.enter_channel(channel_id, channel, area), "用法: @bot 进入频道 <频道ID>"),
-            (("加载插件", "启用插件", "loadplugin"), lambda name: self._actions.plugins.load_plugin(name, channel, area), "用法: @bot 加载插件 <名>"),
-            (("卸载插件", "禁用插件", "unloadplugin"), lambda name: self._actions.plugins.unload_plugin(name, channel, area), "用法: @bot 卸载插件 <名>"),
-            (("重载插件", "刷新插件", "reloadplugin"), lambda name: self._actions.plugins.reload_plugin_config(name, channel, area), "用法: @bot 重载插件 <名>"),
+            (mention_of("enter"), lambda channel_id: self._actions.interaction.enter_channel(channel_id, channel, area), "用法: @bot 进入频道 <频道ID>"),
+            (mention_of("plugin_load"), lambda name: self._actions.plugins.load_plugin(name, channel, area), "用法: @bot 加载插件 <名>"),
+            (mention_of("plugin_unload"), lambda name: self._actions.plugins.unload_plugin(name, channel, area), "用法: @bot 卸载插件 <名>"),
+            (mention_of("plugin_reload"), lambda name: self._actions.plugins.reload_plugin_config(name, channel, area), "用法: @bot 重载插件 <名>"),
             (
-                ("画", "画一个", "画一张", "生成图片", "生成", "画图"),
+                mention_of("generate_image"),
                 lambda prompt: self._actions.interaction.generate_image(prompt, channel, area, user),
                 "请描述要画的内容，例如: @bot 画一只可爱的猫咪",
             ),
@@ -114,12 +117,12 @@ class MentionCommandRouter:
     def _pair_rules(self, channel: str, area: str):
         return (
             (
-                ("给身份组", "添加身份组", "addrole"),
+                mention_of("addrole"),
                 lambda target, role_name: self._actions.community.give_role(target, role_name, channel, area),
                 "用法: @bot 给身份组 用户 身份组名或ID",
             ),
             (
-                ("取消身份组", "移除身份组", "removerole"),
+                mention_of("removerole"),
                 lambda target, role_name: self._actions.community.remove_role(target, role_name, channel, area),
                 "用法: @bot 取消身份组 用户 身份组名或ID",
             ),
@@ -127,16 +130,16 @@ class MentionCommandRouter:
 
     def _raw_rules(self, channel: str, area: str, user: str):
         return (
-            (("禁言",), lambda raw: self._actions.moderation.mute_user(raw, channel, area, "用法: @bot 禁言 谁 10")),
-            (("解除禁言", "解禁"), lambda raw: self._actions.moderation.unmute_user(raw, channel, area, "用法: @bot 解禁 谁")),
-            (("禁麦",), lambda raw: self._actions.moderation.mute_mic(raw, channel, area, "用法: @bot 禁麦 谁")),
-            (("解除禁麦", "解麦"), lambda raw: self._actions.moderation.unmute_mic(raw, channel, area, "用法: @bot 解麦 谁")),
+            (mention_of("mute"), lambda raw: self._actions.moderation.mute_user(raw, channel, area, "用法: @bot 禁言 谁 10")),
+            (mention_of("unmute"), lambda raw: self._actions.moderation.unmute_user(raw, channel, area, "用法: @bot 解禁 谁")),
+            (mention_of("mute_mic"), lambda raw: self._actions.moderation.mute_mic(raw, channel, area, "用法: @bot 禁麦 谁")),
+            (mention_of("unmute_mic"), lambda raw: self._actions.moderation.unmute_mic(raw, channel, area, "用法: @bot 解麦 谁")),
             (
-                ("移出域", "踢出", "移出"),
+                mention_of("remove_from_area"),
                 lambda raw: self._actions.moderation.remove_from_area(raw, channel, area, "用法: @bot 移出域 用户 或 @bot 踢出 用户"),
             ),
             (
-                ("解除域内封禁", "解封"),
+                mention_of("unblock"),
                 lambda raw: self._actions.moderation.unblock_in_area(
                     raw,
                     channel,
@@ -144,16 +147,17 @@ class MentionCommandRouter:
                     "用法: @bot 解封 用户（可先 @bot 封禁列表 查看）",
                 ),
             ),
-            (("自动撤回",), lambda arg: self._actions.recall.configure_auto_recall(arg, channel, area)),
-            (("撤回",), lambda raw: self._actions.recall.recall(raw or None, channel, area)),
-            (("提醒",), lambda raw: self._actions.scheduler.set_reminder(raw, channel, area, user)),
-            (("删除提醒", "取消提醒"), lambda raw: self._actions.scheduler.delete_reminder(raw, channel, area, user)),
+            (mention_of("autorecall"), lambda arg: self._actions.recall.configure_auto_recall(arg, channel, area)),
+            (mention_of("recall"), lambda raw: self._actions.recall.recall(raw or None, channel, area)),
+            (mention_of("remind"), lambda raw: self._actions.scheduler.set_reminder(raw, channel, area, user)),
+            (mention_of("delete_reminder"), lambda raw: self._actions.scheduler.delete_reminder(raw, channel, area, user)),
+            # 定时消息子动作：与 slash /schedule 子命令形态不对称，保留字面量（见 _exact_rules 注释）
             (("添加定时消息", "新增定时消息"), lambda raw: self._actions.scheduler.add_scheduled(raw, channel, area)),
             (("删除定时消息", "移除定时消息"), lambda raw: self._actions.scheduler.delete_scheduled(raw, channel, area)),
             (("开启定时消息", "启用定时消息"), lambda raw: self._actions.scheduler.toggle_scheduled(raw, channel, area, True)),
             (("关闭定时消息", "停用定时消息"), lambda raw: self._actions.scheduler.toggle_scheduled(raw, channel, area, False)),
-            (("选择", "选歌"), lambda raw: self._handle_pick(raw, channel, area, user)),
-            (("搜歌", "搜索歌曲"), lambda raw: self._services.interaction.music.search_candidates(raw, channel, area, user)),
+            (mention_of("pick"), lambda raw: self._handle_pick(raw, channel, area, user)),
+            (mention_of("songsearch"), lambda raw: self._services.interaction.music.search_candidates(raw, channel, area, user)),
         )
 
     def _clear_ai_memory(self, user: str, channel: str, area: str) -> None:

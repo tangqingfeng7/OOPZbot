@@ -8,47 +8,6 @@
       AdminShell.setStatus(text, variant, "areaState");
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录域管理",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadAreaManager();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setState("等待操作", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {}
-      await check();
-    }
-
     async function loadAreaManager() {
       await loadAreas();
       if (currentArea) {
@@ -568,11 +527,16 @@
       "toggle-edit-pwd": () => toggleEditPwd(),
       "access-member": (el) => toggleAccessMember(el.dataset.uid, el.checked),
     });
-    AdminShell.init({ page: "areas", passwordHandler: login });
     AdminShell.upgradeSelect("ac_default_channel_select");
     AdminShell.upgradeSelect("ac_auto_role_select");
     AdminShell.upgradeSelect("ac_announcement_style");
     AdminShell.upgradeSelect("newChType");
     AdminShell.upgradeSelect("editChVoiceQuality");
     AdminShell.upgradeSelect("editChVoiceDelay");
-    check();
+    AdminShell.bootstrapAuth({
+      page: "areas",
+      loggedInText: "已登录域管理",
+      onLogin: () => loadAreaManager(),
+      onLoggedOut: () => setState("等待操作", "warning"),
+      onLoginError: () => setState("登录失败", "error"),
+    });

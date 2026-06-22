@@ -7,18 +7,17 @@ from web.admin.shared import (
     Request,
     _get_sender,
     _resolve_area,
+    require_sender,
 )
 
 router = APIRouter()
 
 
 @router.post("/admin/api/send-message")
+@require_sender
 async def admin_send_message(request: Request):
     """发送普通消息到指定频道。"""
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
-
     body = await request.json()
     area = (body.get("area") or "").strip() or _resolve_area()
     channel = (body.get("channel") or "").strip()
@@ -42,12 +41,10 @@ async def admin_send_message(request: Request):
 
 
 @router.post("/admin/api/send-announcement")
+@require_sender
 async def admin_send_announcement(request: Request):
     """发送公告样式消息到指定频道。"""
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
-
     body = await request.json()
     area = (body.get("area") or "").strip() or _resolve_area()
     channel = (body.get("channel") or "").strip()

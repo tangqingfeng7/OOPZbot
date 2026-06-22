@@ -12,6 +12,7 @@ from http.cookies import SimpleCookie
 from typing import Optional
 from urllib.parse import quote
 
+from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
@@ -29,10 +30,7 @@ _HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": USER_AGENT,
     "Referer": _BILIBILI_HOME,
 }
 

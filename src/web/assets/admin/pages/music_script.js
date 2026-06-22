@@ -36,52 +36,6 @@
       AdminShell.byId("musicActiveAreaText").textContent = "活跃域：" + activeArea;
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录音乐页",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadQueue();
-        if (searchKeyword) {
-          await searchSongs(false);
-        }
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        AdminShell.setMicroStatus("等待操作", "neutral", "ctlState");
-        renderMusicArea({});
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
-    }
-
     async function control(action) {
       try {
         await AdminShell.req("/admin/api/control", {
@@ -245,5 +199,18 @@
       "queue-action": (el) => queueAction(el.dataset.queueAction, Number(el.dataset.index)),
       "add-song": (el) => addSong(Number(el.dataset.index)),
     });
-    AdminShell.init({ page: "music", passwordHandler: login });
-    check();
+    AdminShell.bootstrapAuth({
+      page: "music",
+      loggedInText: "已登录音乐页",
+      onLogin: async () => {
+        await loadQueue();
+        if (searchKeyword) {
+          await searchSongs(false);
+        }
+      },
+      onLoggedOut: () => {
+        AdminShell.setMicroStatus("等待操作", "neutral", "ctlState");
+        renderMusicArea({});
+      },
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

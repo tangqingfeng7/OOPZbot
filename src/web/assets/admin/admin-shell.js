@@ -347,6 +347,74 @@
   }
 
   // -------------------------------------------------------------------------
+  // 鉴权三件套（check/login/logout）的统一实现。
+  // 各页只需提供 loggedInText 与登录成功后的 onLogin 加载回调，以及可选的
+  // onLoggedOut（登出态额外状态）/ onLoginError（登录失败额外状态）；本函数
+  // 负责绑定 window.login/window.logout（供 data-action 委托）、init 与首检。
+  // -------------------------------------------------------------------------
+  function bootstrapAuth(options) {
+    const settings = options || {};
+    const loggedInText = settings.loggedInText || "已登录";
+    const loggedOutText = settings.loggedOutText || "等待登录";
+    const statusTargets = settings.statusTargets || ["topStatus", "mobileStatus"];
+    const passwordId = settings.passwordId || "pwd";
+    const loginMsgId = settings.loginMsgId || "loginMsg";
+    const meUrl = settings.meUrl || "/admin/api/me";
+    const loginUrl = settings.loginUrl || "/admin/api/login";
+    const logoutUrl = settings.logoutUrl || "/admin/api/logout";
+    const successMessage =
+      settings.loginSuccessMessage === undefined ? "登录成功" : settings.loginSuccessMessage;
+
+    async function check() {
+      try {
+        await req(meUrl);
+        setAuthState({ loggedIn: true, loggedInText, statusTargets });
+        if (settings.onLogin) {
+          await settings.onLogin();
+        }
+      } catch (error) {
+        setAuthState({ loggedIn: false, loggedOutText, statusTargets });
+        showMessage(loginMsgId, "");
+        if (settings.onLoggedOut) {
+          settings.onLoggedOut(error);
+        }
+      }
+    }
+
+    async function login() {
+      try {
+        const input = byId(passwordId);
+        await req(loginUrl, {
+          method: "POST",
+          body: JSON.stringify({ password: (input && input.value) || "" }),
+        });
+        if (successMessage) {
+          showMessage(loginMsgId, successMessage);
+        }
+        await check();
+      } catch (error) {
+        showMessage(loginMsgId, error.message, true);
+        if (settings.onLoginError) {
+          settings.onLoginError(error);
+        }
+      }
+    }
+
+    async function logout() {
+      try {
+        await req(logoutUrl, { method: "POST", body: "{}" });
+      } catch (_) {}
+      await check();
+    }
+
+    window.login = login;
+    window.logout = logout;
+    init({ page: settings.page, passwordId, passwordHandler: login });
+    check();
+    return { check, login, logout };
+  }
+
+  // -------------------------------------------------------------------------
   // Custom Select (replaces native <select> with styled dropdown)
   // -------------------------------------------------------------------------
 
@@ -661,6 +729,7 @@
   window.AdminShell = {
     animateNumber,
     animatePanel,
+    bootstrapAuth,
     byId,
     closeModal,
     confirm,

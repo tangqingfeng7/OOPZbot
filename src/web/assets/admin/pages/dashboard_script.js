@@ -82,57 +82,24 @@
       connect();
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录总览",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadOverview();
-        startOverviewStream();
-      } catch (_) {
-        stopOverviewStream();
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        AdminShell.setMicroStatus("等待连接", "warning", "overviewLiveHint");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setLiveState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
-    }
-
     AdminShell.registerActions({
       "refresh-overview": () => loadOverview(),
       "stream-resume": () => startOverviewStream(),
       "stream-pause": () => stopOverviewStream(),
     });
-    AdminShell.init({ page: "dashboard", passwordHandler: login });
-    check();
+    AdminShell.bootstrapAuth({
+      page: "dashboard",
+      loggedInText: "已登录总览",
+      onLogin: async () => {
+        await loadOverview();
+        startOverviewStream();
+      },
+      onLoggedOut: () => {
+        stopOverviewStream();
+        AdminShell.setMicroStatus("等待连接", "warning", "overviewLiveHint");
+      },
+      onLoginError: () => setLiveState("登录失败", "error"),
+    });
 
     document.addEventListener("visibilitychange", () => {
       const panel = AdminShell.byId("panel");

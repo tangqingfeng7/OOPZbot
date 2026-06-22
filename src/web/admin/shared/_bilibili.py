@@ -7,6 +7,7 @@ import io
 from urllib.parse import parse_qs, urlparse
 from typing import Any, Optional
 
+from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
@@ -57,10 +58,7 @@ def _bilibili_api_get(path: str, params: dict | None = None) -> tuple[dict, Any]
         f"{_BILIBILI_LOGIN_BASE}{path}",
         params=params or {},
         headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": USER_AGENT,
             "Referer": "https://www.bilibili.com/",
             "Cache-Control": "no-cache",
         },
@@ -78,10 +76,7 @@ def _bilibili_account_api_get(path: str, headers: dict | None = None) -> tuple[d
     if requests is None:
         raise RuntimeError("缺少 requests 依赖，请先安装 requirements.txt")
     request_headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": USER_AGENT,
         "Referer": "https://www.bilibili.com/",
         "Cache-Control": "no-cache",
     }

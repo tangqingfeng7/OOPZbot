@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from config import PROFANITY_CONFIG
+from core.constants import Msg
 from core.logger_config import get_logger
 
 from app.services.runtime import CommandRuntimeView
@@ -186,7 +187,7 @@ class CommandMessageService:
 
         logger.info("Non-admin user %s attempted command: %s", ctx.user, ctx.content[:40])
         self._sender.send_message(
-            "[x] 无权限，仅管理员可使用该指令",
+            f"{Msg.ERR} 无权限，仅管理员可使用该指令",
             channel=ctx.channel,
             area=ctx.area,
         )

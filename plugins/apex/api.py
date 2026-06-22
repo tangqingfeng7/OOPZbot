@@ -7,16 +7,11 @@ from typing import Any, Optional
 import requests
 
 from core.logger_config import get_logger
+from plugins._shared.http_client import JsonHttpClient
 
 logger = get_logger("ApexApi")
 
 _BASE_URL = "https://api.mozambiquehe.re"
-
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/140.0.0.0 Safari/537.36"
-)
 
 _PLATFORM_ALIASES: dict[str, str] = {
     "pc": "PC",
@@ -39,50 +34,46 @@ def normalize_platform(raw: str) -> str:
     return _PLATFORM_ALIASES.get(raw.strip().lower(), "PC")
 
 
-class ApexApiClient:
+class ApexApiClient(JsonHttpClient):
     """apexlegendsapi.com 非官方 API 封装。
 
     需要在 https://portal.apexlegendsapi.com/ 免费注册获取 API Key。
     """
 
+    _LOG_NAME = "ApexApi"
+
     def __init__(self, config: dict, session: Optional[requests.Session] = None) -> None:
         self._config = config or {}
         self._api_key = str(self._config.get("api_key") or "").strip()
-        self._timeout = max(1, int(self._config.get("request_timeout_sec", 15) or 15))
-        self._retries = max(1, int(self._config.get("request_retries", 2) or 2))
-        self._proxies = None
-        self._session = session or requests.Session()
+        super().__init__(
+            session=session,
+            timeout=int(self._config.get("request_timeout_sec", 15) or 15),
+            retries=int(self._config.get("request_retries", 2) or 2),
+        )
 
     @property
     def configured(self) -> bool:
         return bool(self._api_key)
 
+    @staticmethod
+    def _intercept_status(code: int) -> Any:
+        if code == 404:
+            return {"_error": "玩家未找到，请检查名称和平台是否正确。", "_code": 404}
+        if code == 429:
+            return {"_error": "API 请求频率超限，请稍后再试。", "_code": 429}
+        return None
+
     def _get(self, endpoint: str, params: Optional[dict[str, Any]] = None) -> Any:
         url = f"{_BASE_URL}/{endpoint.lstrip('/')}"
-        params = params or {}
+        params = dict(params or {})
         params["auth"] = self._api_key
-        last_error = ""
-        for attempt in range(1, self._retries + 1):
-            try:
-                resp = self._session.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": _UA, "Authorization": self._api_key},
-                    timeout=self._timeout,
-                    proxies=self._proxies,
-                )
-                if resp.status_code == 404:
-                    return {"_error": "玩家未找到，请检查名称和平台是否正确。", "_code": 404}
-                if resp.status_code == 429:
-                    return {"_error": "API 请求频率超限，请稍后再试。", "_code": 429}
-                resp.raise_for_status()
-                return resp.json()
-            except requests.RequestException as exc:
-                last_error = str(exc)
-                logger.warning("ApexApi GET %s attempt %d: %s", url, attempt, exc)
-            except ValueError as exc:
-                return {"_error": f"JSON 解析失败: {exc}"}
-        return {"_error": last_error}
+        return self.request_json(
+            "GET",
+            url,
+            params=params,
+            headers={"Authorization": self._api_key},
+            on_status=self._intercept_status,
+        )
 
     def get_player(self, player: str, platform: str = "PC") -> dict:
         """查询玩家统计数据。"""

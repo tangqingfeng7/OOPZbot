@@ -19,6 +19,7 @@ from core.database import (
     cn_now,
     cn_today,
 )
+from core.constants import build_mention
 from core.logger_config import get_logger
 
 logger = get_logger("Scheduler")
@@ -129,7 +130,7 @@ class ReminderService:
                 return
             try:
                 uid = r["user_id"]
-                mention = f"(met){uid}(met)"
+                mention = build_mention(uid)
                 text = f"{mention} 你设置的提醒到啦：\n{r['message_text']}"
                 mention_list = [{
                     "person": uid,

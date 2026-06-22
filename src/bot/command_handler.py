@@ -2,6 +2,7 @@ from app.infrastructure import PluginHost, build_bot_infrastructure
 from app.services.registry import build_command_service_registry
 from app.services.runtime import CommandRuntime
 from config import OOPZ_CONFIG
+from core.constants import build_mention
 from core.database import MessageStatsDB, cn_today
 from core.logger_config import get_logger
 from oopz.oopz_sender import OopzSender
@@ -9,7 +10,7 @@ from oopz.oopz_sender import OopzSender
 _stats_logger = get_logger("MessageStats")
 
 _BOT_UID = OOPZ_CONFIG.get("person_uid", "")
-_BOT_MENTION = f"(met){_BOT_UID}(met)" if _BOT_UID else ""
+_BOT_MENTION = build_mention(_BOT_UID) if _BOT_UID else ""
 
 
 class CommandHandler:

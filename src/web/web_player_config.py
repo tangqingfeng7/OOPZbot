@@ -14,35 +14,14 @@ from core.logger_config import get_logger
 logger = get_logger("WebPlayerConfig")
 
 # ---------------------------------------------------------------------------
-# 运行时配置引用
-# ---------------------------------------------------------------------------
-
-WEB_PLAYER_CONFIG = runtime_config.WEB_PLAYER_CONFIG
-OOPZ_CONFIG = getattr(runtime_config, "OOPZ_CONFIG", {})
-NETEASE_CLOUD = getattr(runtime_config, "NETEASE_CLOUD", {})
-DOUBAO_CONFIG = getattr(runtime_config, "DOUBAO_CONFIG", {})
-DOUBAO_IMAGE_CONFIG = getattr(runtime_config, "DOUBAO_IMAGE_CONFIG", {})
-AUTO_RECALL_CONFIG = getattr(runtime_config, "AUTO_RECALL_CONFIG", {})
-AREA_JOIN_NOTIFY = getattr(runtime_config, "AREA_JOIN_NOTIFY", {})
-CHAT_CONFIG = getattr(runtime_config, "CHAT_CONFIG", {})
-PROFANITY_CONFIG = getattr(runtime_config, "PROFANITY_CONFIG", {})
-REDIS_CONFIG = runtime_config.REDIS_CONFIG
-SCHEDULER_CONFIG = getattr(runtime_config, "SCHEDULER_CONFIG", {"enabled": True, "check_interval_seconds": 30})
-REMINDER_CONFIG = getattr(runtime_config, "REMINDER_CONFIG", {"enabled": True, "max_per_user": 5, "max_delay_hours": 72, "check_interval_seconds": 15})
-MUSIC_CONFIG = getattr(runtime_config, "MUSIC_CONFIG", {"auto_play_enabled": True, "default_volume": 50})
-COMMAND_COOLDOWN_CONFIG = getattr(runtime_config, "COMMAND_COOLDOWN_CONFIG", {"enabled": False, "default_seconds": 3, "exempt_admins": True})
-QQ_MUSIC_CONFIG = getattr(runtime_config, "QQ_MUSIC_CONFIG", {"enabled": False, "base_url": "http://localhost:3300", "cookie": ""})
-BILIBILI_MUSIC_CONFIG = getattr(runtime_config, "BILIBILI_MUSIC_CONFIG", {"enabled": False, "cookie": ""})
-MESSAGE_STATS_CONFIG = getattr(runtime_config, "MESSAGE_STATS_CONFIG", {"enabled": True})
-
-# ---------------------------------------------------------------------------
 # 路径常量
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.paths import PROJECT_ROOT  # noqa: E402 — 统一根路径来源，re-export 供 cfg.PROJECT_ROOT 使用
+from core.redis_keys import ADMIN_SESSION as KEY_ADMIN_SESSION, ADMIN_SESSION_COOKIE  # noqa: E402
 CONFIG_FILE_PATH = os.path.join(PROJECT_ROOT, "config.py")
-KEY_ADMIN_SESSION = "music:admin_session"
 
+# 分组名 → config.py 中的源变量名
 CONFIG_GROUP_SOURCES: dict[str, str] = {
     "web_player": "WEB_PLAYER_CONFIG",
     "auto_recall": "AUTO_RECALL_CONFIG",
@@ -64,176 +43,201 @@ CONFIG_GROUP_SOURCES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# 配置分组定义
+# 配置字段规范（CONFIG_FIELD_SCHEMA）—— 配置默认值与校验规则的【单一来源】。
+#
+# 每个字段的 type/min/max/max_len/sensitive 以及 default 都只在此声明一次：
+#   - 运行时兜底默认（config.py 缺该分组时）由此派生；
+#   - 后台保存的类型转换 / 范围校验读取此处；
+#   - 前端表单的字段类型与默认值通过 config_field_schema() 下发，不再在 JS / HTML 里另写一份。
+# default 必须与 config.example.py 中对应分组的取值保持一致。
 # ---------------------------------------------------------------------------
 
-CONFIG_GROUPS: dict[str, dict] = {
+CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
     "web_player": {
-        "target": WEB_PLAYER_CONFIG,
-        "fields": {
-            "url": {"type": "str", "max_len": 300},
-            "host": {"type": "str", "max_len": 64},
-            "port": {"type": "int", "min": 1, "max": 65535},
-            "token_ttl_seconds": {"type": "int", "min": 0, "max": 7 * 24 * 3600},
-            "cookie_max_age_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600},
-            "cookie_secure": {"type": "bool"},
-            "link_idle_release_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600},
-            "admin_enabled": {"type": "bool"},
-            "admin_password": {"type": "str", "max_len": 128, "sensitive": True},
-            "admin_session_ttl_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600},
-            "admin_cookie_secure": {"type": "bool"},
-        },
+        "url": {"type": "str", "max_len": 300, "default": ""},
+        "host": {"type": "str", "max_len": 64, "default": "0.0.0.0"},
+        "port": {"type": "int", "min": 1, "max": 65535, "default": 8080},
+        "token_ttl_seconds": {"type": "int", "min": 0, "max": 7 * 24 * 3600, "default": 86400},
+        "cookie_max_age_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 86400},
+        "cookie_secure": {"type": "bool", "default": False},
+        "link_idle_release_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 1800},
+        "admin_enabled": {"type": "bool", "default": False},
+        "admin_password": {"type": "str", "max_len": 128, "sensitive": True, "default": ""},
+        "admin_session_ttl_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 43200},
+        "admin_cookie_secure": {"type": "bool", "default": False},
     },
     "auto_recall": {
-        "target": AUTO_RECALL_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "delay": {"type": "int", "min": 1, "max": 3600},
-            "exclude_commands": {"type": "str_list", "max_len": 500},
-        },
+        "enabled": {"type": "bool", "default": False},
+        "delay": {"type": "int", "min": 1, "max": 3600, "default": 30},
+        "exclude_commands": {"type": "str_list", "max_len": 500, "default": ["ai_chat", "ai_image"]},
     },
     "area_join_notify": {
-        "target": AREA_JOIN_NOTIFY,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "message_template": {"type": "str", "max_len": 200},
-            "message_template_leave": {"type": "str", "max_len": 200},
-            "poll_interval_seconds": {"type": "int", "min": 2, "max": 3600},
-            "auto_assign_role_id": {"type": "str", "max_len": 128},
-            "auto_assign_role_name": {"type": "str", "max_len": 128},
-        },
+        "enabled": {"type": "bool", "default": False},
+        "message_template": {"type": "str", "max_len": 200, "default": "欢迎 {name} 加入域～\n请阅读频道规则，祝你玩得开心！"},
+        "message_template_leave": {"type": "str", "max_len": 200, "default": "{name} 已退出域"},
+        "poll_interval_seconds": {"type": "int", "min": 2, "max": 3600, "default": 2},
+        "auto_assign_role_id": {"type": "str", "max_len": 128, "default": ""},
+        "auto_assign_role_name": {"type": "str", "max_len": 128, "default": ""},
     },
     "chat": {
-        "target": CHAT_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "keyword_replies": {"type": "json_dict", "max_len": 5000},
+        "enabled": {"type": "bool", "default": True},
+        "keyword_replies": {
+            "type": "json_dict",
+            "max_len": 5000,
+            "default": {
+                "你好": "你好呀！我是 Oopz Bot ~",
+                "帮助": "输入 /help 查看可用命令",
+                "ping": "pong!",
+            },
         },
     },
     "profanity": {
-        "target": PROFANITY_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "mute_duration": {"type": "int", "min": 1, "max": 10080},
-            "recall_message": {"type": "bool"},
-            "skip_admins": {"type": "bool"},
-            "warn_before_mute": {"type": "bool"},
-            "context_detection": {"type": "bool"},
-            "context_window": {"type": "int", "min": 5, "max": 300},
-            "context_max_messages": {"type": "int", "min": 1, "max": 50},
-            "ai_detection": {"type": "bool"},
-            "ai_min_length": {"type": "int", "min": 1, "max": 50},
-        },
+        "enabled": {"type": "bool", "default": True},
+        "mute_duration": {"type": "int", "min": 1, "max": 10080, "default": 5},
+        "recall_message": {"type": "bool", "default": True},
+        "skip_admins": {"type": "bool", "default": True},
+        "warn_before_mute": {"type": "bool", "default": False},
+        "context_detection": {"type": "bool", "default": True},
+        "context_window": {"type": "int", "min": 5, "max": 300, "default": 30},
+        "context_max_messages": {"type": "int", "min": 1, "max": 50, "default": 10},
+        "ai_detection": {"type": "bool", "default": True},
+        "ai_min_length": {"type": "int", "min": 1, "max": 50, "default": 2},
     },
     "oopz": {
-        "target": OOPZ_CONFIG,
-        "fields": {
-            "login_phone": {"type": "str", "max_len": 128, "sensitive": True, "expose_in_admin": True},
-            "login_password": {"type": "str", "max_len": 256, "sensitive": True},
-            "default_area": {"type": "str", "max_len": 128},
-            "default_channel": {"type": "str", "max_len": 128},
-            "proxy": {"type": "str", "max_len": 300},
-            "agora_app_id": {"type": "str", "max_len": 128},
-            "agora_init_timeout": {"type": "int", "min": 10, "max": 7200},
-        },
+        "login_phone": {"type": "str", "max_len": 128, "sensitive": True, "expose_in_admin": True, "default": ""},
+        "login_password": {"type": "str", "max_len": 256, "sensitive": True, "default": ""},
+        "default_area": {"type": "str", "max_len": 128, "default": ""},
+        "default_channel": {"type": "str", "max_len": 128, "default": ""},
+        "proxy": {"type": "str", "max_len": 300, "default": ""},
+        "agora_app_id": {"type": "str", "max_len": 128, "default": "358eebceadb94c2a9fd91ecd7b341602"},
+        "agora_init_timeout": {"type": "int", "min": 10, "max": 7200, "default": 1800},
     },
     "netease": {
-        "target": NETEASE_CLOUD,
-        "fields": {
-            "base_url": {"type": "str", "max_len": 300},
-            "cookie": {"type": "str", "max_len": 6000, "sensitive": True, "expose_in_admin": True},
-            "audio_download_timeout": {"type": "int", "min": 5, "max": 600},
-            "audio_download_retries": {"type": "int", "min": 0, "max": 10},
-            "audio_quality": {"type": "str", "max_len": 20},
-        },
+        "base_url": {"type": "str", "max_len": 300, "default": "http://localhost:3000"},
+        "cookie": {"type": "str", "max_len": 6000, "sensitive": True, "expose_in_admin": True, "default": ""},
+        "audio_download_timeout": {"type": "int", "min": 5, "max": 600, "default": 120},
+        "audio_download_retries": {"type": "int", "min": 0, "max": 10, "default": 2},
+        "audio_quality": {"type": "str", "max_len": 20, "default": "standard"},
     },
     "redis": {
-        "target": REDIS_CONFIG,
-        "fields": {
-            "host": {"type": "str", "max_len": 200},
-            "port": {"type": "int", "min": 1, "max": 65535},
-            "password": {"type": "str", "max_len": 256, "sensitive": True},
-            "db": {"type": "int", "min": 0, "max": 15},
-            "decode_responses": {"type": "bool"},
-        },
+        "host": {"type": "str", "max_len": 200, "default": "127.0.0.1"},
+        "port": {"type": "int", "min": 1, "max": 65535, "default": 6379},
+        "password": {"type": "str", "max_len": 256, "sensitive": True, "default": ""},
+        "db": {"type": "int", "min": 0, "max": 15, "default": 0},
+        "decode_responses": {"type": "bool", "default": True},
     },
     "doubao_chat": {
-        "target": DOUBAO_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "base_url": {"type": "str", "max_len": 300},
-            "api_key": {"type": "str", "max_len": 256, "sensitive": True, "expose_in_admin": True},
-            "model": {"type": "str", "max_len": 120},
-            "system_prompt": {"type": "str", "max_len": 5000},
-            "max_tokens": {"type": "int", "min": 1, "max": 8192},
-            "temperature": {"type": "float", "min": 0, "max": 2},
-            "context_max_rounds": {"type": "int", "min": 0, "max": 50},
-            "context_ttl_seconds": {"type": "int", "min": 0, "max": 86400},
-        },
+        "enabled": {"type": "bool", "default": False},
+        "base_url": {"type": "str", "max_len": 300, "default": "https://ark.cn-beijing.volces.com/api/v3"},
+        "api_key": {"type": "str", "max_len": 256, "sensitive": True, "expose_in_admin": True, "default": ""},
+        "model": {"type": "str", "max_len": 120, "default": "doubao-1-5-pro-32k-250115"},
+        "system_prompt": {"type": "str", "max_len": 5000, "default": "你是 Oopz Bot，一个活泼有趣的聊天机器人。回复简洁友好，不超过100字。"},
+        "max_tokens": {"type": "int", "min": 1, "max": 8192, "default": 256},
+        "temperature": {"type": "float", "min": 0, "max": 2, "default": 0.7},
+        "context_max_rounds": {"type": "int", "min": 0, "max": 50, "default": 10},
+        "context_ttl_seconds": {"type": "int", "min": 0, "max": 86400, "default": 1800},
     },
     "doubao_image": {
-        "target": DOUBAO_IMAGE_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "base_url": {"type": "str", "max_len": 300},
-            "api_key": {"type": "str", "max_len": 256, "sensitive": True, "expose_in_admin": True},
-            "model": {"type": "str", "max_len": 120},
-            "size": {"type": "str", "max_len": 30},
-            "watermark": {"type": "bool"},
-        },
+        "enabled": {"type": "bool", "default": False},
+        "base_url": {"type": "str", "max_len": 300, "default": "https://ark.cn-beijing.volces.com/api/v3"},
+        "api_key": {"type": "str", "max_len": 256, "sensitive": True, "expose_in_admin": True, "default": ""},
+        "model": {"type": "str", "max_len": 120, "default": "doubao-seedream-4-5-251128"},
+        "size": {"type": "str", "max_len": 30, "default": "1920x1920"},
+        "watermark": {"type": "bool", "default": False},
     },
     "scheduler": {
-        "target": SCHEDULER_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "check_interval_seconds": {"type": "int", "min": 10, "max": 3600},
-        },
+        "enabled": {"type": "bool", "default": True},
+        "check_interval_seconds": {"type": "int", "min": 10, "max": 3600, "default": 30},
     },
     "reminder": {
-        "target": REMINDER_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "max_per_user": {"type": "int", "min": 1, "max": 100},
-            "max_delay_hours": {"type": "int", "min": 1, "max": 720},
-            "check_interval_seconds": {"type": "int", "min": 5, "max": 3600},
-        },
+        "enabled": {"type": "bool", "default": True},
+        "max_per_user": {"type": "int", "min": 1, "max": 100, "default": 5},
+        "max_delay_hours": {"type": "int", "min": 1, "max": 720, "default": 72},
+        "check_interval_seconds": {"type": "int", "min": 5, "max": 3600, "default": 15},
     },
     "music": {
-        "target": MUSIC_CONFIG,
-        "fields": {
-            "auto_play_enabled": {"type": "bool"},
-            "default_volume": {"type": "int", "min": 0, "max": 100},
-        },
+        "auto_play_enabled": {"type": "bool", "default": True},
+        "default_volume": {"type": "int", "min": 0, "max": 100, "default": 50},
     },
     "command_cooldown": {
-        "target": COMMAND_COOLDOWN_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "default_seconds": {"type": "int", "min": 0, "max": 300},
-            "exempt_admins": {"type": "bool"},
-        },
+        "enabled": {"type": "bool", "default": False},
+        "default_seconds": {"type": "int", "min": 0, "max": 300, "default": 3},
+        "exempt_admins": {"type": "bool", "default": True},
     },
     "qq_music": {
-        "target": QQ_MUSIC_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "base_url": {"type": "str", "max_len": 300},
-            "cookie": {"type": "str", "max_len": 3000, "sensitive": True, "expose_in_admin": True},
-        },
+        "enabled": {"type": "bool", "default": False},
+        "base_url": {"type": "str", "max_len": 300, "default": "http://localhost:3300"},
+        "cookie": {"type": "str", "max_len": 3000, "sensitive": True, "expose_in_admin": True, "default": ""},
     },
     "bilibili_music": {
-        "target": BILIBILI_MUSIC_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-            "cookie": {"type": "str", "max_len": 3000, "sensitive": True, "expose_in_admin": True},
-        },
+        "enabled": {"type": "bool", "default": False},
+        "cookie": {"type": "str", "max_len": 3000, "sensitive": True, "expose_in_admin": True, "default": ""},
     },
     "message_stats": {
-        "target": MESSAGE_STATS_CONFIG,
-        "fields": {
-            "enabled": {"type": "bool"},
-        },
+        "enabled": {"type": "bool", "default": True},
     },
+}
+
+# 由 schema 派生的「每分组默认值字典」—— 运行时兜底与默认值查询的唯一出处。
+GROUP_DEFAULTS: dict[str, dict] = {
+    group: {
+        field: copy.deepcopy(meta["default"])
+        for field, meta in fields.items()
+        if "default" in meta
+    }
+    for group, fields in CONFIG_FIELD_SCHEMA.items()
+}
+
+
+def group_defaults(group: str) -> dict:
+    """返回某分组的默认值字典副本（schema 派生）。"""
+    return copy.deepcopy(GROUP_DEFAULTS.get(group, {}))
+
+
+def config_default(group: str, field: str):
+    """读取单个字段的默认值（schema 派生）。"""
+    return GROUP_DEFAULTS[group][field]
+
+
+def _resolve_group_target(group: str) -> dict:
+    """从 config.py 读取分组配置；缺失时回退到 schema 派生的默认值。"""
+    value = getattr(runtime_config, CONFIG_GROUP_SOURCES[group], None)
+    if isinstance(value, dict):
+        return value
+    return group_defaults(group)
+
+
+# ---------------------------------------------------------------------------
+# 运行时配置引用（与 config.py 中的 dict 为同一对象，支持就地热更新）
+# ---------------------------------------------------------------------------
+
+_GROUP_TARGETS: dict[str, dict] = {group: _resolve_group_target(group) for group in CONFIG_FIELD_SCHEMA}
+
+WEB_PLAYER_CONFIG = _GROUP_TARGETS["web_player"]
+AUTO_RECALL_CONFIG = _GROUP_TARGETS["auto_recall"]
+AREA_JOIN_NOTIFY = _GROUP_TARGETS["area_join_notify"]
+CHAT_CONFIG = _GROUP_TARGETS["chat"]
+PROFANITY_CONFIG = _GROUP_TARGETS["profanity"]
+OOPZ_CONFIG = _GROUP_TARGETS["oopz"]
+NETEASE_CLOUD = _GROUP_TARGETS["netease"]
+REDIS_CONFIG = _GROUP_TARGETS["redis"]
+DOUBAO_CONFIG = _GROUP_TARGETS["doubao_chat"]
+DOUBAO_IMAGE_CONFIG = _GROUP_TARGETS["doubao_image"]
+SCHEDULER_CONFIG = _GROUP_TARGETS["scheduler"]
+REMINDER_CONFIG = _GROUP_TARGETS["reminder"]
+MUSIC_CONFIG = _GROUP_TARGETS["music"]
+COMMAND_COOLDOWN_CONFIG = _GROUP_TARGETS["command_cooldown"]
+QQ_MUSIC_CONFIG = _GROUP_TARGETS["qq_music"]
+BILIBILI_MUSIC_CONFIG = _GROUP_TARGETS["bilibili_music"]
+MESSAGE_STATS_CONFIG = _GROUP_TARGETS["message_stats"]
+
+# ---------------------------------------------------------------------------
+# 配置分组定义（target=运行时 dict，fields=schema；二者均派生自上方单一来源）
+# ---------------------------------------------------------------------------
+
+CONFIG_GROUPS: dict[str, dict] = {
+    group: {"target": _GROUP_TARGETS[group], "fields": CONFIG_FIELD_SCHEMA[group]}
+    for group in CONFIG_FIELD_SCHEMA
 }
 
 CONFIG_BASELINES: dict[str, dict] = {
@@ -241,6 +245,26 @@ CONFIG_BASELINES: dict[str, dict] = {
     for group in CONFIG_GROUPS
     if isinstance(CONFIG_GROUPS[group].get("target"), dict)
 }
+
+
+def config_field_schema() -> dict:
+    """供前端表单下发的字段规范：每字段的 type / default / 数值边界。
+
+    敏感字段不下发 default（其默认即空串，且明文由 config_snapshot 单独控制）。
+    """
+    schema: dict[str, dict] = {}
+    for group, fields in CONFIG_FIELD_SCHEMA.items():
+        section: dict[str, dict] = {}
+        for field, meta in fields.items():
+            entry: dict = {"type": meta["type"]}
+            if not meta.get("sensitive") and "default" in meta:
+                entry["default"] = copy.deepcopy(meta["default"])
+            for bound in ("min", "max"):
+                if bound in meta:
+                    entry[bound] = meta[bound]
+            section[field] = entry
+        schema[group] = section
+    return schema
 
 # ---------------------------------------------------------------------------
 # 配置辅助函数
@@ -250,10 +274,11 @@ _DEFAULT_COOKIE_MAX_AGE = 7 * 24 * 3600  # 7 days
 
 
 def token_ttl_seconds() -> int:
+    default = config_default("web_player", "token_ttl_seconds")
     try:
-        ttl = int(WEB_PLAYER_CONFIG.get("token_ttl_seconds", 86400) or 0)
+        ttl = int(WEB_PLAYER_CONFIG.get("token_ttl_seconds", default) or 0)
     except (TypeError, ValueError):
-        ttl = 86400
+        ttl = default
     return ttl if ttl > 0 else 0
 
 
@@ -283,10 +308,11 @@ def admin_password() -> str:
 
 
 def admin_session_ttl_seconds() -> int:
+    default = config_default("web_player", "admin_session_ttl_seconds")
     try:
-        ttl = int(WEB_PLAYER_CONFIG.get("admin_session_ttl_seconds", 43200) or 0)
+        ttl = int(WEB_PLAYER_CONFIG.get("admin_session_ttl_seconds", default) or 0)
     except (TypeError, ValueError):
-        ttl = 43200
+        ttl = default
     return ttl if ttl > 0 else 0
 
 
@@ -295,15 +321,26 @@ def admin_cookie_secure() -> bool:
 
 
 def admin_cookie_name() -> str:
-    return "admin_session"
+    return ADMIN_SESSION_COOKIE
 
 
 def default_music_volume() -> int:
+    default = config_default("music", "default_volume")
     try:
-        volume = int(MUSIC_CONFIG.get("default_volume", 50))
+        volume = int(MUSIC_CONFIG.get("default_volume", default))
     except (TypeError, ValueError):
-        volume = 50
+        volume = default
     return max(0, min(100, volume))
+
+
+def web_host() -> str:
+    """Web 播放器监听地址。"""
+    return str(WEB_PLAYER_CONFIG.get("host", config_default("web_player", "host")))
+
+
+def web_port() -> int:
+    """Web 播放器监听端口。"""
+    return int(WEB_PLAYER_CONFIG.get("port", config_default("web_player", "port")))
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +711,7 @@ def display_web_base_url() -> str:
     host = str(WEB_PLAYER_CONFIG.get("host", "127.0.0.1") or "127.0.0.1").strip()
     if host in {"0.0.0.0", "::"}:
         host = "127.0.0.1"
-    port = WEB_PLAYER_CONFIG.get("port", 8080)
+    port = WEB_PLAYER_CONFIG.get("port") or config_default("web_player", "port")
     return f"http://{host}:{port}"
 
 

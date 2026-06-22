@@ -33,11 +33,11 @@ from web.admin.shared import (
     db_connection,
     ensure_token,
     get_token,
-    json,
     os,
     sys,
     time,
 )
+from core.json_utils import compact_json
 
 router = APIRouter()
 
@@ -65,7 +65,7 @@ async def admin_overview_stream(request: Request):
                 if not alive:
                     break
             payload = _overview_payload()
-            payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            payload_text = compact_json(payload)
             if payload_text != last_payload:
                 yield f"event: overview\ndata: {payload_text}\n\n"
                 last_payload = payload_text

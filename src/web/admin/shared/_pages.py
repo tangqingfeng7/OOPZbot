@@ -8,11 +8,9 @@ from typing import Any
 
 from fastapi.responses import HTMLResponse
 
-from ._runtime import _admin_enabled
+from core.paths import WEB_ASSETS_DIR
 
-# 本模块位于 ``web/admin/shared/`` 包内，比原 ``web/admin/shared.py`` 深一层，
-# 需多上溯一级目录才能定位到 ``web/assets``。
-_WEB_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+from ._runtime import _admin_enabled
 
 _ADMIN_SHELL_TEMPLATE: string.Template | None = None
 
@@ -20,7 +18,7 @@ _ADMIN_SHELL_TEMPLATE: string.Template | None = None
 def _load_admin_template() -> string.Template:
     global _ADMIN_SHELL_TEMPLATE
     if _ADMIN_SHELL_TEMPLATE is None:
-        tpl_path = os.path.join(_WEB_ROOT, "assets", "admin", "admin-shell-template.html")
+        tpl_path = os.path.join(WEB_ASSETS_DIR, "admin", "admin-shell-template.html")
         with open(tpl_path, "r", encoding="utf-8") as f:
             _ADMIN_SHELL_TEMPLATE = string.Template(f.read())
     return _ADMIN_SHELL_TEMPLATE
@@ -182,7 +180,7 @@ def _render_topbar_actions(actions: list[dict[str, str]]) -> str:
 def _render_admin_page(page_key: str) -> HTMLResponse:
     if not _admin_enabled():
         return HTMLResponse("管理后台未启用，请在 WEB_PLAYER_CONFIG 中开启。", status_code=404)
-    pages_dir = os.path.join(_WEB_ROOT, "assets", "admin", "pages")
+    pages_dir = os.path.join(WEB_ASSETS_DIR, "admin", "pages")
     content_path = os.path.join(pages_dir, f"{page_key}_content.html")
     script_path = os.path.join(pages_dir, f"{page_key}_script.js")
     with open(content_path, "r", encoding="utf-8") as f:

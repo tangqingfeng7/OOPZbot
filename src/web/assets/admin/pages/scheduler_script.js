@@ -217,45 +217,6 @@
       }
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录定时任务",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadScheduler();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        setPageState("等待同步", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {}
-      await check();
-    }
-
     AdminShell.registerActions({
       "refresh-scheduler": () => loadScheduler(),
       "create-scheduled": () => createScheduled(),
@@ -264,5 +225,11 @@
       "use-template": (el) => useTemplateToForm(el.dataset.key),
       "create-from-template": (el) => createFromTemplate(el.dataset.key),
     });
-    AdminShell.init({ page: "scheduler", passwordHandler: login });
-    check();
+    AdminShell.bootstrapAuth({
+      page: "scheduler",
+      loggedInText: "已登录定时任务",
+      loginSuccessMessage: null,
+      onLogin: () => loadScheduler(),
+      onLoggedOut: () => setPageState("等待同步", "warning"),
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
 import random
 import re
 import threading
 import time
-import uuid
 from typing import Dict, Optional
 
 import requests
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend
 
 from config import OOPZ_CONFIG, DEFAULT_HEADERS
@@ -20,13 +15,30 @@ try:
     from config import AUTO_RECALL_CONFIG
 except ImportError:
     AUTO_RECALL_CONFIG = {"enabled": False}
+from core.constants import UID_PATTERN
 from core.http_constants import HTTP_TIMEOUT_DEFAULT, HTTP_TIMEOUT_LOGIN
+from core.json_utils import compact_json
 from core.logger_config import get_logger
 from oopz.oopz_api import OopzApiMixin
+from oopz.responses import http_error
+from oopz.signing import oopz_auth_headers, rsa_sign
 from core.proxy_utils import configure_requests_session
 from oopz.oopz_upload import UploadMixin, get_image_info  # noqa: F401 — re-export
 
 logger = get_logger("OopzSender")
+
+# 平台内容审核拒绝时的关键词（命中即视为风控拦截，区别于普通发送失败）
+_SENSITIVE_REJECTION_KEYWORDS = ("敏感", "违规", "涉政", "涉黄")
+
+
+class SensitiveContentError(RuntimeError):
+    """消息被平台内容审核（风控）拦截。区别于网络/参数等普通发送失败，
+    便于上层将其降级为可忽略的 WARNING，而非误报为解析/处理异常。"""
+
+
+def _is_sensitive_rejection(message: str) -> bool:
+    text = str(message or "")
+    return any(kw in text for kw in _SENSITIVE_REJECTION_KEYWORDS)
 
 
 class ClientMessageIdGenerator:
@@ -68,14 +80,6 @@ class Signer:
     # -- ID / 时间戳 --
 
     @staticmethod
-    def request_id() -> str:
-        return str(uuid.uuid4())
-
-    @staticmethod
-    def timestamp_ms() -> str:
-        return str(int(time.time() * 1000))
-
-    @staticmethod
     def timestamp_us() -> str:
         return str(int(time.time() * 1_000_000))
 
@@ -86,34 +90,14 @@ class Signer:
 
     def sign(self, data: str) -> str:
         """RSA PKCS1v15 + SHA256 签名，返回 Base64"""
-        sig = self.private_key.sign(
-            data.encode("utf-8"),
-            padding.PKCS1v15(),
-            hashes.SHA256(),
-        )
-        return base64.b64encode(sig).decode("utf-8")
+        return rsa_sign(self.private_key, data)
 
     def oopz_headers(self, url_path: str, body_str: str) -> Dict[str, str]:
         """
         构造 Oopz 专用签名请求头。
         签名流程: MD5(url_path + body_json) + timestamp → RSA 签名
         """
-        ts = self.timestamp_ms()
-        md5 = hashlib.md5((url_path + body_str).encode("utf-8")).hexdigest()
-        signature = self.sign(md5 + ts)
-
-        return {
-            "Oopz-Sign": signature,
-            "Oopz-Request-Id": self.request_id(),
-            "Oopz-Time": ts,
-            "Oopz-App-Version-Number": OOPZ_CONFIG["app_version"],
-            "Oopz-Channel": OOPZ_CONFIG["channel"],
-            "Oopz-Device-Id": OOPZ_CONFIG["device_id"],
-            "Oopz-Platform": OOPZ_CONFIG["platform"],
-            "Oopz-Web": str(OOPZ_CONFIG["web"]).lower(),
-            "Oopz-Person": OOPZ_CONFIG["person_uid"],
-            "Oopz-Signature": OOPZ_CONFIG["jwt_token"],
-        }
+        return oopz_auth_headers(self.private_key, OOPZ_CONFIG, url_path, body_str)
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +150,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         """统一处理带签名的 HTTP 请求（POST/PUT/DELETE）。"""
         self._throttle()
         if body is not None:
-            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+            body_str = compact_json(body)
             sign_str = body_str
             data = body_str.encode("utf-8")
         elif method.upper() in ("POST", "PUT"):
@@ -321,10 +305,18 @@ class OopzSender(UploadMixin, OopzApiMixin):
             result = resp.json()
             if not result.get("status") and result.get("code") not in (0, "0", 200, "200", "success"):
                 err = result.get("message") or result.get("error") or str(result)
+                if _is_sensitive_rejection(err):
+                    logger.warning(
+                        f"消息被平台风控拦截（{err}），已跳过: "
+                        f"{text[:60]}{'...' if len(text) > 60 else ''}"
+                    )
+                    raise SensitiveContentError(err)
                 raise RuntimeError(f"send_message failed: {err}")
             if auto_recall is not False:
                 self._schedule_auto_recall(resp, area, channel)
             return resp
+        except SensitiveContentError:
+            raise
         except Exception as e:
             logger.error(f"发送失败: {e}")
             raise
@@ -348,7 +340,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         text = value.strip()
         if not text:
             return False
-        if re.fullmatch(r"[a-f0-9]{32}", text):
+        if re.fullmatch(UID_PATTERN, text):
             return False
         return bool(re.fullmatch(r"[0-9A-Z]{20,40}", text))
 
@@ -428,7 +420,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
     def _short_payload(payload: object, limit: int = 240) -> str:
         """将响应体压缩为短日志文本。"""
         try:
-            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            text = compact_json(payload)
         except Exception:
             text = str(payload)
         return text[:limit]
@@ -484,7 +476,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
         try:
             self._throttle()
-            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+            body_str = compact_json(body)
             headers = {**self.session.headers, **self.signer.oopz_headers(full_path, body_str)}
             url = OOPZ_CONFIG["base_url"] + full_path
             resp = self.session.patch(url, headers=headers, data=body_str.encode("utf-8"))
@@ -496,7 +488,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         logger.info(f"打开私信会话 PATCH {full_path} -> HTTP {resp.status_code}, body: {raw[:300]}")
 
         if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
+            return {"error": http_error(resp.status_code, raw)}
 
         try:
             result = resp.json()
@@ -564,7 +556,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
         try:
             self._throttle()
-            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+            body_str = compact_json(body)
             headers = {**self.session.headers, **self.signer.oopz_headers(url_path, body_str)}
             url = OOPZ_CONFIG["base_url"] + url_path
             resp = self.session.post(url, headers=headers, data=body_str.encode("utf-8"))
@@ -578,7 +570,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         if resp.status_code != 200:
             logger.error("发送私信失败：HTTP %s，响应: %s", resp.status_code, raw[:240])
             return {
-                "error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else ""),
+                "error": http_error(resp.status_code, raw),
                 "channel": channel,
                 "debug_reason": "send_dm_http_error",
             }

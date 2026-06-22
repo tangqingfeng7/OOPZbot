@@ -9,11 +9,11 @@ from datetime import datetime, timezone, timedelta
 from typing import Generator, Optional
 
 from core.logger_config import get_logger
+from core.paths import DATA_DIR
 
 logger = get_logger("Database")
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB_PATH = os.path.join(_PROJECT_ROOT, "data", "oopz_cache.db")
+DB_PATH = os.path.join(DATA_DIR, "oopz_cache.db")
 
 CN_TZ = timezone(timedelta(hours=8))
 

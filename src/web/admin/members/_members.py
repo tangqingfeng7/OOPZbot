@@ -16,6 +16,7 @@ from web.admin.shared import (
     _resolve_area,
     get_resolver,
     logger,
+    require_sender,
     time,
 )
 
@@ -202,10 +203,9 @@ def admin_members_list(
 
 
 @router.get("/admin/api/members/blocks")
+@require_sender
 def admin_members_blocks(area: str = Query("")):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     area = area.strip() or _resolve_area()
     data = sender.get_area_blocks(area=area) if area else {"error": "未找到可用域 ID"}
     if "error" in data:
@@ -222,10 +222,9 @@ def admin_members_blocks(area: str = Query("")):
 
 
 @router.get("/admin/api/members/{uid}")
+@require_sender
 def admin_member_detail(uid: str, area: str = Query("")):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     area = area.strip() or _resolve_area()
     detail = sender.get_user_area_detail(uid, area=area) if area else {"error": "未找到域 ID"}
     if "error" in detail:
@@ -291,10 +290,9 @@ def _extract_area(body: dict) -> str:
 
 
 @router.post("/admin/api/members/{uid}/mute")
+@require_sender
 async def admin_member_mute(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     try:
@@ -309,10 +307,9 @@ async def admin_member_mute(uid: str, request: Request):
 
 
 @router.post("/admin/api/members/{uid}/unmute")
+@require_sender
 async def admin_member_unmute(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     result = sender.unmute_user(uid, area=area)
@@ -323,10 +320,9 @@ async def admin_member_unmute(uid: str, request: Request):
 
 
 @router.post("/admin/api/members/{uid}/mute-mic")
+@require_sender
 async def admin_member_mute_mic(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     try:
@@ -341,10 +337,9 @@ async def admin_member_mute_mic(uid: str, request: Request):
 
 
 @router.post("/admin/api/members/{uid}/unmute-mic")
+@require_sender
 async def admin_member_unmute_mic(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     result = sender.unmute_mic(uid, area=area)
@@ -355,10 +350,9 @@ async def admin_member_unmute_mic(uid: str, request: Request):
 
 
 @router.post("/admin/api/members/{uid}/kick")
+@require_sender
 async def admin_member_kick(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     result = sender.remove_from_area(uid, area=area)
@@ -369,10 +363,9 @@ async def admin_member_kick(uid: str, request: Request):
 
 
 @router.post("/admin/api/members/{uid}/block")
+@require_sender
 async def admin_member_block(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     result = sender.block_user_in_area(uid, area=area)
@@ -383,10 +376,9 @@ async def admin_member_block(uid: str, request: Request):
 
 
 @router.post("/admin/api/members/{uid}/unblock")
+@require_sender
 async def admin_member_unblock(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     result = sender.unblock_user_in_area(uid, area=area)
@@ -397,10 +389,9 @@ async def admin_member_unblock(uid: str, request: Request):
 
 
 @router.post("/admin/api/members/{uid}/role")
+@require_sender
 async def admin_member_role(uid: str, request: Request):
     sender = _get_sender()
-    if not sender:
-        return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
     body = await request.json()
     area = _extract_area(body)
     try:

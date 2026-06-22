@@ -111,15 +111,14 @@ _LYRIC_CACHE_MAX = 200
 started_at: float = time.time()
 liked_ids_cache: list = []
 
-KEY_WEB_COMMANDS = "music:web_commands"
-KEY_VOLUME = "music:volume"
+from core.redis_keys import WEB_COMMANDS as KEY_WEB_COMMANDS, VOLUME as KEY_VOLUME, WEB_TOKEN_COOKIE
 
-# 播放模式取值（与 src/music.py 中的 PLAY_MODE_* 常量保持一致）
+# 可选播放模式取值（与 src/music.py 中的 PLAY_MODE_* 常量保持一致）。
+# 注意：autoplay 不是可选模式，仅为队列播完自动续播时的来源标识。
 PLAY_MODE_LIST = "list"
 PLAY_MODE_SINGLE = "single"
 PLAY_MODE_SHUFFLE = "shuffle"
-PLAY_MODE_AUTOPLAY = "autoplay"
-_VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE, PLAY_MODE_AUTOPLAY}
+_VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE}
 
 
 def _read_play_mode(redis_client: redis.Redis, area: str = "") -> str:
@@ -301,7 +300,7 @@ async def _auth_web_api(request: Request, call_next):
 
     if path.startswith("/api/"):
         active = get_token(redis_client=get_redis())
-        client_token = request.cookies.get("web_token", "")
+        client_token = request.cookies.get(WEB_TOKEN_COOKIE, "")
         if not active or not secrets.compare_digest(client_token, active):
             return JSONResponse({"ok": False, "error": "未授权或链接已失效"}, status_code=403)
     if path.startswith("/admin/api/") and path not in {"/admin/api/login"}:
@@ -844,7 +843,7 @@ def index_with_token(token: str, request: Request):
     )
     resp = HTMLResponse(html)
     resp.set_cookie(
-        key="web_token",
+        key=WEB_TOKEN_COOKIE,
         value=token,
         httponly=True,
         samesite="lax",
@@ -867,7 +866,9 @@ app.include_router(admin_router)
 # 启动入口
 # ---------------------------------------------------------------------------
 
-def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
+def run_server(host: str | None = None, port: int | None = None) -> None:
+    host = host or cfg.web_host()
+    port = port or cfg.web_port()
     display = f"[{host}]" if ":" in host else host
     logger.info(f"Web 播放器启动: http://{display}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

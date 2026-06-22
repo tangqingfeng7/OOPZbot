@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 
 import requests as http_requests
 
+from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_DEFAULT, HTTP_TIMEOUT_DOWNLOAD
 from core.logger_config import get_logger
 
@@ -729,7 +730,7 @@ class VoiceClient:
         session = http_requests.Session()
         session.trust_env = False
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Referer": "https://music.163.com/",
         })
 

@@ -22,7 +22,8 @@ class NeteaseApiRuntime:
 
     @staticmethod
     def _project_root() -> Path:
-        return Path(__file__).resolve().parents[3]
+        from core.paths import PROJECT_ROOT_PATH
+        return PROJECT_ROOT_PATH
 
     @classmethod
     def _resolve_api_dir(cls, raw_path: str) -> Path:

@@ -40,6 +40,7 @@ def admin_get_config():
     return JSONResponse({
         "ok": True,
         "config": cfg.config_snapshot(),
+        "schema": cfg.config_field_schema(),
         "runtime": {
             "music_area": _music_area_context(),
         },
@@ -94,6 +95,7 @@ async def admin_update_config(request: Request):
         "config_source": "config.py",
         "message": "配置已保存到 config.py 并立即生效" if persisted else "配置已应用到当前进程",
         "config": cfg.config_snapshot(),
+        "schema": cfg.config_field_schema(),
         "runtime": {
             "music_area": _music_area_context(),
             "music_platforms": music_runtime,

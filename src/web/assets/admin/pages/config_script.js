@@ -517,48 +517,6 @@
       }
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录配置页",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadConfig();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setPageState("等待操作", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
-    }
-
     function setOopzLoginStatus(text, variant) {
       const element = AdminShell.byId("cfg_oopz_login_status");
       if (!element) {
@@ -636,120 +594,150 @@
       cur[keys[keys.length - 1]] = value;
     }
 
-    // type: text | int | float | bool
-    // loadDef: 加载时的默认值；loadNullish 为 true 时用 ?? 取默认（保留 0），否则用 ||。
-    // buildDef: 保存时对空值套用的回退默认（仅个别字段需要）。
+    // 字段类型与默认值由后端 /admin/api/config 的 schema 下发（单一来源），
+    // 这里只保留「DOM id ↔ 配置路径」绑定及少量纯前端展示标记：
+    //   nullish:             加载时用 ?? 取默认（保留 0 等有意义的假值），否则用 ||。
+    //   buildDefault:        保存时输入为空/0 则回退到后端默认（仅个别字段需要）。
+    //   placeholderFromDefault: 用后端默认值作为输入占位提示。
+    let CONFIG_SCHEMA = {};
+
+    function _schemaMeta(path) {
+      const parts = path.split(".");
+      const group = CONFIG_SCHEMA[parts[0]];
+      return (group && group[parts[1]]) || {};
+    }
+
+    // 后端类型 → 前端控件类型：str/str_list/json_dict 统一按 text 控件处理，
+    // 其余 int/float/bool 原样透传。
+    function _fieldType(field) {
+      const t = _schemaMeta(field.path).type;
+      return (t === "int" || t === "float" || t === "bool") ? t : "text";
+    }
+
+    function _fieldDefault(field) {
+      const d = _schemaMeta(field.path).default;
+      return d === undefined ? "" : d;
+    }
+
     const CONFIG_FIELDS = [
-      { id: "cfg_web_url", path: "web_player.url", type: "text", loadDef: "" },
-      { id: "cfg_web_host", path: "web_player.host", type: "text", loadDef: "0.0.0.0", buildDef: "0.0.0.0" },
-      { id: "cfg_web_port", path: "web_player.port", type: "int", loadDef: 8080, buildDef: 8080 },
-      { id: "cfg_web_token_ttl", path: "web_player.token_ttl_seconds", type: "int", loadDef: 0 },
-      { id: "cfg_web_cookie_age", path: "web_player.cookie_max_age_seconds", type: "int", loadDef: 0 },
-      { id: "cfg_link_idle", path: "web_player.link_idle_release_seconds", type: "int", loadDef: 0 },
-      { id: "cfg_cookie_secure", path: "web_player.cookie_secure", type: "bool" },
-      { id: "cfg_admin_session_ttl", path: "web_player.admin_session_ttl_seconds", type: "int", loadDef: 0 },
-      { id: "cfg_admin_cookie_secure", path: "web_player.admin_cookie_secure", type: "bool" },
+      { id: "cfg_web_url", path: "web_player.url" },
+      { id: "cfg_web_host", path: "web_player.host", buildDefault: true, placeholderFromDefault: true },
+      { id: "cfg_web_port", path: "web_player.port", buildDefault: true, placeholderFromDefault: true },
+      { id: "cfg_web_token_ttl", path: "web_player.token_ttl_seconds", nullish: true },
+      { id: "cfg_web_cookie_age", path: "web_player.cookie_max_age_seconds", nullish: true },
+      { id: "cfg_link_idle", path: "web_player.link_idle_release_seconds", nullish: true },
+      { id: "cfg_cookie_secure", path: "web_player.cookie_secure" },
+      { id: "cfg_admin_session_ttl", path: "web_player.admin_session_ttl_seconds", nullish: true },
+      { id: "cfg_admin_cookie_secure", path: "web_player.admin_cookie_secure" },
 
-      { id: "cfg_auto_recall_enabled", path: "auto_recall.enabled", type: "bool" },
-      { id: "cfg_auto_recall_delay", path: "auto_recall.delay", type: "int", loadDef: 30 },
+      { id: "cfg_auto_recall_enabled", path: "auto_recall.enabled" },
+      { id: "cfg_auto_recall_delay", path: "auto_recall.delay" },
 
-      { id: "cfg_area_notify_enabled", path: "area_join_notify.enabled", type: "bool" },
-      { id: "cfg_area_poll", path: "area_join_notify.poll_interval_seconds", type: "int", loadDef: 2 },
-      { id: "cfg_area_auto_role_id", path: "area_join_notify.auto_assign_role_id", type: "text", loadDef: "" },
-      { id: "cfg_area_auto_role_name", path: "area_join_notify.auto_assign_role_name", type: "text", loadDef: "" },
-      { id: "cfg_notify_join_tpl", path: "area_join_notify.message_template", type: "text", loadDef: "" },
-      { id: "cfg_notify_leave_tpl", path: "area_join_notify.message_template_leave", type: "text", loadDef: "" },
+      { id: "cfg_area_notify_enabled", path: "area_join_notify.enabled" },
+      { id: "cfg_area_poll", path: "area_join_notify.poll_interval_seconds" },
+      { id: "cfg_area_auto_role_id", path: "area_join_notify.auto_assign_role_id" },
+      { id: "cfg_area_auto_role_name", path: "area_join_notify.auto_assign_role_name" },
+      { id: "cfg_notify_join_tpl", path: "area_join_notify.message_template" },
+      { id: "cfg_notify_leave_tpl", path: "area_join_notify.message_template_leave" },
 
-      { id: "cfg_chat_enabled", path: "chat.enabled", type: "bool" },
+      { id: "cfg_chat_enabled", path: "chat.enabled" },
 
-      { id: "cfg_profanity_enabled", path: "profanity.enabled", type: "bool" },
-      { id: "cfg_profanity_recall", path: "profanity.recall_message", type: "bool" },
-      { id: "cfg_mute_duration", path: "profanity.mute_duration", type: "int", loadDef: 5 },
-      { id: "cfg_warn_before_mute", path: "profanity.warn_before_mute", type: "bool" },
-      { id: "cfg_skip_admins", path: "profanity.skip_admins", type: "bool" },
-      { id: "cfg_context_detection", path: "profanity.context_detection", type: "bool" },
-      { id: "cfg_context_window", path: "profanity.context_window", type: "int", loadDef: 30 },
-      { id: "cfg_context_max_messages", path: "profanity.context_max_messages", type: "int", loadDef: 10 },
-      { id: "cfg_ai_detection", path: "profanity.ai_detection", type: "bool" },
-      { id: "cfg_ai_min_length", path: "profanity.ai_min_length", type: "int", loadDef: 2 },
+      { id: "cfg_profanity_enabled", path: "profanity.enabled" },
+      { id: "cfg_profanity_recall", path: "profanity.recall_message" },
+      { id: "cfg_mute_duration", path: "profanity.mute_duration" },
+      { id: "cfg_warn_before_mute", path: "profanity.warn_before_mute" },
+      { id: "cfg_skip_admins", path: "profanity.skip_admins" },
+      { id: "cfg_context_detection", path: "profanity.context_detection" },
+      { id: "cfg_context_window", path: "profanity.context_window" },
+      { id: "cfg_context_max_messages", path: "profanity.context_max_messages" },
+      { id: "cfg_ai_detection", path: "profanity.ai_detection" },
+      { id: "cfg_ai_min_length", path: "profanity.ai_min_length" },
 
-      { id: "cfg_oopz_default_area", path: "oopz.default_area", type: "text", loadDef: "" },
-      { id: "cfg_oopz_default_channel", path: "oopz.default_channel", type: "text", loadDef: "" },
-      { id: "cfg_oopz_login_phone", path: "oopz.login_phone", type: "text", loadDef: "" },
-      { id: "cfg_agora_app_id", path: "oopz.agora_app_id", type: "text", loadDef: "" },
-      { id: "cfg_agora_timeout", path: "oopz.agora_init_timeout", type: "int", loadDef: 1800, buildDef: 1800 },
+      { id: "cfg_oopz_default_area", path: "oopz.default_area" },
+      { id: "cfg_oopz_default_channel", path: "oopz.default_channel" },
+      { id: "cfg_oopz_login_phone", path: "oopz.login_phone" },
+      { id: "cfg_agora_app_id", path: "oopz.agora_app_id" },
+      { id: "cfg_agora_timeout", path: "oopz.agora_init_timeout", buildDefault: true },
 
-      { id: "cfg_netease_base_url", path: "netease.base_url", type: "text", loadDef: "" },
-      { id: "cfg_netease_timeout", path: "netease.audio_download_timeout", type: "int", loadDef: 120 },
-      { id: "cfg_netease_retries", path: "netease.audio_download_retries", type: "int", loadDef: 2 },
-      { id: "cfg_netease_quality", path: "netease.audio_quality", type: "text", loadDef: "standard", buildDef: "standard" },
+      { id: "cfg_netease_base_url", path: "netease.base_url", placeholderFromDefault: true },
+      { id: "cfg_netease_timeout", path: "netease.audio_download_timeout" },
+      { id: "cfg_netease_retries", path: "netease.audio_download_retries" },
+      { id: "cfg_netease_quality", path: "netease.audio_quality", buildDefault: true },
 
-      { id: "cfg_redis_host", path: "redis.host", type: "text", loadDef: "" },
-      { id: "cfg_redis_port", path: "redis.port", type: "int", loadDef: 6379 },
-      { id: "cfg_redis_db", path: "redis.db", type: "int", loadDef: 0 },
-      { id: "cfg_redis_decode", path: "redis.decode_responses", type: "bool" },
+      { id: "cfg_redis_host", path: "redis.host" },
+      { id: "cfg_redis_port", path: "redis.port" },
+      { id: "cfg_redis_db", path: "redis.db" },
+      { id: "cfg_redis_decode", path: "redis.decode_responses" },
 
-      { id: "cfg_doubao_enabled", path: "doubao_chat.enabled", type: "bool" },
-      { id: "cfg_doubao_base_url", path: "doubao_chat.base_url", type: "text", loadDef: "" },
-      { id: "cfg_doubao_model", path: "doubao_chat.model", type: "text", loadDef: "" },
-      { id: "cfg_doubao_max_tokens", path: "doubao_chat.max_tokens", type: "int", loadDef: 256 },
-      { id: "cfg_doubao_temperature", path: "doubao_chat.temperature", type: "float", loadDef: 0.7, loadNullish: true },
-      { id: "cfg_doubao_system_prompt", path: "doubao_chat.system_prompt", type: "text", loadDef: "" },
-      { id: "cfg_doubao_context_rounds", path: "doubao_chat.context_max_rounds", type: "int", loadDef: 0, loadNullish: true },
-      { id: "cfg_doubao_context_ttl", path: "doubao_chat.context_ttl_seconds", type: "int", loadDef: 0, loadNullish: true },
+      { id: "cfg_doubao_enabled", path: "doubao_chat.enabled" },
+      { id: "cfg_doubao_base_url", path: "doubao_chat.base_url" },
+      { id: "cfg_doubao_model", path: "doubao_chat.model" },
+      { id: "cfg_doubao_max_tokens", path: "doubao_chat.max_tokens" },
+      { id: "cfg_doubao_temperature", path: "doubao_chat.temperature", nullish: true },
+      { id: "cfg_doubao_system_prompt", path: "doubao_chat.system_prompt" },
+      { id: "cfg_doubao_context_rounds", path: "doubao_chat.context_max_rounds", nullish: true },
+      { id: "cfg_doubao_context_ttl", path: "doubao_chat.context_ttl_seconds", nullish: true },
 
-      { id: "cfg_doubao_img_enabled", path: "doubao_image.enabled", type: "bool" },
-      { id: "cfg_doubao_img_base_url", path: "doubao_image.base_url", type: "text", loadDef: "" },
-      { id: "cfg_doubao_img_model", path: "doubao_image.model", type: "text", loadDef: "" },
-      { id: "cfg_doubao_img_size", path: "doubao_image.size", type: "text", loadDef: "" },
-      { id: "cfg_doubao_img_watermark", path: "doubao_image.watermark", type: "bool" },
+      { id: "cfg_doubao_img_enabled", path: "doubao_image.enabled" },
+      { id: "cfg_doubao_img_base_url", path: "doubao_image.base_url" },
+      { id: "cfg_doubao_img_model", path: "doubao_image.model" },
+      { id: "cfg_doubao_img_size", path: "doubao_image.size" },
+      { id: "cfg_doubao_img_watermark", path: "doubao_image.watermark" },
 
-      { id: "cfg_music_auto_play", path: "music.auto_play_enabled", type: "bool" },
-      { id: "cfg_music_volume", path: "music.default_volume", type: "int", loadDef: 50, loadNullish: true },
+      { id: "cfg_music_auto_play", path: "music.auto_play_enabled" },
+      { id: "cfg_music_volume", path: "music.default_volume", nullish: true },
 
-      { id: "cfg_cooldown_enabled", path: "command_cooldown.enabled", type: "bool" },
-      { id: "cfg_cooldown_seconds", path: "command_cooldown.default_seconds", type: "int", loadDef: 3, loadNullish: true },
-      { id: "cfg_cooldown_exempt_admins", path: "command_cooldown.exempt_admins", type: "bool" },
+      { id: "cfg_cooldown_enabled", path: "command_cooldown.enabled" },
+      { id: "cfg_cooldown_seconds", path: "command_cooldown.default_seconds", nullish: true },
+      { id: "cfg_cooldown_exempt_admins", path: "command_cooldown.exempt_admins" },
 
-      { id: "cfg_qq_music_enabled", path: "qq_music.enabled", type: "bool" },
-      { id: "cfg_qq_music_base_url", path: "qq_music.base_url", type: "text", loadDef: "" },
+      { id: "cfg_qq_music_enabled", path: "qq_music.enabled" },
+      { id: "cfg_qq_music_base_url", path: "qq_music.base_url", placeholderFromDefault: true },
 
-      { id: "cfg_bilibili_enabled", path: "bilibili_music.enabled", type: "bool" },
+      { id: "cfg_bilibili_enabled", path: "bilibili_music.enabled" },
 
-      { id: "cfg_stats_enabled", path: "message_stats.enabled", type: "bool" },
+      { id: "cfg_stats_enabled", path: "message_stats.enabled" },
 
-      { id: "cfg_scheduler_enabled", path: "scheduler.enabled", type: "bool" },
-      { id: "cfg_scheduler_interval", path: "scheduler.check_interval_seconds", type: "int", loadDef: 30, loadNullish: true },
-      { id: "cfg_reminder_enabled", path: "reminder.enabled", type: "bool" },
-      { id: "cfg_reminder_max_per_user", path: "reminder.max_per_user", type: "int", loadDef: 5, loadNullish: true },
-      { id: "cfg_reminder_max_delay", path: "reminder.max_delay_hours", type: "int", loadDef: 72, loadNullish: true },
-      { id: "cfg_reminder_interval", path: "reminder.check_interval_seconds", type: "int", loadDef: 15, loadNullish: true },
+      { id: "cfg_scheduler_enabled", path: "scheduler.enabled" },
+      { id: "cfg_scheduler_interval", path: "scheduler.check_interval_seconds", nullish: true },
+      { id: "cfg_reminder_enabled", path: "reminder.enabled" },
+      { id: "cfg_reminder_max_per_user", path: "reminder.max_per_user", nullish: true },
+      { id: "cfg_reminder_max_delay", path: "reminder.max_delay_hours", nullish: true },
+      { id: "cfg_reminder_interval", path: "reminder.check_interval_seconds", nullish: true },
     ];
 
     function _loadField(config, field) {
-      if (field.type === "bool") {
+      if (_fieldType(field) === "bool") {
         setVal(field.id, _cfgGet(config, field.path));
         return;
       }
       const raw = _cfgGet(config, field.path);
-      setVal(field.id, field.loadNullish ? (raw ?? field.loadDef) : (raw || field.loadDef));
+      const def = _fieldDefault(field);
+      setVal(field.id, field.nullish ? (raw ?? def) : (raw || def));
+      if (field.placeholderFromDefault) {
+        const element = AdminShell.byId(field.id);
+        if (element && def !== "" && def != null) {
+          element.placeholder = String(def);
+        }
+      }
     }
 
     function _buildField(updates, field) {
+      const type = _fieldType(field);
       let value;
-      if (field.type === "bool") {
+      if (type === "bool") {
         value = chk(field.id);
-      } else if (field.type === "int") {
+      } else if (type === "int") {
         value = getInt(field.id);
-        if (field.buildDef !== undefined) {
-          value = value || field.buildDef;
+        if (field.buildDefault) {
+          value = value || Number(_fieldDefault(field));
         }
-      } else if (field.type === "float") {
+      } else if (type === "float") {
         value = getFloat(field.id);
       } else {
         value = val(field.id);
-        if (field.buildDef !== undefined) {
-          value = value || field.buildDef;
+        if (field.buildDefault) {
+          value = value || _fieldDefault(field);
         }
       }
       _cfgSet(updates, field.path, value);
@@ -759,6 +747,7 @@
       const data = await AdminShell.req("/admin/api/config");
       const config = data.config || {};
       const runtime = data.runtime || {};
+      CONFIG_SCHEMA = data.schema || CONFIG_SCHEMA;
 
       CONFIG_FIELDS.forEach(function (field) {
         _loadField(config, field);
@@ -890,8 +879,13 @@
       "bilibili-qr-save": () => saveBilibiliQrCookie(true),
       "proxy-mode": () => _applyProxyModeState(),
     });
-    AdminShell.init({ page: "config", passwordHandler: login });
     initTabs();
     AdminShell.upgradeSelect("cfg_proxy_mode");
     AdminShell.upgradeSelect("cfg_proxy_scheme");
-    check();
+    AdminShell.bootstrapAuth({
+      page: "config",
+      loggedInText: "已登录配置页",
+      onLogin: () => loadConfig(),
+      onLoggedOut: () => setPageState("等待操作", "warning"),
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

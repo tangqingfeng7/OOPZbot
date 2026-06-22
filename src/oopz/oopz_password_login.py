@@ -19,12 +19,15 @@ import requests
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_LOGIN
+from core.json_utils import compact_json
 from core.logger_config import get_logger
+from core.paths import PROJECT_ROOT
+from oopz.signing import build_oopz_sign
 
 logger = get_logger("OopzPasswordLogin")
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.py")
 CONFIG_EXAMPLE_PATH = os.path.join(PROJECT_ROOT, "config.example.py")
 PRIVATE_KEY_PATH = os.path.join(PROJECT_ROOT, "private_key.py")
@@ -416,10 +419,6 @@ def _safe_response_error(payload: Any) -> str:
     return "登录失败，请检查账号密码或风控验证"
 
 
-def _compact_json(data: Mapping[str, Any]) -> str:
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-
-
 def _now_ms() -> str:
     return str(int(time.time() * 1000))
 
@@ -478,11 +477,8 @@ def _encrypt_password_code(password: str, public_n: str) -> str:
 
 
 def _build_oopz_sign(*, path: str, body: str, oopz_time: str, private_key_pem: str) -> str:
-    digest = hashlib.md5((path + body).encode("utf-8")).hexdigest()
-    sign_input = (digest + oopz_time).encode("utf-8")
     private_key = _load_signing_private_key(private_key_pem)
-    signature = private_key.sign(sign_input, padding.PKCS1v15(), hashes.SHA256())
-    return base64.b64encode(signature).decode("utf-8")
+    return build_oopz_sign(private_key, path, body, oopz_time)
 
 
 def _build_password_login_body(
@@ -508,7 +504,7 @@ def _build_password_login_body(
         "graphics": "TBD",
         "clientVersion": CLIENT_VERSION,
     }
-    return _compact_json(payload)
+    return compact_json(payload)
 
 
 def _build_password_login_headers(
@@ -529,11 +525,7 @@ def _build_password_login_headers(
         "Oopz-Time": oopz_time,
         "Oopz-Web": "true",
         "Origin": "https://web.oopz.cn",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/147.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": USER_AGENT,
         "Oopz-Sign": _build_oopz_sign(
             path=LOGIN_RESPONSE_PATH,
             body=body,

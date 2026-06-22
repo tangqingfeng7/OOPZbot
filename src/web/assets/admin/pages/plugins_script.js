@@ -9,47 +9,6 @@
       AdminShell.setStatus(text, variant, "pluginState");
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录插件管理",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadPlugins();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setState("等待操作", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {}
-      await check();
-    }
-
     // ---- Plugin list ----
 
     async function loadPlugins() {
@@ -451,5 +410,10 @@
       "plugin-cfg-close": () => closeConfigEditor(),
       "plugin-cfg-save": () => saveConfig(),
     });
-    AdminShell.init({ page: "plugins", passwordHandler: login });
-    check();
+    AdminShell.bootstrapAuth({
+      page: "plugins",
+      loggedInText: "已登录插件管理",
+      onLogin: () => loadPlugins(),
+      onLoggedOut: () => setState("等待操作", "warning"),
+      onLoginError: () => setState("登录失败", "error"),
+    });

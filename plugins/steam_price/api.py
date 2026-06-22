@@ -8,18 +8,13 @@ from typing import Any, Optional
 import requests
 
 from core.logger_config import get_logger
+from plugins._shared.http_client import JsonHttpClient
 
 logger = get_logger("SteamPriceApi")
 
 _ITAD_BASE = "https://api.isthereanydeal.com"
 
 _STEAM_SEARCH_URL = "https://store.steampowered.com/api/storesearch/"
-
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/140.0.0.0 Safari/537.36"
-)
 
 _HAS_CJK = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]")
 
@@ -191,20 +186,23 @@ def _resolve_alias(keyword: str) -> Optional[int]:
     return _GAME_ALIASES.get(normalized)
 
 
-class SteamPriceApiClient:
+class SteamPriceApiClient(JsonHttpClient):
     """IsThereAnyDeal API 封装，提供游戏搜索、价格查询和史低查询能力。
 
     需要在 https://isthereanydeal.com/apps/my/ 注册应用获取免费 API Key。
     """
 
+    _LOG_NAME = "SteamPriceApi"
+
     def __init__(self, config: dict, session: Optional[requests.Session] = None) -> None:
         self._config = config or {}
         self._api_key = str(self._config.get("api_key") or "").strip()
         self._country = str(self._config.get("country") or "CN").strip().upper()
-        self._timeout = max(1, int(self._config.get("request_timeout_sec", 15) or 15))
-        self._retries = max(1, int(self._config.get("request_retries", 2) or 2))
-        self._proxies = None
-        self._session = session or requests.Session()
+        super().__init__(
+            session=session,
+            timeout=int(self._config.get("request_timeout_sec", 15) or 15),
+            retries=int(self._config.get("request_retries", 2) or 2),
+        )
 
     @property
     def configured(self) -> bool:
@@ -215,42 +213,16 @@ class SteamPriceApiClient:
     # ------------------------------------------------------------------
 
     def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> Any:
-        params = params or {}
-        last_error = ""
-        for attempt in range(1, self._retries + 1):
-            try:
-                resp = self._session.get(
-                    url, params=params,
-                    headers={"User-Agent": _UA},
-                    timeout=self._timeout, proxies=self._proxies,
-                )
-                resp.raise_for_status()
-                return resp.json()
-            except requests.RequestException as exc:
-                last_error = str(exc)
-                logger.warning("SteamPriceApi GET %s attempt %d: %s", url, attempt, exc)
-            except ValueError as exc:
-                return {"_error": f"JSON 解析失败: {exc}"}
-        return {"_error": last_error}
+        return self.request_json("GET", url, params=params or {})
 
     def _post_json(self, url: str, body: Any, params: Optional[dict[str, Any]] = None) -> Any:
-        params = params or {}
-        last_error = ""
-        for attempt in range(1, self._retries + 1):
-            try:
-                resp = self._session.post(
-                    url, json=body, params=params,
-                    headers={"User-Agent": _UA, "Content-Type": "application/json"},
-                    timeout=self._timeout, proxies=self._proxies,
-                )
-                resp.raise_for_status()
-                return resp.json()
-            except requests.RequestException as exc:
-                last_error = str(exc)
-                logger.warning("SteamPriceApi POST %s attempt %d: %s", url, attempt, exc)
-            except ValueError as exc:
-                return {"_error": f"JSON 解析失败: {exc}"}
-        return {"_error": last_error}
+        return self.request_json(
+            "POST",
+            url,
+            params=params or {},
+            json=body,
+            headers={"Content-Type": "application/json"},
+        )
 
     # ------------------------------------------------------------------
     # Steam Store 搜索 (无需 API Key，支持中文)

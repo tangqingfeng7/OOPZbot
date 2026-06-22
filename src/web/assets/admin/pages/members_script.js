@@ -606,48 +606,6 @@
 
     /* ========= 初始化 ========= */
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录成员管理",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await loadAreas();
-        await loadMembers();
-        loadBlocks();
-        refreshChannels();
-      } catch (_) {
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        setPageState("等待同步", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {}
-      await check();
-    }
-
     AdminShell.registerActions({
       "refresh-members": () => loadMembers(),
       "load-blocks": () => loadBlocks(),
@@ -672,5 +630,16 @@
       "area-change": () => onAreaChange(),
       "send-area-change": () => onSendAreaChange(),
     });
-    AdminShell.init({ page: "members", passwordHandler: login });
-    check();
+    AdminShell.bootstrapAuth({
+      page: "members",
+      loggedInText: "已登录成员管理",
+      loginSuccessMessage: null,
+      onLogin: async () => {
+        await loadAreas();
+        await loadMembers();
+        loadBlocks();
+        refreshChannels();
+      },
+      onLoggedOut: () => setPageState("等待同步", "warning"),
+      onLoginError: () => setPageState("登录失败", "error"),
+    });

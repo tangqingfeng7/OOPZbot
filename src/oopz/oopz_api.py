@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import copy
-import json
-import re
 import time
-from typing import TYPE_CHECKING, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable, Optional
 
 from config import OOPZ_CONFIG
 from core.logger_config import get_logger
+from oopz.responses import (
+    ApiResult,
+    MutationOutcome,
+    http_error,
+    parse_api_response,
+    parse_mutation_response,
+)
 
 if TYPE_CHECKING:
     import requests as _requests_type
@@ -17,7 +23,122 @@ if TYPE_CHECKING:
 logger = get_logger("OopzApi")
 
 
+@dataclass(frozen=True)
+class RetryPolicy:
+    """声明式重试策略（默认只重试一次、不退避）。
+
+    把「按状态码重试 + 退避」从各方法的手写循环里抽出来，新增一个需要限流重试的接口
+    只需声明一份策略，而非复制一遍 429 循环。
+
+    backoff: ``attempt(从 1 起) -> 等待秒数``；为 None 时不退避。
+    respect_retry_after: 命中 ``Retry-After`` 响应头时优先采用其秒数。
+    """
+
+    attempts: int = 1
+    statuses: tuple[int, ...] = (429,)
+    backoff: Optional[Callable[[int], float]] = None
+    respect_retry_after: bool = True
+
+    def wait_seconds(self, resp: "_requests_type.Response", attempt: int) -> float:
+        if self.respect_retry_after:
+            try:
+                retry_after = int(resp.headers.get("Retry-After", "0") or "0")
+            except Exception:
+                retry_after = 0
+            if retry_after > 0:
+                return float(retry_after)
+        return float(self.backoff(attempt)) if self.backoff else 0.0
+
+
+# 常用策略：限流（429）退避重试，最多 3 次。
+RATE_LIMIT_RETRY = RetryPolicy(attempts=3, backoff=lambda attempt: float(min(attempt, 3)))
+
+
 class OopzApiMixin:
+
+    # ---- 统一请求层 ----
+    #
+    # 一个传输执行器（_send）+ 两个响应归一化入口（_query / _mutation）。
+    # self._get / self._request 由 OopzSender 提供（带签名、限流、401/403/428 鉴权重试）。
+    # 所有业务方法都经由这三者发请求，不再各自手写 try/except、429 循环或 JSON 判定。
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict] = None,
+        body: Optional[dict] = None,
+        retry: Optional[RetryPolicy] = None,
+    ) -> "_requests_type.Response":
+        """已签名 HTTP 请求的唯一传输入口。
+
+        GET 走 ``self._get``（签名含查询参数），其余方法（POST/PUT/DELETE/PATCH）走
+        ``self._request``。``retry`` 命中其状态码时按策略退避重试；传输异常向上抛出，
+        由 :meth:`_query` / :meth:`_mutation` 统一兜底（异常处理只存在于这两处）。
+        """
+        method = method.upper()
+        attempts = retry.attempts if retry else 1
+        resp = None
+        for attempt in range(1, attempts + 1):
+            if method == "GET":
+                resp = self._get(path, params=params)
+            else:
+                resp = self._request(method, path, body)
+            if retry is None or attempt >= attempts or resp.status_code not in retry.statuses:
+                return resp
+            wait = retry.wait_seconds(resp, attempt)
+            logger.warning(
+                "%s %s 被限流 HTTP %s，%.1fs 后重试 (%d/%d)",
+                method, path, resp.status_code, wait, attempt, attempts,
+            )
+            if wait > 0:
+                time.sleep(wait)
+        return resp
+
+    def _query(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict] = None,
+        body: Optional[dict] = None,
+        data_key: str = "data",
+        data_default: object = None,
+        error_with_body: bool = False,
+        retry: Optional[RetryPolicy] = None,
+    ) -> ApiResult:
+        """查询类请求 → :class:`ApiResult`（含传输异常兜底）。"""
+        try:
+            resp = self._send(method, path, params=params, body=body, retry=retry)
+        except Exception as e:
+            return ApiResult(False, error=str(e))
+        return parse_api_response(
+            resp, data_key=data_key, data_default=data_default, error_with_body=error_with_body
+        )
+
+    def _mutation(
+        self,
+        action: str,
+        method: str,
+        path: str,
+        *,
+        body: Optional[dict] = None,
+        accept_code: bool = False,
+        body_limit: int = 200,
+        retry: Optional[RetryPolicy] = None,
+    ) -> MutationOutcome:
+        """变更类请求 → :class:`MutationOutcome`（含传输异常兜底 + 统一原始响应日志）。
+
+        ``action`` 仅用于日志前缀；成功/失败的业务日志与默认文案由调用方决定。
+        """
+        try:
+            resp = self._send(method, path, body=body, retry=retry)
+        except Exception as e:
+            logger.error("%s请求异常: %s", action, e)
+            return MutationOutcome(False, error=str(e))
+        logger.info("%s %s %s -> HTTP %s, body: %s", action, method, path, resp.status_code, (resp.text or "")[:300])
+        return parse_mutation_response(resp, accept_code=accept_code, body_limit=body_limit)
 
     # ---- 域成员查询 ----
 
@@ -70,7 +191,6 @@ class OopzApiMixin:
         area = area or OOPZ_CONFIG["default_area"]
         url_path = "/area/v3/members"
         params = {"area": area, "offsetStart": str(offset_start), "offsetEnd": str(offset_end)}
-        max_attempts = 3
         cache_key = (str(area), int(offset_start), int(offset_end))
         cache_ttl = float(getattr(self, "_area_members_cache_ttl", 2.0))
         stale_ttl = float(getattr(self, "_area_members_stale_ttl", 300.0))
@@ -80,71 +200,33 @@ class OopzApiMixin:
             if cached is not None:
                 return cached
 
+        def _stale_or(error: dict) -> dict:
+            """任何失败（限流/非 200/空/解析失败/异常）都优先回退到 stale_ttl 内的缓存。"""
+            stale = self._get_cached_area_members(cache_key, max_age=stale_ttl)
+            if stale is not None:
+                stale["stale"] = True
+                return stale
+            return error
+
         try:
-            resp = None
-            for attempt in range(1, max_attempts + 1):
-                resp = self._get(url_path, params=params)
-                if resp.status_code != 429:
-                    break
-
-                retry_after = 0
-                try:
-                    retry_after = int(resp.headers.get("Retry-After", "0") or "0")
-                except Exception:
-                    retry_after = 0
-                wait_seconds = retry_after if retry_after > 0 else min(attempt, 3)
-
-                if attempt >= max_attempts:
-                    stale_cached = self._get_cached_area_members(cache_key, max_age=stale_ttl)
-                    if stale_cached is not None:
-                        stale_cached["stale"] = True
-                        stale_cached["rateLimited"] = True
-                        logger.warning(
-                            "获取域成员被限流，返回 %.1fs 内缓存数据 (area=%s, offset=%s-%s)",
-                            stale_ttl,
-                            area,
-                            offset_start,
-                            offset_end,
-                        )
-                        return stale_cached
-                    logger.warning(
-                        "获取域成员被限流: HTTP 429 (area=%s, offset=%s-%s, 已重试%d次)",
-                        area,
-                        offset_start,
-                        offset_end,
-                        max_attempts - 1,
-                    )
-                    return {"error": "HTTP 429"}
-
-                logger.warning(
-                    "获取域成员被限流: HTTP 429 (area=%s, offset=%s-%s), %.1fs 后重试 (%d/%d)",
-                    area,
-                    offset_start,
-                    offset_end,
-                    float(wait_seconds),
-                    attempt,
-                    max_attempts - 1,
-                )
-                time.sleep(wait_seconds)
-
-            if resp is None:
-                return {"error": "未获得响应"}
+            # 限流（429）退避重试统一交给 _send + RATE_LIMIT_RETRY，不再手写循环。
+            resp = self._send("GET", url_path, params=params, retry=RATE_LIMIT_RETRY)
 
             if resp.status_code != 200:
-                logger.debug(f"获取域成员失败: HTTP {resp.status_code}")
-                stale = self._get_cached_area_members(cache_key, max_age=stale_ttl)
-                if stale is not None:
-                    stale["stale"] = True
-                    return stale
-                return {"error": f"HTTP {resp.status_code}"}
+                if resp.status_code == 429:
+                    logger.warning(
+                        "获取域成员被限流: HTTP 429 (area=%s, offset=%s-%s)", area, offset_start, offset_end
+                    )
+                else:
+                    logger.debug(f"获取域成员失败: HTTP {resp.status_code}")
+                fallback = _stale_or({"error": http_error(resp.status_code)})
+                if resp.status_code == 429 and fallback.get("stale"):
+                    fallback["rateLimited"] = True
+                return fallback
 
             if not resp.content:
                 logger.debug("获取域成员失败: HTTP 200 但响应体为空")
-                stale = self._get_cached_area_members(cache_key, max_age=stale_ttl)
-                if stale is not None:
-                    stale["stale"] = True
-                    return stale
-                return {"error": "empty response"}
+                return _stale_or({"error": "empty response"})
 
             try:
                 result = resp.json()
@@ -168,19 +250,12 @@ class OopzApiMixin:
                         resp.status_code,
                         resp.content[:200],
                     )
-                stale = self._get_cached_area_members(cache_key, max_age=stale_ttl)
-                if stale is not None:
-                    stale["stale"] = True
-                    return stale
-                return {"error": "invalid JSON"}
+                return _stale_or({"error": "invalid JSON"})
+
             if not result.get("status"):
                 msg = result.get("message") or result.get("error") or "未知错误"
                 logger.debug(f"获取域成员失败: {msg}")
-                stale = self._get_cached_area_members(cache_key, max_age=stale_ttl)
-                if stale is not None:
-                    stale["stale"] = True
-                    return stale
-                return {"error": msg}
+                return _stale_or({"error": msg})
 
             data = result.get("data", {})
             members = data.get("members", [])
@@ -207,11 +282,7 @@ class OopzApiMixin:
             return data
         except Exception as e:
             logger.error(f"获取域成员异常: {e}")
-            stale = self._get_cached_area_members(cache_key, max_age=stale_ttl)
-            if stale is not None:
-                stale["stale"] = True
-                return stale
-            return {"error": str(e)}
+            return _stale_or({"error": str(e)})
 
     # ---- 频道列表 ----
 
@@ -228,26 +299,15 @@ class OopzApiMixin:
             频道分组列表，每组含 channels 子列表。失败时返回空列表。
         """
         area = area or OOPZ_CONFIG["default_area"]
-        url_path = "/client/v1/area/v1/detail/v1/channels"
-        params = {"area": area}
-
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                logger.error(f"获取频道列表失败: HTTP {resp.status_code}")
-                return []
-            result = resp.json()
-            if not result.get("status"):
-                logger.error(f"获取频道列表失败: {result.get('message') or result.get('error')}")
-                return []
-            groups = result.get("data") or []
-            if not quiet:
-                total = sum(len(g.get("channels") or []) for g in groups)
-                logger.info(f"获取频道列表: {total} 个频道, {len(groups)} 个分组")
-            return groups
-        except Exception as e:
-            logger.error(f"获取频道列表异常: {e}")
+        res = self._query("GET", "/client/v1/area/v1/detail/v1/channels", params={"area": area})
+        if not res.ok:
+            logger.error(f"获取频道列表失败: {res.error}")
             return []
+        groups = res.data or []
+        if not quiet:
+            total = sum(len(g.get("channels") or []) for g in groups)
+            logger.info(f"获取频道列表: {total} 个频道, {len(groups)} 个分组")
+        return groups
 
     def get_channel_setting_info(self, channel: str) -> dict:
         """
@@ -259,25 +319,14 @@ class OopzApiMixin:
         if not channel:
             return {"error": "缺少 channel"}
 
-        url_path = "/area/v3/channel/setting/info"
-        params = {"channel": channel}
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                logger.error(f"获取频道设置失败: HTTP {resp.status_code}")
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                msg = result.get("message") or result.get("error") or "未知错误"
-                logger.error(f"获取频道设置失败: {msg}")
-                return {"error": msg}
-            data = result.get("data", {})
-            if not isinstance(data, dict):
-                return {"error": "频道设置响应格式异常"}
-            return data
-        except Exception as e:
-            logger.error(f"获取频道设置异常: {e}")
-            return {"error": str(e)}
+        res = self._query("GET", "/area/v3/channel/setting/info", params={"channel": channel}, data_default={})
+        if not res.ok:
+            logger.error(f"获取频道设置失败: {res.error}")
+            return {"error": res.error}
+        data = res.data
+        if not isinstance(data, dict):
+            return {"error": "频道设置响应格式异常"}
+        return data
 
     def _pick_channel_group(
         self,
@@ -346,30 +395,18 @@ class OopzApiMixin:
         if resolved_type == "VOICE":
             body["isTemp"] = False
 
-        try:
-            resp = self._post("/client/v1/area/v1/channel/v1/create", body)
-        except Exception as e:
-            logger.error("创建频道异常: %s", e)
-            return {"error": str(e)}
+        res = self._query("POST", "/client/v1/area/v1/channel/v1/create", body=body, error_with_body=True)
+        if not res.ok:
+            # res.raw 非空表示是业务 status=false（区别于 HTTP/JSON 传输失败），保留权限提示。
+            if res.raw is not None:
+                code = res.raw.get("code") or res.raw.get("errorCode") or ""
+                logger.warning("创建频道被拒: %s (code=%s), body=%s", res.error, code, body)
+                hint = "（可能需要域主/管理员权限）" if "服务" in res.error or "权限" in res.error else ""
+                return {"error": f"{res.error}{hint}"}
+            return {"error": res.error}
 
-        raw = resp.text or ""
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-
-        if not result.get("status"):
-            msg = result.get("message") or "创建频道失败"
-            code = result.get("code") or result.get("errorCode") or ""
-            logger.warning("创建频道被拒: %s (code=%s), body=%s", msg, code, body)
-            hint = "（可能需要域主/管理员权限）" if "服务" in msg or "权限" in msg else ""
-            return {"error": f"{msg}{hint}"}
-
-        data = result.get("data", {})
-        channel_id = self._extract_channel_id(data) or self._extract_channel_id(result)
+        data = res.data or {}
+        channel_id = self._extract_channel_id(data) or self._extract_channel_id(res.raw)
         return {
             "status": True,
             "channel": channel_id or "",
@@ -467,25 +504,9 @@ class OopzApiMixin:
                     edit_body["accessible"] = []
                     edit_body["accessibleMembers"] = []
 
-        try:
-            resp = self._post("/area/v3/channel/setting/edit", edit_body)
-        except Exception as e:
-            logger.error("更新频道异常: %s", e)
-            return {"error": str(e)}
-
-        raw = resp.text or ""
-        if resp.status_code != 200:
-            logger.error("更新频道 HTTP %d: %s", resp.status_code, raw[:300])
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-
-        if not result.get("status"):
-            return {"error": result.get("message") or "更新频道失败"}
-
+        out = self._mutation("更新频道", "POST", "/area/v3/channel/setting/edit", body=edit_body)
+        if not out.ok:
+            return {"error": out.error}
         return {"status": True, "message": "频道已更新"}
 
     def create_restricted_text_channel(
@@ -511,7 +532,6 @@ class OopzApiMixin:
 
         default_name = f"登录-{target_uid[-4:]}-{time.strftime('%H%M%S')}"
         channel_name = (name or default_name).strip() or "登录"
-        url_path = "/client/v1/area/v1/channel/v1/create"
         body = {
             "area": area,
             "group": group_id,
@@ -520,28 +540,12 @@ class OopzApiMixin:
             "secret": True,
         }
 
-        try:
-            resp = self._post(url_path, body)
-        except Exception as e:
-            logger.error(f"创建受限频道异常: {e}")
-            return {"error": str(e)}
+        res = self._query("POST", "/client/v1/area/v1/channel/v1/create", body=body, error_with_body=True)
+        if not res.ok:
+            return {"error": res.error}
 
-        raw = resp.text or ""
-        logger.info(f"创建受限频道 POST {url_path} -> HTTP {resp.status_code}, body: {raw[:300]}")
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-
-        if not result.get("status"):
-            msg = result.get("message") or result.get("error") or "创建频道失败"
-            return {"error": str(msg)}
-
-        data = result.get("data", {})
-        channel_id = self._extract_channel_id(data) or self._extract_channel_id(result)
+        data = res.data or {}
+        channel_id = self._extract_channel_id(data) or self._extract_channel_id(res.raw)
         if not channel_id:
             return {"error": "创建频道成功，但未能提取频道 ID"}
 
@@ -575,30 +579,10 @@ class OopzApiMixin:
             "password": str(setting.get("password") or ""),
         }
 
-        edit_path = "/area/v3/channel/setting/edit"
-        try:
-            edit_resp = self._post(edit_path, edit_body)
-        except Exception as e:
-            logger.error(f"设置受限频道权限异常: {e}")
+        out = self._mutation("设置受限频道权限", "POST", "/area/v3/channel/setting/edit", body=edit_body)
+        if not out.ok:
             self.delete_channel(channel_id, area=area)
-            return {"error": str(e)}
-
-        edit_raw = edit_resp.text or ""
-        logger.info(f"设置受限频道权限 POST {edit_path} -> HTTP {edit_resp.status_code}, body: {edit_raw[:300]}")
-        if edit_resp.status_code != 200:
-            self.delete_channel(channel_id, area=area)
-            return {"error": f"HTTP {edit_resp.status_code}" + (f" | {edit_raw[:200]}" if edit_raw else "")}
-
-        try:
-            edit_result = edit_resp.json()
-        except Exception:
-            self.delete_channel(channel_id, area=area)
-            return {"error": f"权限设置响应非 JSON: {edit_raw[:200]}"}
-
-        if not edit_result.get("status"):
-            self.delete_channel(channel_id, area=area)
-            msg = edit_result.get("message") or edit_result.get("error") or "权限设置失败"
-            return {"error": str(msg)}
+            return {"error": out.error}
 
         logger.info("创建受限频道成功: channel=%s target=%s", channel_id[:24], target_uid[:12])
         return {
@@ -620,29 +604,11 @@ class OopzApiMixin:
             return {"error": "缺少 channel"}
 
         url_path = f"/client/v1/area/v1/channel/v1/delete?channel={channel}&area={area}"
-
-        try:
-            resp = self._delete(url_path)
-        except Exception as e:
-            logger.error("删除频道异常: %s", e)
-            return {"error": str(e)}
-
-        raw = resp.text or ""
-        logger.info("删除频道 DELETE %s -> HTTP %d, body: %s", url_path, resp.status_code, raw[:300])
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-
-        if result.get("status") is True:
-            return {"status": True, "message": result.get("message") or "已删除频道"}
-
-        err = result.get("message") or result.get("error") or str(result)
-        logger.error("删除频道失败: %s", err)
-        return {"error": err}
+        out = self._mutation("删除频道", "DELETE", url_path)
+        if not out.ok:
+            logger.error("删除频道失败: %s", out.error)
+            return {"error": out.error}
+        return {"status": True, "message": out.server_message or "已删除频道"}
 
     # ---- 已加入的域列表 ----
 
@@ -659,25 +625,16 @@ class OopzApiMixin:
             域信息列表，每个元素包含 id / code / name / avatar / owner 等字段。
             失败时返回空列表。
         """
-        url_path = "/userSubscribeArea/v1/list"
-        try:
-            resp = self._get(url_path)
-            if resp.status_code != 200:
-                logger.error(f"获取已加入域列表失败: HTTP {resp.status_code}")
-                return []
-            result = resp.json()
-            if not result.get("status"):
-                logger.error(f"获取已加入域列表失败: {result.get('message') or result.get('error')}")
-                return []
-            areas = result.get("data", [])
-            if not quiet:
-                logger.info(f"获取已加入域列表: {len(areas)} 个域")
-                for a in areas:
-                    logger.info(f"  域: {a.get('name')} (ID={a.get('id')}, code={a.get('code')})")
-            return areas
-        except Exception as e:
-            logger.error(f"获取已加入域列表异常: {e}")
+        res = self._query("GET", "/userSubscribeArea/v1/list", data_default=[])
+        if not res.ok:
+            logger.error(f"获取已加入域列表失败: {res.error}")
             return []
+        areas = res.data
+        if not quiet:
+            logger.info(f"获取已加入域列表: {len(areas)} 个域")
+            for a in areas:
+                logger.info(f"  域: {a.get('name')} (ID={a.get('id')}, code={a.get('code')})")
+        return areas
 
     # ---- 域详情（含频道） ----
 
@@ -691,20 +648,11 @@ class OopzApiMixin:
             域信息字典，或 {"error": "..."} 表示失败。
         """
         area = area or OOPZ_CONFIG["default_area"]
-        url_path = "/area/v3/info"
-        params = {"area": area}
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                logger.error(f"获取域详情失败: HTTP {resp.status_code}")
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                return {"error": result.get("message") or result.get("error") or "未知错误"}
-            return result.get("data", {})
-        except Exception as e:
-            logger.error(f"获取域详情异常: {e}")
-            return {"error": str(e)}
+        res = self._query("GET", "/area/v3/info", params={"area": area}, data_default={})
+        if not res.ok:
+            logger.error(f"获取域详情失败: {res.error}")
+            return {"error": res.error}
+        return res.data
 
     def leave_area(self, area: str) -> dict:
         """
@@ -715,24 +663,10 @@ class OopzApiMixin:
         area = str(area or "").strip()
         if not area:
             return {"error": "缺少 area"}
-        url_path = "/client/v1/area/v1/quit"
-        body = {"area": area}
-        try:
-            resp = self._delete(url_path, body)
-        except Exception as e:
-            logger.error("离开域请求异常: %s", e)
-            return {"error": str(e)}
-        raw = resp.text or ""
-        logger.info("离开域 DELETE %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
-            return {"status": True, "message": result.get("message") or "已离开域"}
-        return {"error": result.get("message") or result.get("error") or str(result)}
+        out = self._mutation("离开域", "DELETE", "/client/v1/area/v1/quit", body={"area": area}, accept_code=True)
+        if not out.ok:
+            return {"error": out.error}
+        return {"status": True, "message": out.server_message or "已离开域"}
 
     # ---- 启动时自动填充域/频道名称 ----
 
@@ -782,113 +716,63 @@ class OopzApiMixin:
         """
         if not uids:
             return {}
-        url_path = "/client/v1/person/v1/personInfos"
         result_map: dict[str, dict] = {}
         batch_size = 30
         for i in range(0, len(uids), batch_size):
             batch = uids[i : i + batch_size]
             body = {"persons": batch, "commonIds": []}
-            try:
-                resp = self._post(url_path, body)
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                if not data.get("status"):
-                    continue
-                for person in data.get("data", []):
-                    uid = person.get("uid", "")
-                    if uid:
-                        result_map[uid] = person
-            except Exception as e:
-                logger.debug(f"批量获取用户信息部分失败: {e}")
+            res = self._query("POST", "/client/v1/person/v1/personInfos", body=body, data_default=[])
+            if not res.ok:
+                logger.debug("批量获取用户信息部分失败: %s", res.error)
+                continue
+            for person in res.data:
+                uid = person.get("uid", "")
+                if uid:
+                    result_map[uid] = person
         return result_map
 
     # ---- 好友 / 好友请求 ----
 
     def get_friendship(self) -> list[dict]:
         """获取好友列表。API: GET /client/v1/list/v1/friendship"""
-        url_path = "/client/v1/list/v1/friendship"
-        try:
-            resp = self._get(url_path)
-            if resp.status_code != 200:
-                logger.error("获取好友列表失败: HTTP %s", resp.status_code)
-                return []
-            result = resp.json()
-            if not result.get("status"):
-                logger.error("获取好友列表失败: %s", result.get("message") or result.get("error"))
-                return []
-            data = result.get("data", [])
-            return data if isinstance(data, list) else []
-        except Exception as e:
-            logger.error("获取好友列表异常: %s", e)
+        res = self._query("GET", "/client/v1/list/v1/friendship", data_default=[])
+        if not res.ok:
+            logger.error("获取好友列表失败: %s", res.error)
             return []
+        data = res.data
+        return data if isinstance(data, list) else []
 
     def get_friendship_requests(self) -> list[dict]:
         """获取好友请求列表。API: GET /client/v1/friendship/v1/requests"""
-        url_path = "/client/v1/friendship/v1/requests"
-        try:
-            resp = self._get(url_path)
-            if resp.status_code != 200:
-                logger.error("获取好友请求失败: HTTP %s", resp.status_code)
-                return []
-            result = resp.json()
-            if not result.get("status"):
-                logger.error("获取好友请求失败: %s", result.get("message") or result.get("error"))
-                return []
-            data = result.get("data", {})
-            requests = data.get("requests") if isinstance(data, dict) else []
-            return requests if isinstance(requests, list) else []
-        except Exception as e:
-            logger.error("获取好友请求异常: %s", e)
+        res = self._query("GET", "/client/v1/friendship/v1/requests", data_default={})
+        if not res.ok:
+            logger.error("获取好友请求失败: %s", res.error)
             return []
+        data = res.data
+        requests = data.get("requests") if isinstance(data, dict) else []
+        return requests if isinstance(requests, list) else []
 
     def post_friendship_response(self, target: str, friend_request_id: int, agree: bool) -> dict:
         """接受或拒绝好友请求。API: POST /client/v1/friendship/v1/response"""
         target = str(target or "").strip()
         if not target:
             return {"error": "缺少 target"}
-        url_path = "/client/v1/friendship/v1/response"
         body = {"agree": bool(agree), "friendRequestId": int(friend_request_id), "target": target}
-        try:
-            resp = self._post(url_path, body)
-        except Exception as e:
-            logger.error("处理好友请求异常: %s", e)
-            return {"error": str(e)}
-        raw = resp.text or ""
-        logger.info("处理好友请求 POST %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
-            return {"status": True, "message": result.get("message") or "好友请求已处理"}
-        return {"error": result.get("message") or result.get("error") or str(result)}
+        out = self._mutation("处理好友请求", "POST", "/client/v1/friendship/v1/response", body=body, accept_code=True)
+        if not out.ok:
+            return {"error": out.error}
+        return {"status": True, "message": out.server_message or "好友请求已处理"}
 
     def set_user_remark_name(self, uid: str, remark_name: str = "") -> dict:
         """设置好友备注名。API: POST /person/v1/remarkName/setUserRemarkName"""
         uid = str(uid or "").strip()
         if not uid:
             return {"error": "缺少 uid"}
-        url_path = "/person/v1/remarkName/setUserRemarkName"
         body = {"remarkUid": uid, "remarkName": str(remark_name or "")}
-        try:
-            resp = self._post(url_path, body)
-        except Exception as e:
-            logger.error("设置好友备注异常: %s", e)
-            return {"error": str(e)}
-        raw = resp.text or ""
-        logger.info("设置好友备注 POST %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
-            return {"status": True, "message": result.get("message") or "备注已更新"}
-        return {"error": result.get("message") or result.get("error") or str(result)}
+        out = self._mutation("设置好友备注", "POST", "/person/v1/remarkName/setUserRemarkName", body=body, accept_code=True)
+        if not out.ok:
+            return {"error": out.error}
+        return {"status": True, "message": out.server_message or "备注已更新"}
 
     # ---- 个人详细信息 ----
 
@@ -903,31 +787,20 @@ class OopzApiMixin:
             包含用户信息的字典，或 {"error": "..."} 表示失败
         """
         uid = uid or OOPZ_CONFIG["person_uid"]
-        url_path = "/client/v1/person/v1/personInfos"
         body = {"persons": [uid], "commonIds": []}
 
-        try:
-            resp = self._post(url_path, body)
-            if resp.status_code != 200:
-                logger.error(f"获取个人信息失败: HTTP {resp.status_code}")
-                return {"error": f"HTTP {resp.status_code}"}
+        res = self._query("POST", "/client/v1/person/v1/personInfos", body=body, data_default=[])
+        if not res.ok:
+            logger.error(f"获取个人信息失败: {res.error}")
+            return {"error": res.error}
 
-            result = resp.json()
-            if not result.get("status"):
-                msg = result.get("message") or result.get("error") or "未知错误"
-                logger.error(f"获取个人信息失败: {msg}")
-                return {"error": msg}
+        data_list = res.data
+        if not data_list:
+            return {"error": "未找到该用户"}
 
-            data_list = result.get("data", [])
-            if not data_list:
-                return {"error": "未找到该用户"}
-
-            person = data_list[0]
-            logger.info(f"获取个人信息成功: {person.get('name', '未知')}")
-            return person
-        except Exception as e:
-            logger.error(f"获取个人信息异常: {e}")
-            return {"error": str(e)}
+        person = data_list[0]
+        logger.info(f"获取个人信息成功: {person.get('name', '未知')}")
+        return person
 
     # ---- 他人详细资料 ----
 
@@ -937,19 +810,10 @@ class OopzApiMixin:
 
         API: GET /client/v1/person/v1/personDetail?uid={uid}
         """
-        url_path = "/client/v1/person/v1/personDetail"
-        params = {"uid": uid}
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                return {"error": result.get("message") or "未知错误"}
-            return result.get("data", {})
-        except Exception as e:
-            logger.error(f"获取他人详细资料异常: {e}")
-            return {"error": str(e)}
+        res = self._query("GET", "/client/v1/person/v1/personDetail", params={"uid": uid}, data_default={})
+        if not res.ok:
+            return {"error": res.error}
+        return res.data
 
     # ---- 自身详细资料 ----
 
@@ -960,19 +824,10 @@ class OopzApiMixin:
         API: GET /client/v1/person/v2/selfDetail?uid={uid}
         """
         uid = OOPZ_CONFIG["person_uid"]
-        url_path = "/client/v1/person/v2/selfDetail"
-        params = {"uid": uid}
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                return {"error": result.get("message") or "未知错误"}
-            return result.get("data", {})
-        except Exception as e:
-            logger.error(f"获取自身详细资料异常: {e}")
-            return {"error": str(e)}
+        res = self._query("GET", "/client/v1/person/v2/selfDetail", params={"uid": uid}, data_default={})
+        if not res.ok:
+            return {"error": res.error}
+        return res.data
 
     # ---- 用户等级信息 ----
 
@@ -985,18 +840,10 @@ class OopzApiMixin:
         Returns:
             {"currentLevel": int, "nextLevel": int, "nextLevelDistance": int, ...}
         """
-        url_path = "/user_points/v1/level_info"
-        try:
-            resp = self._get(url_path)
-            if resp.status_code != 200:
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                return {"error": result.get("message") or "未知错误"}
-            return result.get("data", {})
-        except Exception as e:
-            logger.error(f"获取等级信息异常: {e}")
-            return {"error": str(e)}
+        res = self._query("GET", "/user_points/v1/level_info", data_default={})
+        if not res.ok:
+            return {"error": res.error}
+        return res.data
 
     # ---- 用户在域内的角色 / 禁言状态 ----
 
@@ -1010,19 +857,10 @@ class OopzApiMixin:
             {"list": [{"roleID":..., "name":...}], "disableTextTo":..., "disableVoiceTo":..., "higherUid":...}
         """
         area = area or OOPZ_CONFIG["default_area"]
-        url_path = "/area/v3/userDetail"
-        params = {"area": area, "target": target}
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                return {"error": result.get("message") or "未知错误"}
-            return result.get("data", {})
-        except Exception as e:
-            logger.error(f"获取用户域内详情异常: {e}")
-            return {"error": str(e)}
+        res = self._query("GET", "/area/v3/userDetail", params={"area": area, "target": target}, data_default={})
+        if not res.ok:
+            return {"error": res.error}
+        return res.data
 
     # ---- 可分配的角色列表 ----
 
@@ -1036,23 +874,14 @@ class OopzApiMixin:
             [{"roleID": int, "name": str, "owned": bool, "sort": int}, ...]
         """
         area = area or OOPZ_CONFIG["default_area"]
-        url_path = "/area/v3/role/canGiveList"
-        params = {"area": area, "target": target}
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                logger.error(f"获取可分配角色失败: HTTP {resp.status_code}")
-                return []
-            result = resp.json()
-            if not result.get("status"):
-                return []
-            data = result.get("data")
-            if not isinstance(data, dict):
-                return []
-            return data.get("roles", [])
-        except Exception as e:
-            logger.error(f"获取可分配角色异常: {e}")
+        res = self._query("GET", "/area/v3/role/canGiveList", params={"area": area, "target": target})
+        if not res.ok:
+            logger.error(f"获取可分配角色失败: {res.error}")
             return []
+        data = res.data
+        if not isinstance(data, dict):
+            return []
+        return data.get("roles", [])
 
     # ---- 给/取消身份组 ----
 
@@ -1092,21 +921,11 @@ class OopzApiMixin:
                 current_ids.append(role_id)
         else:
             current_ids = [x for x in current_ids if x != role_id]
-        url_path = "/area/v3/role/editUserRole"
         body = {"area": area, "target": target_uid, "targetRoleIDs": current_ids}
-        try:
-            resp = self._post(url_path, body)
-            raw = resp.text or ""
-            logger.info(f"editUserRole POST {url_path} add={add} -> {resp.status_code}, body: {raw[:200]}")
-            if resp.status_code != 200:
-                return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:150]}" if raw else "")}
-            result = resp.json()
-            if result.get("status") is True:
-                return {"status": True, "message": result.get("message") or ("已给身份组" if add else "已取消身份组")}
-            return {"error": result.get("message") or result.get("error") or str(result)}
-        except Exception as e:
-            logger.error(f"editUserRole 异常: {e}")
-            return {"error": str(e)}
+        out = self._mutation(f"editUserRole(add={add})", "POST", "/area/v3/role/editUserRole", body=body, body_limit=150)
+        if not out.ok:
+            return {"error": out.error}
+        return {"status": True, "message": out.server_message or ("已给身份组" if add else "已取消身份组")}
 
     # ---- 搜索域成员 ----
 
@@ -1120,20 +939,12 @@ class OopzApiMixin:
             [{"uid": str, "roleInfos": [...], "enterTime": int}, ...]
         """
         area = area or OOPZ_CONFIG["default_area"]
-        url_path = "/area/v3/search/areaSettingMembers"
         body = {"area": area, "name": keyword, "offset": 0, "limit": 50}
-        try:
-            resp = self._post(url_path, body)
-            if resp.status_code != 200:
-                logger.error(f"搜索域成员失败: HTTP {resp.status_code}")
-                return []
-            result = resp.json()
-            if not result.get("status"):
-                return []
-            return result.get("data", {}).get("members", [])
-        except Exception as e:
-            logger.error(f"搜索域成员异常: {e}")
+        res = self._query("POST", "/area/v3/search/areaSettingMembers", body=body, data_default={})
+        if not res.ok:
+            logger.error(f"搜索域成员失败: {res.error}")
             return []
+        return res.data.get("members", [])
 
     # ---- 各语音频道在线成员 ----
 
@@ -1167,29 +978,13 @@ class OopzApiMixin:
         if not voice_ids:
             return {}
 
-        url_path = "/area/v3/channel/membersByChannels"
         body = {"area": area, "channels": voice_ids}
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                resp = self._post(url_path, body)
-                if resp.status_code == 429:
-                    wait = min(2 ** attempt, 4)
-                    logger.warning(f"获取语音频道成员被限流 (429)，{wait}s 后重试 ({attempt + 1}/{max_retries})")
-                    time.sleep(wait)
-                    continue
-                if resp.status_code != 200:
-                    logger.error(f"获取语音频道成员失败: HTTP {resp.status_code}")
-                    return {}
-                result = resp.json()
-                if not result.get("status"):
-                    return {}
-                return result.get("data", {}).get("channelMembers", {})
-            except Exception as e:
-                logger.error(f"获取语音频道成员异常: {e}")
-                return {}
-        logger.error("获取语音频道成员失败: 重试次数用尽")
-        return {}
+        retry = RetryPolicy(attempts=3, respect_retry_after=False, backoff=lambda a: float(min(2 ** a, 4)))
+        res = self._query("POST", "/area/v3/channel/membersByChannels", body=body, data_default={}, retry=retry)
+        if not res.ok:
+            logger.error(f"获取语音频道成员失败: {res.error}")
+            return {}
+        return res.data.get("channelMembers", {}) if isinstance(res.data, dict) else {}
 
     def get_voice_channel_for_user(self, user_uid: str, area: Optional[str] = None) -> Optional[str]:
         """
@@ -1217,17 +1012,11 @@ class OopzApiMixin:
         area = area or OOPZ_CONFIG["default_area"]
         url_path = f"/client/v1/area/v1/enter?area={area}&recover={str(recover).lower()}"
         body = {"area": area, "recover": recover}
-        try:
-            resp = self._post(url_path, body)
-            if resp.status_code != 200:
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                return {"error": result.get("message") or result.get("error") or "未知错误"}
-            return result.get("data", {})
-        except Exception as e:
-            logger.error(f"进入域异常: {e}")
-            return {"error": str(e)}
+        res = self._query("POST", url_path, body=body, data_default={})
+        if not res.ok:
+            logger.error(f"进入域失败: {res.error}")
+            return {"error": res.error}
+        return res.data
 
     def enter_channel(self, channel: Optional[str] = None, area: Optional[str] = None,
                       channel_type: str = "TEXT", from_channel: str = "",
@@ -1262,17 +1051,11 @@ class OopzApiMixin:
                 "pid": pid,
             })
 
-        try:
-            resp = self._post(url_path, body)
-            if resp.status_code != 200:
-                return {"error": f"HTTP {resp.status_code}"}
-            result = resp.json()
-            if not result.get("status"):
-                return {"error": result.get("message") or "未知错误"}
-            return result.get("data", {})
-        except Exception as e:
-            logger.error(f"进入频道异常: {e}")
-            return {"error": str(e)}
+        res = self._query("POST", url_path, body=body, data_default={})
+        if not res.ok:
+            logger.error(f"进入频道失败: {res.error}")
+            return {"error": res.error}
+        return res.data
 
     def leave_voice_channel(self, channel: str, area: Optional[str] = None,
                             target: Optional[str] = None) -> dict:
@@ -1289,37 +1072,13 @@ class OopzApiMixin:
         """
         area = area or OOPZ_CONFIG["default_area"]
         target = target or OOPZ_CONFIG["person_uid"]
-        url_path = "/client/v1/area/v1/member/v1/removeFromChannel"
-        query = f"?area={area}&channel={channel}&target={target}"
-        full_path = url_path + query
-
-        try:
-            body_str = ""
-            headers = {**self.session.headers, **self.signer.oopz_headers(full_path, body_str)}
-            url = OOPZ_CONFIG["base_url"] + full_path
-            resp = self.session.delete(url, headers=headers)
-        except Exception as e:
-            logger.error(f"退出语音频道异常: {e}")
-            return {"error": str(e)}
-
-        raw = resp.text or ""
-        logger.info(f"退出语音频道 DELETE {full_path} -> HTTP {resp.status_code}")
-
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-
-        if result.get("status") is True:
-            logger.info("已退出语音频道")
-            return {"status": True, "message": "已退出语音频道"}
-
-        err = result.get("message") or result.get("error") or str(result)
-        logger.error(f"退出语音频道失败: {err}")
-        return {"error": err}
+        full_path = f"/client/v1/area/v1/member/v1/removeFromChannel?area={area}&channel={channel}&target={target}"
+        out = self._mutation("退出语音频道", "DELETE", full_path)
+        if not out.ok:
+            logger.error(f"退出语音频道失败: {out.error}")
+            return {"error": out.error}
+        logger.info("已退出语音频道")
+        return {"status": True, "message": "已退出语音频道"}
 
     # ---- 每日一句 ----
 
@@ -1331,26 +1090,13 @@ class OopzApiMixin:
             {"words": "文本内容", "author": "作者"}
             或 {"error": "..."} 表示失败
         """
-        url_path = "/general/v1/speech"
-
-        try:
-            resp = self._get(url_path)
-            if resp.status_code != 200:
-                logger.error(f"获取每日一句失败: HTTP {resp.status_code}")
-                return {"error": f"HTTP {resp.status_code}"}
-
-            result = resp.json()
-            if not result.get("status"):
-                msg = result.get("message") or result.get("error") or "未知错误"
-                logger.error(f"获取每日一句失败: {msg}")
-                return {"error": msg}
-
-            data = result["data"]
-            logger.info(f"每日一句: {data.get('words', '')[:30]}...")
-            return data
-        except Exception as e:
-            logger.error(f"获取每日一句异常: {e}")
-            return {"error": str(e)}
+        res = self._query("GET", "/general/v1/speech", data_default={})
+        if not res.ok:
+            logger.error(f"获取每日一句失败: {res.error}")
+            return {"error": res.error}
+        data = res.data
+        logger.info(f"每日一句: {(data or {}).get('words', '')[:30]}...")
+        return data
 
     # ---- 获取频道消息 ----
 
@@ -1370,30 +1116,21 @@ class OopzApiMixin:
         """
         area = area or OOPZ_CONFIG["default_area"]
         channel = channel or OOPZ_CONFIG["default_channel"]
-        url_path = "/im/session/v2/messageBefore"
         params = {"area": area, "channel": channel, "size": str(size)}
 
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                logger.error(f"获取频道消息失败: HTTP {resp.status_code}")
-                return []
-            result = resp.json()
-            if not result.get("status"):
-                logger.error(f"获取频道消息失败: {result.get('message') or result.get('error')}")
-                return []
-            raw_list = result.get("data", {}).get("messages", [])
-            messages = []
-            for m in raw_list:
-                mid = m.get("messageId") or m.get("id")
-                if mid is not None:
-                    m = {**m, "messageId": str(mid)}
-                messages.append(m)
-            logger.info(f"获取频道消息: {len(messages)} 条 (area={area[:8]}… channel={channel[:8]}…)")
-            return messages
-        except Exception as e:
-            logger.error(f"获取频道消息异常: {e}")
+        res = self._query("GET", "/im/session/v2/messageBefore", params=params, data_default={})
+        if not res.ok:
+            logger.error(f"获取频道消息失败: {res.error}")
             return []
+        raw_list = res.data.get("messages", []) if isinstance(res.data, dict) else []
+        messages = []
+        for m in raw_list:
+            mid = m.get("messageId") or m.get("id")
+            if mid is not None:
+                m = {**m, "messageId": str(mid)}
+            messages.append(m)
+        logger.info(f"获取频道消息: {len(messages)} 条 (area={area[:8]}… channel={channel[:8]}…)")
+        return messages
 
     def find_message_timestamp(
         self,
@@ -1505,27 +1242,12 @@ class OopzApiMixin:
         """
         area = area or OOPZ_CONFIG["default_area"]
         url_path = f"/area/v3/remove?area={area}&target={uid}"
-        body = {"area": area, "target": uid}
-        try:
-            resp = self._post(url_path, body)
-        except Exception as e:
-            logger.error("移出域请求异常: %s", e)
-            return {"error": str(e)}
-
-        raw = resp.text or ""
-        logger.info("移出域 POST %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-        if result.get("status") is True:
-            logger.info("移出域成功")
-            return {"status": True, "message": "已移出域"}
-        err = result.get("message") or result.get("error") or str(result)
-        logger.error("移出域失败: %s", err)
-        return {"error": err}
+        out = self._mutation("移出域", "POST", url_path, body={"area": area, "target": uid})
+        if not out.ok:
+            logger.error("移出域失败: %s", out.error)
+            return {"error": out.error}
+        logger.info("移出域成功")
+        return {"status": True, "message": "已移出域"}
 
     def block_user_in_area(
         self,
@@ -1539,27 +1261,13 @@ class OopzApiMixin:
         """
         area = area or OOPZ_CONFIG["default_area"]
         url_path = f"/client/v1/area/v1/block?area={area}&target={uid}"
-        try:
-            resp = self._delete(url_path)
-        except Exception as e:
-            logger.error("封禁请求异常: %s", e)
-            return {"error": str(e)}
-
-        raw = resp.text or ""
-        logger.info("封禁 DELETE %s -> HTTP %s, body: %s", url_path, resp.status_code, raw[:300])
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")}
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-        if result.get("status") is True:
-            msg = result.get("message") or "已封禁"
-            logger.info("封禁成功: %s", msg)
-            return {"status": True, "message": msg}
-        err = result.get("message") or result.get("error") or str(result)
-        logger.error("封禁失败: %s", err)
-        return {"error": err}
+        out = self._mutation("封禁", "DELETE", url_path)
+        if not out.ok:
+            logger.error("封禁失败: %s", out.error)
+            return {"error": out.error}
+        msg = out.server_message or "已封禁"
+        logger.info("封禁成功: %s", msg)
+        return {"status": True, "message": msg}
 
     def get_area_blocks(self, area: Optional[str] = None, name: str = "") -> dict:
         """
@@ -1571,30 +1279,19 @@ class OopzApiMixin:
             {"blocks": [{"uid": "...", ...}, ...]} 或 {"error": "..."}
         """
         area = area or OOPZ_CONFIG["default_area"]
-        url_path = "/client/v1/area/v1/areaSettings/v1/blocks"
         params = {"area": area, "name": name}
 
-        try:
-            resp = self._get(url_path, params=params)
-            if resp.status_code != 200:
-                logger.debug(f"获取域封禁列表失败: HTTP {resp.status_code}")
-                return {"error": f"HTTP {resp.status_code}"}
+        res = self._query("GET", "/client/v1/area/v1/areaSettings/v1/blocks", params=params, data_default={})
+        if not res.ok:
+            logger.debug(f"获取域封禁列表失败: {res.error}")
+            return {"error": res.error}
 
-            result = resp.json()
-            if not result.get("status"):
-                msg = result.get("message") or result.get("error") or "未知错误"
-                logger.debug(f"获取域封禁列表失败: {msg}")
-                return {"error": msg}
-
-            data = result.get("data", {})
-            blocks = data if isinstance(data, list) else data.get("blocks", data.get("list", []))
-            if not isinstance(blocks, list):
-                blocks = []
-            logger.info(f"获取域封禁列表: {len(blocks)} 人")
-            return {"blocks": blocks}
-        except Exception as e:
-            logger.error(f"获取域封禁列表异常: {e}")
-            return {"error": str(e)}
+        data = res.data
+        blocks = data if isinstance(data, list) else data.get("blocks", data.get("list", []))
+        if not isinstance(blocks, list):
+            blocks = []
+        logger.info(f"获取域封禁列表: {len(blocks)} 人")
+        return {"blocks": blocks}
 
     def unblock_user_in_area(
         self,
@@ -1614,37 +1311,13 @@ class OopzApiMixin:
 
     def _manage_patch(self, action: str, url_path: str, query: str, body: dict) -> dict:
         """通用 PATCH 管理操作（禁言/禁麦等），参数同时放 query string 和 body。"""
-        full_path = url_path + query
-        try:
-            self._throttle()
-            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
-            headers = {**self.session.headers, **self.signer.oopz_headers(full_path, body_str)}
-            url = OOPZ_CONFIG["base_url"] + full_path
-            resp = self.session.patch(url, headers=headers, data=body_str.encode("utf-8"))
-        except Exception as e:
-            logger.error(f"{action}请求异常: {e}")
-            return {"error": str(e)}
-
-        raw = resp.text or ""
-        logger.info(f"{action} PATCH {full_path} -> HTTP {resp.status_code}, body: {raw[:300]}")
-
-        if resp.status_code != 200:
-            err = f"HTTP {resp.status_code}" + (f" | {raw[:200]}" if raw else "")
-            return {"error": err}
-
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw[:200]}"}
-
-        if result.get("status") is True:
-            msg = result.get("message") or f"{action}成功"
-            logger.info(f"{action}成功: {msg}")
-            return {"status": True, "message": msg}
-
-        err = result.get("message") or result.get("error") or str(result)
-        logger.error(f"{action}失败: {err}")
-        return {"error": err}
+        out = self._mutation(action, "PATCH", url_path + query, body=body)
+        if not out.ok:
+            logger.error(f"{action}失败: {out.error}")
+            return {"error": out.error}
+        msg = out.server_message or f"{action}成功"
+        logger.info(f"{action}成功: {msg}")
+        return {"status": True, "message": msg}
 
     # ---- 撤回消息 ----
 
@@ -1674,13 +1347,10 @@ class OopzApiMixin:
         timestamp = timestamp or self.signer.timestamp_us()
         message_id = str(message_id).strip() if message_id is not None else ""
 
-        url_path = "/im/session/v1/recallGim"
-        query = (
-            f"?area={area}&channel={channel}"
+        full_path = (
+            f"/im/session/v1/recallGim?area={area}&channel={channel}"
             f"&messageId={message_id}&timestamp={timestamp}&target={target}"
         )
-        full_path = url_path + query
-
         body = {
             "area": area,
             "channel": channel,
@@ -1688,37 +1358,12 @@ class OopzApiMixin:
             "timestamp": timestamp,
             "target": target,
         }
-
-        try:
-            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
-            headers = {**self.session.headers, **self.signer.oopz_headers(full_path, body_str)}
-            url = OOPZ_CONFIG["base_url"] + full_path
-            resp = self.session.post(url, headers=headers, data=body_str.encode("utf-8"))
-        except Exception as e:
-            logger.error(f"撤回请求异常: {e}")
-            return {"error": str(e)}
-
-        raw_text = resp.text or ""
-        logger.info(f"撤回 POST {full_path} → HTTP {resp.status_code}, body: {raw_text[:300]}")
-
-        if resp.status_code != 200:
-            err = f"HTTP {resp.status_code}" + (f" | {raw_text[:200]}" if raw_text else "")
-            logger.error(f"撤回消息失败: {err}")
-            return {"error": err}
-
-        try:
-            result = resp.json()
-        except Exception:
-            logger.error(f"撤回响应非 JSON: {raw_text[:200]}")
-            return {"error": f"响应非 JSON: {raw_text[:200]}"}
-
-        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
-            logger.info(f"撤回消息成功: {message_id}")
-            return {"status": True, "message": "撤回成功"}
-
-        err = result.get("message") or result.get("error") or str(result)
-        logger.error(f"撤回消息失败: {err}")
-        return {"error": err}
+        out = self._mutation("撤回", "POST", full_path, body=body, accept_code=True)
+        if not out.ok:
+            logger.error(f"撤回消息失败: {out.error}")
+            return {"error": out.error}
+        logger.info(f"撤回消息成功: {message_id}")
+        return {"status": True, "message": "撤回成功"}
 
     def recall_private_message(
         self,
@@ -1750,7 +1395,6 @@ class OopzApiMixin:
             return {"error": "私信 channel 不可用"}
 
         timestamp = timestamp or self.signer.timestamp_us()
-        url_path = "/im/session/v1/recallIm"
         body = {
             "area": area,
             "channel": channel,
@@ -1758,19 +1402,7 @@ class OopzApiMixin:
             "timestamp": timestamp,
             "target": target,
         }
-        try:
-            resp = self._post(url_path, body)
-        except Exception as e:
-            logger.error("撤回私信请求异常: %s", e)
-            return {"error": str(e)}
-        raw_text = resp.text or ""
-        logger.info("撤回私信 POST %s -> HTTP %s, body: %s", url_path, resp.status_code, raw_text[:300])
-        if resp.status_code != 200:
-            return {"error": f"HTTP {resp.status_code}" + (f" | {raw_text[:200]}" if raw_text else "")}
-        try:
-            result = resp.json()
-        except Exception:
-            return {"error": f"响应非 JSON: {raw_text[:200]}"}
-        if result.get("status") is True or result.get("code") in (0, "0", "success", 200):
-            return {"status": True, "message": result.get("message") or "撤回成功"}
-        return {"error": result.get("message") or result.get("error") or str(result)}
+        out = self._mutation("撤回私信", "POST", "/im/session/v1/recallIm", body=body, accept_code=True)
+        if not out.ok:
+            return {"error": out.error}
+        return {"status": True, "message": out.server_message or "撤回成功"}

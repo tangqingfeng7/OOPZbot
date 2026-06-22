@@ -32,50 +32,6 @@
       }, 2000);
     }
 
-    async function check() {
-      try {
-        await AdminShell.req("/admin/api/me");
-        AdminShell.setAuthState({
-          loggedIn: true,
-          loggedInText: "已登录系统页",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        await Promise.all([loadLink(), loadSys(), loadLogs(logTailSize)]);
-        startLogPolling();
-      } catch (_) {
-        stopLogPolling();
-        AdminShell.setAuthState({
-          loggedIn: false,
-          loggedOutText: "等待登录",
-          statusTargets: ["topStatus", "mobileStatus"],
-        });
-        AdminShell.showMessage("loginMsg", "");
-        setPageState("等待轮询", "warning");
-      }
-    }
-
-    async function login() {
-      try {
-        await AdminShell.req("/admin/api/login", {
-          method: "POST",
-          body: JSON.stringify({ password: AdminShell.byId("pwd").value || "" }),
-        });
-        AdminShell.showMessage("loginMsg", "登录成功");
-        await check();
-      } catch (error) {
-        AdminShell.showMessage("loginMsg", error.message, true);
-        setPageState("登录失败", "error");
-      }
-    }
-
-    async function logout() {
-      try {
-        await AdminShell.req("/admin/api/logout", { method: "POST", body: "{}" });
-      } catch (_) {
-      }
-      await check();
-    }
-
     async function loadLink() {
       const data = await AdminShell.req("/admin/api/player/link");
       AdminShell.byId("playerLink").value = data.url || "";
@@ -143,8 +99,19 @@
       "log-pause": () => stopLogPolling(),
       "load-logs": (el) => loadLogs(Number(el.dataset.lines)),
     });
-    AdminShell.init({ page: "system", passwordHandler: login });
-    check();
+    AdminShell.bootstrapAuth({
+      page: "system",
+      loggedInText: "已登录系统页",
+      onLogin: async () => {
+        await Promise.all([loadLink(), loadSys(), loadLogs(logTailSize)]);
+        startLogPolling();
+      },
+      onLoggedOut: () => {
+        stopLogPolling();
+        setPageState("等待轮询", "warning");
+      },
+      onLoginError: () => setPageState("登录失败", "error"),
+    });
 
     document.addEventListener("visibilitychange", () => {
       const panel = AdminShell.byId("panel");

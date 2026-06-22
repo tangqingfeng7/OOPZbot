@@ -1,80 +1,19 @@
-ADMIN_ONLY_COMMANDS = frozenset(
-    {
-        "/plugins",
-        "/loadplugin",
-        "/unloadplugin",
-        "/reloadplugin",
-        "/禁言",
-        "/mute",
-        "/解禁",
-        "/unmute",
-        "/禁麦",
-        "/mutemic",
-        "/解麦",
-        "/unmutemic",
-        "/ban",
-        "/unblock",
-        "/blocklist",
-        "/autorecall",
-        "/recall",
-        "/clear",
-        "/schedule",
-        "/addrole",
-        "/removerole",
-    }
+"""
+命令权限规则。
+
+两套「仅管理员」名单均从 :mod:`domain.routing.command_registry` 派生，注册表是唯一来源。
+"""
+
+from __future__ import annotations
+
+from domain.routing.command_registry import (
+    admin_mention_prefixes,
+    admin_slash_commands,
 )
 
-ADMIN_ONLY_MENTION_PREFIXES = (
-    "加载插件",
-    "启用插件",
-    "loadplugin",
-    "卸载插件",
-    "禁用插件",
-    "unloadplugin",
-    "重载插件",
-    "刷新插件",
-    "reloadplugin",
-    "插件列表",
-    "扩展列表",
-    "插件",
-    "禁言",
-    "解除禁言",
-    "解禁",
-    "禁麦",
-    "解除禁麦",
-    "解麦",
-    "移出域",
-    "踢出",
-    "移出",
-    "解除域内封禁",
-    "解封",
-    "封禁列表",
-    "封禁名单",
-    "黑名单",
-    "自动撤回",
-    "撤回",
-    "清理历史",
-    "清理记录",
-    "清除历史",
-    "清空历史",
-    "清理数据",
-    "定时消息列表",
-    "定时消息",
-    "添加定时消息",
-    "新增定时消息",
-    "删除定时消息",
-    "移除定时消息",
-    "开启定时消息",
-    "启用定时消息",
-    "关闭定时消息",
-    "停用定时消息",
-    "给身份组",
-    "添加身份组",
-    "addrole",
-    "取消身份组",
-    "移除身份组",
-    "removerole",
-)
+ADMIN_ONLY_COMMANDS = admin_slash_commands()
+
+ADMIN_ONLY_MENTION_PREFIXES = admin_mention_prefixes()
 
 
 def is_public_mention_text(text: str) -> bool:

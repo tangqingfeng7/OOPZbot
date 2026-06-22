@@ -6,6 +6,38 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
+
+from fastapi.responses import JSONResponse
+
+
+def require_sender(func):
+    """端点守卫装饰器：sender 未就绪时统一返回 503。
+
+    收口各成员/频道/消息端点中重复的「sender 未初始化」检查；装饰后端点体内的
+    ``_get_sender()`` 必为非空。须置于 ``@router.*`` 之下（让路由注册到本包装器），
+    用 ``functools.wraps`` 保留原签名以便 FastAPI 正确解析路径/查询参数。
+    """
+    unavailable = {"ok": False, "error": "sender 未初始化"}
+
+    if inspect.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            if not _get_sender():
+                return JSONResponse(unavailable, status_code=503)
+            return await func(*args, **kwargs)
+
+        return async_wrapper
+
+    @functools.wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        if not _get_sender():
+            return JSONResponse(unavailable, status_code=503)
+        return func(*args, **kwargs)
+
+    return sync_wrapper
+
 
 def _get_redis():
     """延迟导入，避免循环引用。"""
@@ -69,6 +101,7 @@ def _add_song_to_queue(body: dict, area: str = "") -> dict:
 
 
 __all__ = [
+    "require_sender",
     "_get_redis",
     "_get_sender",
     "_get_oopz_client",

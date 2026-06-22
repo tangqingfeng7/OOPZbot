@@ -1,5 +1,6 @@
 from typing import Optional
 
+from core.constants import Msg
 from domain.plugins.plugin_name import normalize_plugin_name
 from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
 
@@ -56,7 +57,7 @@ class PluginManagementService:
         name = self.normalize_plugin_name(raw_name)
         if not name:
             self._sender.send_message(
-                "[x] 插件名不合法，仅支持字母/数字/下划线",
+                f"{Msg.ERR} 插件名不合法，仅支持字母/数字/下划线",
                 channel=channel,
                 area=area,
             )
@@ -73,7 +74,7 @@ class PluginManagementService:
         name = self.normalize_plugin_name(raw_name)
         if not name:
             self._sender.send_message(
-                "[x] 插件名不合法，仅支持字母/数字/下划线",
+                f"{Msg.ERR} 插件名不合法，仅支持字母/数字/下划线",
                 channel=channel,
                 area=area,
             )
@@ -90,7 +91,7 @@ class PluginManagementService:
         name = self.normalize_plugin_name(raw_name)
         if not name:
             self._sender.send_message(
-                "[x] 插件名不合法，仅支持字母/数字/下划线",
+                f"{Msg.ERR} 插件名不合法，仅支持字母/数字/下划线",
                 channel=channel,
                 area=area,
             )
