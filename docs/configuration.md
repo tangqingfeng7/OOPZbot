@@ -32,6 +32,16 @@ copy private_key.example.py private_key.py
 
 管理后台的“OOPZ 账号密码登录”使用同一套入口：页面里填了账号密码就用页面输入；页面留空时会改用 `config.py` 里的账号密码。后台会优先调用 Oopz 登录接口，遇到可重试问题时再回退到浏览器登录。
 
+### 本地代理别名端口 (`PROXY_ALIAS_CONFIG`)
+
+`OOPZ_CONFIG["proxy"]` 填 `"clash"` / `"mihomo"` 等别名时，使用此处的本机端口；改了 Clash/mihomo 监听端口只需在这里调整。
+
+| 配置项 | 说明 |
+|--------|------|
+| `host` | 本地代理监听地址（默认 `127.0.0.1`） |
+| `http_port` | HTTP 代理端口（clash/mihomo，默认 `7890`） |
+| `socks_port` | SOCKS 代理端口（默认 `7891`） |
+
 ### Redis 配置 (`REDIS_CONFIG`)
 
 | 配置项 | 说明 |
@@ -54,6 +64,30 @@ copy private_key.example.py private_key.py
 
 推流播放时会自动预加载队首下一首，减少切歌间隙与卡顿；弱网下可适当调大 `audio_download_timeout`、`audio_download_retries`，或使用 `audio_quality: "standard"`。
 
+### QQ 音乐 (`QQ_MUSIC_CONFIG`)
+
+需自行部署 QQMusicApi 服务。
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用（默认 `False`） |
+| `base_url` | QQ 音乐 API 服务地址（默认 `http://localhost:3300`） |
+| `cookie` | 登录后的 Cookie（可选） |
+
+### B 站音乐 (`BILIBILI_MUSIC_CONFIG`)
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用（默认 `False`） |
+| `cookie` | B 站 Cookie（可选，获取更高音质需要） |
+
+### 音乐播放 (`MUSIC_CONFIG`)
+
+| 配置项 | 说明 |
+|--------|------|
+| `auto_play_enabled` | 队列播完后是否自动随机播放喜欢列表（默认 `True`） |
+| `default_volume` | 默认音量 0-100（默认 `50`） |
+
 ### 豆包 AI 聊天 (`DOUBAO_CONFIG`)
 
 | 配置项 | 说明 |
@@ -65,6 +99,8 @@ copy private_key.example.py private_key.py
 | `system_prompt` | 系统提示词 |
 | `max_tokens` | 最大生成 token 数 |
 | `temperature` | 生成温度 |
+| `context_max_rounds` | 每个用户+频道最多保留的对话轮数（`0`=不保留上下文，默认 `10`） |
+| `context_ttl_seconds` | 对话上下文过期时间（秒），`0`=不过期（默认 `1800`） |
 
 ### 豆包图片生成 (`DOUBAO_IMAGE_CONFIG`)
 
@@ -74,6 +110,7 @@ copy private_key.example.py private_key.py
 | `api_key` | 火山方舟 API Key |
 | `model` | Seedream 模型名称 |
 | `size` | 图片尺寸（默认 `1920x1920`） |
+| `watermark` | 是否添加水印（默认 `False`） |
 
 ### LOL 封号查询插件 (`config/plugins/lol_ban/config.json`)
 
@@ -197,6 +234,7 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 |--------|------|
 | `enabled` | 是否启用自动撤回（默认 `False`） |
 | `delay` | 自动撤回延迟秒数（默认 `30`） |
+| `max_pending` | 最多等待撤回的消息数，防止刷屏占用内存（默认 `1000`） |
 | `exclude_commands` | 不自动撤回的命令类型列表，如 `ai_chat`、`ai_image` |
 
 ### 域成员加入/退出通知 (`AREA_JOIN_NOTIFY`)
@@ -209,8 +247,54 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 | `message_template` | 加入时消息模板，占位符：`{name}`、`{uid}`（默认 `"欢迎 {name} 加入域～"`） |
 | `message_template_leave` | 退出时消息模板，占位符：`{name}`、`{uid}`（默认 `"{name} 已退出域"`） |
 | `poll_interval_seconds` | 轮询间隔（秒），最小 2；默认 2。若成员接口返回 429，程序会自动退避并临时放慢轮询 |
+| `auto_assign_role_id` | 新人自动分配的身份组 ID，留空则不分配 |
+| `auto_assign_role_name` | 或用身份组名称匹配（优先使用 `auto_assign_role_id`） |
 
 需配置 `default_area`、`default_channel`（或由 Bot 自动取第一个已加入域及第一个文字频道）。通知消息与 Bot 其他消息一致，默认使用**公告样式**。
+
+### 定时消息调度 (`SCHEDULER_CONFIG`)
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用（默认 `True`） |
+| `check_interval_seconds` | 检查间隔（秒），最小 `10`（默认 `30`） |
+
+### 用户提醒 (`REMINDER_CONFIG`)
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用（默认 `True`） |
+| `max_per_user` | 每用户最大待执行提醒数（默认 `5`） |
+| `max_delay_hours` | 最大提醒延迟（小时）（默认 `72`） |
+| `check_interval_seconds` | 检查间隔（秒），最小 `5`（默认 `15`） |
+
+### 消息统计 (`MESSAGE_STATS_CONFIG`)
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用消息统计（活跃排行、频道统计依赖此项，默认 `True`） |
+
+### 命令冷却 (`COMMAND_COOLDOWN_CONFIG`)
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用命令冷却（默认 `False`） |
+| `default_seconds` | 默认命令冷却时间（秒）（默认 `3`） |
+| `exempt_admins` | 管理员是否免冷却（默认 `True`） |
+
+### 多域配置 (`AREA_CONFIGS`)
+
+为每个域配置独立参数，不配或留空则所有域共享全局配置。键为域 ID，值为该域的个性化配置：
+
+| 配置项 | 说明 |
+|--------|------|
+| `name` | 域名称（仅供日志显示） |
+| `default_channel` | 该域默认发送频道 ID |
+| `welcome_message` / `leave_message` | 加入/退出消息模板，占位符 `{name}`、`{uid}` |
+| `auto_assign_role_id` / `auto_assign_role_name` | 新人自动分配的身份组 ID / 名称 |
+| `admin_uids` | 该域独立管理员，空则继承全局 `ADMIN_UIDS` |
+| `plugins_enabled` / `plugins_disabled` | 该域启用 / 禁用的插件名列表（`plugins_enabled` 为空=全部启用） |
+| `profanity_enabled` | 是否启用脏话检测 |
 
 ### 权限控制 (`ADMIN_UIDS`)
 
@@ -259,6 +343,8 @@ Docker 环境下可通过环境变量覆盖部分配置，无需修改 `config.p
 | `BOT_OOPZ_PROXY` | Oopz 代理地址 |
 | `BOT_DISABLE_VOICE` | 禁用语音推流 |
 | `BOT_DISABLE_AUTO_START_NETEASE` | 禁用自动启动网易云 API |
+| `BOT_LOG_FILE_LEVEL` / `BOT_LOG_CONSOLE_LEVEL` | 日志文件 / 控制台级别（默认 `DEBUG` / `INFO`） |
+| `ONEBOT_V11_ENABLED` | 覆盖 OneBot v11 旁路服务开关 |
 
 ## 插件配置
 
