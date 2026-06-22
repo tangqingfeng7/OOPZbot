@@ -1001,6 +1001,55 @@ class OopzApiMixin:
                     return ch_id
         return None
 
+    def drag_member(
+        self,
+        target: str,
+        to_channel: str,
+        from_channel: Optional[str] = None,
+        area: Optional[str] = None,
+    ) -> dict:
+        """
+        将用户从其当前语音频道调度（拖拽）到另一个语音频道。
+
+        API: PUT /client/v1/area/v1/member/v1/dragInto
+        Body: {"area": area, "channel": from_channel, "toChannel": to_channel, "target": target}
+        其中 ``channel`` 为用户当前所在语音频道；未显式提供时自动探测。
+
+        Args:
+            target:       被调度用户 UID
+            to_channel:   目标语音频道 ID
+            from_channel: 用户当前语音频道 ID，留空则自动探测
+            area:         域 ID，默认取配置
+
+        Returns:
+            {"status": True, "message": "...", "from_channel": str, "to_channel": str}
+            或 {"error": "..."}
+        """
+        area = area or OOPZ_CONFIG["default_area"]
+        target = (target or "").strip()
+        to_channel = (to_channel or "").strip()
+        if not target or not to_channel:
+            return {"error": "target 和 toChannel 不能为空"}
+
+        source = (from_channel or "").strip() or self.get_voice_channel_for_user(target, area=area) or ""
+        if not source:
+            return {"error": "未找到该用户当前所在的语音频道"}
+        if source == to_channel:
+            return {"error": "用户已在目标语音频道"}
+
+        body = {"area": area, "channel": source, "toChannel": to_channel, "target": target}
+        out = self._mutation("语音调度", "PUT", "/client/v1/area/v1/member/v1/dragInto", body=body)
+        if not out.ok:
+            logger.error("语音调度失败: %s", out.error)
+            return {"error": out.error}
+        logger.info("语音调度成功: target=%s, %s -> %s", target[:8], source, to_channel)
+        return {
+            "status": True,
+            "message": out.server_message or "已调度",
+            "from_channel": source,
+            "to_channel": to_channel,
+        }
+
     # ---- 进入域 / 进入频道 ----
 
     def enter_area(self, area: Optional[str] = None, recover: bool = False) -> dict:

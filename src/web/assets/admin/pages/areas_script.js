@@ -1,6 +1,7 @@
     let currentArea = "";
     let channelsData = [];
     let areaRolesData = [];
+    let voiceChannelsData = [];
 
     function setState(text, variant) {
       AdminShell.setStatus(text, variant, "topStatus");
@@ -486,14 +487,27 @@
       try {
         const data = await AdminShell.req(`/admin/api/voice-channels?area=${encodeURIComponent(currentArea)}`);
         const vcs = data.voice_channels || [];
+        voiceChannelsData = vcs;
         if (!vcs.length) {
           container.innerHTML = '<p class="empty-state">暂无语音频道数据</p>';
           return;
         }
         container.innerHTML = vcs.map((vc) => {
-          const users = (vc.users || []).map((u) =>
-            `<span class="a-voice-user"><span class="a-voice-user__dot"></span>${esc(u.name)}</span>`
-          ).join("");
+          const users = (vc.users || []).map((u) => {
+            const avatar = u.avatar
+              ? `<img class="a-voice-user__avatar" src="${esc(u.avatar)}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'a-voice-user__avatar a-voice-user__avatar--ph',textContent:'?'}))">`
+              : `<span class="a-voice-user__avatar a-voice-user__avatar--ph">${esc((u.name || "?").slice(0, 1))}</span>`;
+            return `<span class="a-voice-user">
+              <span class="a-voice-user__ava">
+                ${avatar}
+                <span class="a-voice-user__dot"></span>
+              </span>
+              <span class="a-voice-user__name">${esc(u.name)}</span>
+              <button class="a-voice-user__move" type="button" title="调度到其他语音频道"
+                data-action="dispatch-user" data-uid="${esc(u.uid)}"
+                data-name="${esc(u.name)}" data-from="${esc(vc.id)}">调度</button>
+            </span>`;
+          }).join("");
           return `<div class="a-voice-ch">
             <div class="a-voice-ch__head">
               <span class="a-voice-ch__name">${esc(vc.name)}</span>
@@ -508,12 +522,60 @@
       }
     }
 
+    // ---- Dispatch member to another voice channel ----
+
+    function showDispatch(uid, name, fromCh) {
+      const targets = voiceChannelsData.filter((vc) => vc.id !== fromCh);
+      const sel = AdminShell.byId("dispatchTarget");
+      sel.innerHTML = targets.length
+        ? targets.map((vc) =>
+            `<option value="${vc.id}">${esc(vc.name)}${vc.group ? " · " + esc(vc.group) : ""}</option>`
+          ).join("")
+        : '<option value="">无其他语音频道</option>';
+      AdminShell.byId("dispatchUid").value = uid;
+      AdminShell.byId("dispatchFrom").value = fromCh || "";
+      const fromVc = voiceChannelsData.find((vc) => vc.id === fromCh);
+      AdminShell.byId("dispatchInfo").textContent =
+        `将「${name}」从「${fromVc ? fromVc.name : "当前频道"}」调度到：`;
+      AdminShell.showMessage("dispatchMsg", targets.length ? "" : "当前域没有其他语音频道可调度", !targets.length);
+      AdminShell.upgradeSelect("dispatchTarget");
+      AdminShell.byId("dispatchOverlay").classList.add("is-open");
+      AdminShell.byId("dispatchDialog").classList.add("is-open");
+    }
+
+    function closeDispatch() {
+      AdminShell.byId("dispatchOverlay").classList.remove("is-open");
+      AdminShell.byId("dispatchDialog").classList.remove("is-open");
+    }
+
+    async function doDispatch() {
+      const uid = AdminShell.byId("dispatchUid").value;
+      const from = AdminShell.byId("dispatchFrom").value;
+      const to = AdminShell.byId("dispatchTarget").value;
+      if (!to) { AdminShell.showMessage("dispatchMsg", "请选择目标语音频道", true); return; }
+      AdminShell.showMessage("dispatchMsg", "调度中...");
+      try {
+        await AdminShell.req("/admin/api/voice-channels/dispatch", {
+          method: "POST",
+          body: JSON.stringify({ area: currentArea, target: uid, to_channel: to, from_channel: from }),
+        });
+        closeDispatch();
+        await loadVoiceChannels();
+        setState("已调度", "success");
+      } catch (e) {
+        AdminShell.showMessage("dispatchMsg", "调度失败: " + e.message, true);
+      }
+    }
+
     AdminShell.registerActions({
       "refresh-areas": () => loadAreaManager(),
       "save-area-config": () => saveAreaConfig(),
       "delete-area-config": () => deleteAreaConfig(),
       "show-create-channel": () => showCreateChannel(),
       "load-voice-channels": () => loadVoiceChannels(),
+      "dispatch-user": (el) => showDispatch(el.dataset.uid, el.dataset.name, el.dataset.from),
+      "close-dispatch": () => closeDispatch(),
+      "do-dispatch": () => doDispatch(),
       "close-ch-modal": () => closeChModal(),
       "do-create-channel": () => doCreateChannel(),
       "close-edit-channel": () => closeEditChannel(),
@@ -533,6 +595,7 @@
     AdminShell.upgradeSelect("newChType");
     AdminShell.upgradeSelect("editChVoiceQuality");
     AdminShell.upgradeSelect("editChVoiceDelay");
+    AdminShell.upgradeSelect("dispatchTarget");
     AdminShell.bootstrapAuth({
       page: "areas",
       loggedInText: "已登录域管理",

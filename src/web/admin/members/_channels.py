@@ -9,6 +9,7 @@ from web.admin.shared import (
     _get_sender,
     _resolve_area,
     get_resolver,
+    logger,
     require_sender,
     time,
 )
@@ -227,6 +228,19 @@ def admin_voice_channels(area: str = Query("")):
 
     channel_members = sender.get_voice_channel_members(area=resolved_area)
 
+    all_uids: list[str] = []
+    for ch_id in voice_info:
+        for m in channel_members.get(ch_id, []):
+            uid = m.get("uid", m.get("id", "")) if isinstance(m, dict) else str(m)
+            if uid and uid not in all_uids:
+                all_uids.append(uid)
+    person_map: dict = {}
+    if all_uids:
+        try:
+            person_map = sender.get_person_infos_batch(all_uids)
+        except Exception:
+            logger.debug("批量获取语音成员信息失败", exc_info=True)
+
     resolver = get_resolver()
     voice_channels = []
     for ch_id, info in voice_info.items():
@@ -234,8 +248,14 @@ def admin_voice_channels(area: str = Query("")):
         users = []
         for m in raw_members:
             uid = m.get("uid", m.get("id", "")) if isinstance(m, dict) else str(m)
-            if uid:
-                users.append({"uid": uid, "name": resolver.user(uid) or uid[:8]})
+            if not uid:
+                continue
+            pi = person_map.get(uid, {})
+            users.append({
+                "uid": uid,
+                "name": pi.get("name") or resolver.user(uid) or uid[:8],
+                "avatar": pi.get("avatar", ""),
+            })
         voice_channels.append({
             "id": ch_id,
             "name": info["name"],
@@ -244,3 +264,26 @@ def admin_voice_channels(area: str = Query("")):
         })
 
     return JSONResponse({"ok": True, "voice_channels": voice_channels})
+
+
+@router.post("/admin/api/voice-channels/dispatch")
+@require_sender
+async def admin_voice_dispatch(request: Request):
+    """将用户从当前语音频道调度到指定语音频道。"""
+    sender = _get_sender()
+    body = await request.json()
+    area = (body.get("area") or "").strip() or _resolve_area()
+    target = (body.get("target") or "").strip()
+    to_channel = (body.get("to_channel") or "").strip()
+    from_channel = (body.get("from_channel") or "").strip()
+    if not area:
+        return JSONResponse({"ok": False, "error": "area 不能为空"}, status_code=400)
+    if not target or not to_channel:
+        return JSONResponse({"ok": False, "error": "target 和 to_channel 不能为空"}, status_code=400)
+    try:
+        result = sender.drag_member(target, to_channel, from_channel=from_channel or None, area=area)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+    if isinstance(result, dict) and "error" in result:
+        return JSONResponse({"ok": False, "error": result["error"]})
+    return JSONResponse({"ok": True, "message": result.get("message", "已调度")})

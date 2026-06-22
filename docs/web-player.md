@@ -234,6 +234,11 @@ nginx/ssl/key.pem    # 私钥
 | GET | `/admin/api/channels/{channel_id}/accessible-members` | 私密频道可访问成员 |
 | GET | `/admin/api/online-members?area=` | 域在线成员 |
 | GET | `/admin/api/voice-channels?area=` | 语音频道在线成员 |
+| POST | `/admin/api/voice-channels/dispatch` | 将用户调度（拖拽）到其他语音频道 |
+
+> 语音调度请求体：`{"area": "域ID", "target": "用户UID", "to_channel": "目标语音频道ID", "from_channel": "源语音频道ID(可选)"}`。
+> `from_channel` 留空时后端会自动探测用户当前所在语音频道；底层调用 `PUT /client/v1/area/v1/member/v1/dragInto`。
+> 在「域管理 → 语音频道监控」中，存在多个语音频道时每位在线成员旁会出现「调度」按钮。
 
 ### 域配置 / Bot 管理员
 

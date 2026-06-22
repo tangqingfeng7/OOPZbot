@@ -87,6 +87,12 @@ class SenderGateway:
     def get_voice_channel_members(self, **kwargs):
         return self._sender.get_voice_channel_members(**kwargs)
 
+    def get_voice_channel_for_user(self, user_uid: str, **kwargs):
+        return self._sender.get_voice_channel_for_user(user_uid, **kwargs)
+
+    def drag_member(self, target: str, to_channel: str, **kwargs) -> dict:
+        return self._sender.drag_member(target, to_channel, **kwargs)
+
     # -- 频道消息 --
 
     def get_channel_messages(self, **kwargs):
