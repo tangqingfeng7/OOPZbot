@@ -208,7 +208,10 @@ class OneBotV11Server:
             return 200
         auth = request.headers.get("Authorization", "")
         query_token = request.query.get("access_token", "")
-        if auth == f"Bearer {token}" or query_token == token:
+        bearer = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+        if (bearer and hmac.compare_digest(bearer, token)) or (
+            query_token and hmac.compare_digest(query_token, token)
+        ):
             return 200
         return 403 if auth or query_token else 401
 

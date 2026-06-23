@@ -5,17 +5,12 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-from typing import TYPE_CHECKING, Optional
 
 import requests
 from PIL import Image
 
-from config import OOPZ_CONFIG
 from core.http_constants import HTTP_TIMEOUT_DOWNLOAD, HTTP_TIMEOUT_MEDIA
 from core.logger_config import get_logger
-
-if TYPE_CHECKING:
-    from oopz.oopz_sender import OopzSender
 
 logger = get_logger("OopzUpload")
 

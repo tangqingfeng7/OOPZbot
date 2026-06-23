@@ -8,6 +8,7 @@ from web.admin.shared import (
     _clear_admin_session_token,
     _set_admin_session_token,
     cfg,
+    read_json_body,
 )
 
 router = APIRouter()
@@ -23,7 +24,7 @@ async def admin_login(request: Request):
     password = cfg.admin_password()
     if not password:
         return JSONResponse({"ok": False, "error": "未配置 admin_password"}, status_code=503)
-    body = await request.json()
+    body = await read_json_body(request)
     submitted = str(body.get("password", ""))
     if not secrets.compare_digest(submitted, password):
         return JSONResponse({"ok": False, "error": "密码错误"}, status_code=401)

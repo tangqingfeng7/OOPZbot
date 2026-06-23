@@ -15,6 +15,7 @@ from web.admin.shared import (
     _resolve_area,
     get_resolver,
     logger,
+    read_json_body,
     require_sender,
 )
 
@@ -291,7 +292,7 @@ def _extract_area(body: dict) -> str:
 @require_sender
 async def admin_member_mute(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     try:
         duration = int(body.get("duration", 5))
@@ -308,7 +309,7 @@ async def admin_member_mute(uid: str, request: Request):
 @require_sender
 async def admin_member_unmute(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.unmute_user(uid, area=area)
     if "error" in result:
@@ -321,7 +322,7 @@ async def admin_member_unmute(uid: str, request: Request):
 @require_sender
 async def admin_member_mute_mic(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     try:
         duration = int(body.get("duration", 10))
@@ -338,7 +339,7 @@ async def admin_member_mute_mic(uid: str, request: Request):
 @require_sender
 async def admin_member_unmute_mic(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.unmute_mic(uid, area=area)
     if "error" in result:
@@ -351,7 +352,7 @@ async def admin_member_unmute_mic(uid: str, request: Request):
 @require_sender
 async def admin_member_kick(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.remove_from_area(uid, area=area)
     if "error" in result:
@@ -364,7 +365,7 @@ async def admin_member_kick(uid: str, request: Request):
 @require_sender
 async def admin_member_block(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.block_user_in_area(uid, area=area)
     if "error" in result:
@@ -377,7 +378,7 @@ async def admin_member_block(uid: str, request: Request):
 @require_sender
 async def admin_member_unblock(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.unblock_user_in_area(uid, area=area)
     if "error" in result:
@@ -390,7 +391,7 @@ async def admin_member_unblock(uid: str, request: Request):
 @require_sender
 async def admin_member_role(uid: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = _extract_area(body)
     try:
         role_id = int(body.get("role_id", 0))

@@ -53,6 +53,21 @@ EVENT_AREA_MEMBER_LEAVE = 11
 
 _area_channel_cache: dict = {"area": "", "channel": "", "ts": 0.0}
 _AREA_CHANNEL_CACHE_TTL = 300.0  # 5 分钟
+# 轮询线程与 WS 事件回调线程会并发读写该缓存，统一用锁保护读改写。
+_area_channel_cache_lock = threading.Lock()
+
+
+def _read_area_channel_cache(now: float) -> Optional[Tuple[str, str]]:
+    with _area_channel_cache_lock:
+        if _area_channel_cache["area"] and _area_channel_cache["channel"] \
+                and now - _area_channel_cache["ts"] < _AREA_CHANNEL_CACHE_TTL:
+            return _area_channel_cache["area"], _area_channel_cache["channel"]
+    return None
+
+
+def _store_area_channel_cache(area: str, channel: str, ts: float) -> None:
+    with _area_channel_cache_lock:
+        _area_channel_cache.update(area=area, channel=channel, ts=ts)
 
 
 def _get_default_area_channel(sender: OopzSender, quiet: bool = False) -> Tuple[str, str]:
@@ -63,9 +78,9 @@ def _get_default_area_channel(sender: OopzSender, quiet: bool = False) -> Tuple[
         return default_area, default_channel
 
     now = time.time()
-    if _area_channel_cache["area"] and _area_channel_cache["channel"] \
-            and now - _area_channel_cache["ts"] < _AREA_CHANNEL_CACHE_TTL:
-        return _area_channel_cache["area"], _area_channel_cache["channel"]
+    cached = _read_area_channel_cache(now)
+    if cached is not None:
+        return cached
 
     areas = sender.get_joined_areas(quiet=quiet)
     if areas:
@@ -76,10 +91,10 @@ def _get_default_area_channel(sender: OopzSender, quiet: bool = False) -> Tuple[
                 if (ch.get("type") or "").upper() != "VOICE":
                     default_channel = (ch.get("id") or "").strip()
                     if default_channel:
-                        _area_channel_cache.update(area=default_area, channel=default_channel, ts=now)
+                        _store_area_channel_cache(default_area, default_channel, now)
                         return default_area, default_channel
     if default_area and default_channel:
-        _area_channel_cache.update(area=default_area, channel=default_channel, ts=now)
+        _store_area_channel_cache(default_area, default_channel, now)
     return default_area, default_channel
 
 

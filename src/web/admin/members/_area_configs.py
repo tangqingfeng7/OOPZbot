@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
     cfg,
+    read_json_body,
 )
 
 router = APIRouter()
@@ -32,7 +33,7 @@ def admin_area_config_get(area_id: str):
 @router.post("/admin/api/area-configs/{area_id}")
 async def admin_area_config_save(area_id: str, request: Request):
     """创建或更新域配置并持久化。"""
-    body = await request.json()
+    body = await read_json_body(request)
     area_id = area_id.strip()
     if not area_id:
         return JSONResponse({"ok": False, "error": "area_id 不能为空"}, status_code=400)

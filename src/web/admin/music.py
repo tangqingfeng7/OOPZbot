@@ -30,6 +30,7 @@ from web.admin.shared import (
     _tail_file,
     _top_songs_from_play_history,
     cfg,
+    read_json_body,
     clear_token,
     db_connection,
     ensure_token,
@@ -182,7 +183,7 @@ def admin_queue(
 
 @router.post("/admin/api/queue/action")
 async def admin_queue_action(request: Request):
-    body = await request.json()
+    body = await read_json_body(request)
     area = _get_music_area()
     result = _execute_queue_action(
         action=body.get("action", ""),

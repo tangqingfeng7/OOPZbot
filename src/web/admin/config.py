@@ -31,6 +31,7 @@ from web.admin.shared import (
     _set_liked_ids_cache,
     cfg,
     logger,
+    read_json_body,
 )
 
 router = APIRouter()
@@ -50,7 +51,7 @@ def admin_get_config():
 
 @router.post("/admin/api/config")
 async def admin_update_config(request: Request):
-    body = await request.json()
+    body = await read_json_body(request)
     updates = body.get("updates", {})
     persist = bool(body.get("persist", True))
     applied, errors, persist_payload = cfg.apply_config_updates(updates)
@@ -106,10 +107,7 @@ async def admin_update_config(request: Request):
 @router.post("/admin/api/netease/login/qr")
 async def admin_netease_login_qr(request: Request):
     """创建网易云扫码登录二维码。"""
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await read_json_body(request)
 
     try:
         base_url = _normalize_netease_base_url(body.get("base_url"))
@@ -181,10 +179,7 @@ async def admin_netease_login_qr(request: Request):
 @router.post("/admin/api/netease/login/qr/check")
 async def admin_netease_login_qr_check(request: Request):
     """检查网易云扫码登录状态，成功时返回 Cookie。"""
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await read_json_body(request)
 
     key = str(body.get("key") or "").strip()
     if not key:
@@ -330,10 +325,7 @@ async def admin_bilibili_login_qr():
 @router.post("/admin/api/bilibili/login/qr/check")
 async def admin_bilibili_login_qr_check(request: Request):
     """检查 B 站扫码登录状态，成功时返回 Cookie。"""
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await read_json_body(request)
 
     key = str(body.get("key") or "").strip()
     if not key:
@@ -486,7 +478,7 @@ async def admin_oopz_login(request: Request):
     if _oopz_login_lock.locked():
         return JSONResponse({"ok": False, "error": "OOPZ 登录任务正在执行"}, status_code=409)
 
-    phone, password, timeout = _parse_oopz_login_payload(await request.json())
+    phone, password, timeout = _parse_oopz_login_payload(await read_json_body(request))
 
     async with _oopz_login_lock:
         try:

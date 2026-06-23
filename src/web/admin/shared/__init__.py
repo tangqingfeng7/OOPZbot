@@ -60,6 +60,7 @@ logger = get_logger("WebPlayerAdmin")
 
 # --- 各子模块的辅助函数/常量再导出（各子模块通过 __all__ 声明导出面）---
 from ._runtime import *  # noqa: F401,F403,E402
+from ._requests import *  # noqa: F401,F403,E402
 from ._oopz import *  # noqa: F401,F403,E402
 from ._area import *  # noqa: F401,F403,E402
 from ._debug import *  # noqa: F401,F403,E402

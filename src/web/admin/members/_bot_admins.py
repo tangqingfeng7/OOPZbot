@@ -7,6 +7,7 @@ from web.admin.shared import (
     cfg,
     get_resolver,
     logger,
+    read_json_body,
 )
 
 router = APIRouter()
@@ -27,7 +28,7 @@ def admin_bot_admins_list():
 async def admin_bot_admins_add(request: Request):
     """将指定 UID 添加为 Bot 管理员。"""
     import config as _cfg
-    body = await request.json()
+    body = await read_json_body(request)
     uid = str(body.get("uid", "")).strip()
     if not uid:
         return JSONResponse({"ok": False, "error": "uid 不能为空"}, status_code=400)

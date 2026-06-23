@@ -378,9 +378,12 @@ class BilibiliMusic:
         duration_str = item.get("duration") or "0:00"
         duration_s = 0
         if isinstance(duration_str, str) and ":" in duration_str:
-            parts = duration_str.split(":")
             try:
-                duration_s = int(parts[0]) * 60 + int(parts[1])
+                # 兼容 MM:SS 与 H:MM:SS，逐段按 60 进制累加。
+                seconds = 0
+                for part in duration_str.split(":"):
+                    seconds = seconds * 60 + int(part)
+                duration_s = seconds
             except ValueError:
                 pass
         elif isinstance(duration_str, (int, float)):

@@ -19,6 +19,27 @@ from domain.plugins.plugin_config import (
     validate_range,
 )
 
+# 本模块是插件 SDK 的统一入口：插件只需从 ``domain.plugins.base`` 导入下列符号。
+# 这里显式声明公共面，既固定对外契约，也表明 plugin_config 的再导出是有意为之。
+__all__ = [
+    "PluginMetadata",
+    "PluginCommandCapabilities",
+    "PluginDescriptor",
+    "BotModule",
+    "PluginConfig",
+    "PluginConfigField",
+    "PluginConfigSpec",
+    "PluginConfigValidationError",
+    "parse_bool",
+    "parse_float",
+    "parse_int",
+    "parse_string_list",
+    "validate_hhmm",
+    "validate_http_url_list",
+    "validate_min",
+    "validate_range",
+]
+
 
 @dataclass(frozen=True)
 class PluginMetadata:

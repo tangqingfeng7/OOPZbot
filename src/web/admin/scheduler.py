@@ -8,9 +8,20 @@ from web.admin.shared import (
     get_resolver,
     get_scheduled_template,
     list_scheduled_templates,
+    read_json_body,
 )
 
 router = APIRouter()
+
+
+def _cron_range_error(hour: int, minute: int):
+    """cron 时分越界则返回 400 响应，否则返回 None。避免持久化永不触发的任务。"""
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return JSONResponse(
+            {"ok": False, "error": "cron_hour 需 0-23, cron_minute 需 0-59"},
+            status_code=400,
+        )
+    return None
 
 # ---------------------------------------------------------------------------
 # 定时消息 CRUD API
@@ -31,7 +42,7 @@ async def admin_scheduled_message_template_apply(template_key: str, request: Req
     template = get_scheduled_template(template_key)
     if not template:
         return JSONResponse({"ok": False, "error": "未找到定时模板"}, status_code=404)
-    body = await request.json()
+    body = await read_json_body(request)
     channel_id = str(body.get("channel_id") or "").strip()
     area_id = str(body.get("area_id") or "").strip()
     if not channel_id or not area_id:
@@ -44,6 +55,9 @@ async def admin_scheduled_message_template_apply(template_key: str, request: Req
         cron_minute = int(body.get("cron_minute", template["cron_minute"]))
     except (TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "cron_hour/cron_minute 必须为整数"}, status_code=400)
+    cron_error = _cron_range_error(cron_hour, cron_minute)
+    if cron_error:
+        return cron_error
     if not name or not message_text:
         return JSONResponse({"ok": False, "error": "name/message_text 不能为空"}, status_code=400)
     task_id = ScheduledMessageDB.create(
@@ -60,13 +74,16 @@ async def admin_scheduled_message_template_apply(template_key: str, request: Req
 
 @router.post("/admin/api/scheduled-messages")
 async def admin_scheduled_messages_create(request: Request):
-    body = await request.json()
+    body = await read_json_body(request)
     name = str(body.get("name") or "").strip()
     try:
         hour = int(body.get("cron_hour", 0))
         minute = int(body.get("cron_minute", 0))
     except (TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "cron_hour/cron_minute 必须为整数"}, status_code=400)
+    cron_error = _cron_range_error(hour, minute)
+    if cron_error:
+        return cron_error
     weekdays = str(body.get("weekdays", "0,1,2,3,4,5,6"))
     channel_id = str(body.get("channel_id") or "").strip()
     area_id = str(body.get("area_id") or "").strip()
@@ -83,7 +100,16 @@ async def admin_scheduled_messages_create(request: Request):
 
 @router.put("/admin/api/scheduled-messages/{task_id}")
 async def admin_scheduled_messages_update(task_id: int, request: Request):
-    body = await request.json()
+    body = await read_json_body(request)
+    if "cron_hour" in body or "cron_minute" in body:
+        try:
+            hour = int(body.get("cron_hour", 0))
+            minute = int(body.get("cron_minute", 0))
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "cron_hour/cron_minute 必须为整数"}, status_code=400)
+        cron_error = _cron_range_error(hour, minute)
+        if cron_error:
+            return cron_error
     updated = ScheduledMessageDB.update(task_id, **body)
     if not updated:
         return JSONResponse({"ok": False, "error": "未找到或无变更"}, status_code=404)

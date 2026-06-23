@@ -7,7 +7,7 @@ from types import ModuleType
 from typing import Any
 
 from core.constants import PLUGINS_DIR_NAME
-from core.paths import PROJECT_ROOT, SRC_DIR
+from core.paths import PROJECT_ROOT
 from domain.plugins.base import BotModule
 
 

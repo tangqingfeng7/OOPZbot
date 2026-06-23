@@ -10,6 +10,7 @@ from web.admin.shared import (
     _resolve_area,
     get_resolver,
     logger,
+    read_json_body,
     require_sender,
 )
 
@@ -58,7 +59,7 @@ def admin_channels_list(area: str = Query("")):
 @require_sender
 async def admin_channel_create(request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     name = (body.get("name") or "").strip()
     ch_type = body.get("type", "text")
@@ -79,7 +80,7 @@ async def admin_channel_create(request: Request):
 @require_sender
 async def admin_channel_delete(channel_id: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     if not area:
         return JSONResponse({"ok": False, "error": "area 不能为空"}, status_code=400)
@@ -97,7 +98,7 @@ async def admin_channel_delete(channel_id: str, request: Request):
 @require_sender
 async def admin_channel_update(channel_id: str, request: Request):
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     name = (body.get("name") or "").strip()
     if not area:
@@ -128,7 +129,7 @@ def admin_channel_settings(channel_id: str, area: str = Query("")):
 async def admin_channel_settings_edit(channel_id: str, request: Request):
     """编辑频道设置（名称、人数上限、慢速模式等）。"""
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = (body.pop("area", "") or "").strip() or _resolve_area()
     if not area:
         return JSONResponse({"ok": False, "error": "area 不能为空"}, status_code=400)
@@ -270,7 +271,7 @@ def admin_voice_channels(area: str = Query("")):
 async def admin_voice_dispatch(request: Request):
     """将用户从当前语音频道调度到指定语音频道。"""
     sender = _get_sender()
-    body = await request.json()
+    body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     target = (body.get("target") or "").strip()
     to_channel = (body.get("to_channel") or "").strip()

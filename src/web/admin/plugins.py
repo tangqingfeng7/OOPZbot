@@ -154,7 +154,6 @@ async def admin_plugin_config_save(name: str, request: Request):
     if invalid:
         return invalid
     from app.infrastructure.plugin_runtime.loader import DEFAULT_PLUGIN_CONFIG_DIR, plugin_config_path
-    config_dir = os.path.join(cfg.PROJECT_ROOT, DEFAULT_PLUGIN_CONFIG_DIR)
     config_path = plugin_config_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
 
     try:

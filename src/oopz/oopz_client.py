@@ -2,7 +2,7 @@ import json
 import os
 import time
 import threading
-from typing import Callable, Optional, Any
+from typing import Callable, Optional
 
 import websocket
 

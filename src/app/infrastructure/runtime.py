@@ -12,7 +12,7 @@ from core.constants import PLUGINS_DIR_NAME
 from core.paths import DATA_DIR
 
 from .gateways import ChatGateway, SenderGateway
-from .plugin_runtime import PluginRegistry, discover_plugins, load_plugin, load_plugins_dir, reload_plugin_config, unload_plugin
+from .plugin_runtime import PluginRegistry, discover_plugins, load_plugin, reload_plugin_config, unload_plugin
 
 _DEFAULT_PLUGIN_STATE_PATH = os.path.join(DATA_DIR, "plugin_runtime_state.json")
 

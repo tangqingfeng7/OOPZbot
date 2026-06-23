@@ -26,7 +26,7 @@ from core.queue_manager import (
     KEY_PLAY_STATE,
     KEY_PLAY_MODE,
 )
-from web.web_link_token import ensure_token, get_token, set_token, get_active_area
+from web.web_link_token import get_token, set_token, get_active_area
 
 import web.web_player_config as cfg
 
