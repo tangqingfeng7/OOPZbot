@@ -1,10 +1,9 @@
 """域独立配置（area_configs）的增删查改与持久化。"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    JSONResponse,
-    Request,
     cfg,
 )
 

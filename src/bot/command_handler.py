@@ -42,15 +42,6 @@ class CommandHandler:
     def recent_messages(self):
         return self._runtime.recent_messages
 
-    @property
-    def _recent_messages(self):
-        # 兼容仍在访问旧属性名的调用方。
-        return self._runtime.recent_messages
-
-    @_recent_messages.setter
-    def _recent_messages(self, messages):
-        self._runtime.recent_messages.replace(list(messages))
-
     def handle_message(self, msg_data: dict):
         ctx = self.services.routing.message.build_context(msg_data)
         # 先记录消息，再路由，撤回类命令才能立刻命中。

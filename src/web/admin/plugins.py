@@ -1,11 +1,11 @@
-from fastapi import APIRouter
+import json
+import os
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    JSONResponse,
-    Request,
     cfg,
-    json,
-    os,
 )
 from domain.plugins.plugin_name import normalize_plugin_name
 

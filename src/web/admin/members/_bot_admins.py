@@ -1,10 +1,9 @@
 """Bot 管理员 UID 列表的增删查（持久化到 config.py）。"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    JSONResponse,
-    Request,
     cfg,
     get_resolver,
     logger,

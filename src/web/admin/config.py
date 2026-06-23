@@ -1,9 +1,9 @@
-from fastapi import APIRouter
+from typing import Any
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    Any,
-    JSONResponse,
-    Request,
     RequestsException,
     _BILIBILI_QR_GENERATE_PATH,
     _BILIBILI_QR_POLL_PATH,

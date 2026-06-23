@@ -245,9 +245,9 @@ class WebPlayerAdminTest(unittest.TestCase):
         self.assertEqual(response.json()["area"], "area-2")
 
     def test_config_update_writes_config_py(self) -> None:
-        import web.web_player_admin as web_player_admin
+        import web.web_player_config as cfg
 
-        baseline = copy.deepcopy(web_player_admin.cfg.CONFIG_BASELINES["web_player"])
+        baseline = copy.deepcopy(cfg.CONFIG_BASELINES["web_player"])
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.py"
             config_path.write_text(
@@ -261,7 +261,7 @@ class WebPlayerAdminTest(unittest.TestCase):
                 with (
                     patch.object(self.module, "_admin_enabled", return_value=True),
                     patch.object(self.module, "_is_admin_authorized", return_value=True),
-                    patch.object(web_player_admin.cfg, "CONFIG_FILE_PATH", str(config_path)),
+                    patch.object(cfg, "CONFIG_FILE_PATH", str(config_path)),
                 ):
                     response = self.client.post(
                         "/admin/api/config",
@@ -278,18 +278,19 @@ class WebPlayerAdminTest(unittest.TestCase):
                 self.assertEqual(data["config_source"], "config.py")
                 self.assertIn('"url": "https://example.test"', config_path.read_text(encoding="utf-8"))
             finally:
-                web_player_admin.cfg.WEB_PLAYER_CONFIG.clear()
-                web_player_admin.cfg.WEB_PLAYER_CONFIG.update(copy.deepcopy(baseline))
+                cfg.WEB_PLAYER_CONFIG.clear()
+                cfg.WEB_PLAYER_CONFIG.update(copy.deepcopy(baseline))
 
     def test_oopz_login_payload_falls_back_to_config_account(self) -> None:
-        import web.web_player_admin as web_player_admin
+        import web.web_player_config as cfg
+        from web.admin.config import _parse_oopz_login_payload
 
         with patch.object(
-            web_player_admin.cfg,
+            cfg,
             "OOPZ_CONFIG",
             {"login_phone": "13800138000", "login_password": "plain-password"},
         ):
-            phone, password, timeout = web_player_admin._parse_oopz_login_payload({})
+            phone, password, timeout = _parse_oopz_login_payload({})
 
         self.assertEqual(phone, "13800138000")
         self.assertEqual(password, "plain-password")

@@ -2,32 +2,16 @@
 
 历史上这些工具集中在单个 ``web/admin/shared.py``（1100+ 行）；现按主题拆分为
 子模块（运行时访问器 / OOPZ 热更新 / 域上下文 / 调试工具 / 网易云 / B 站 /
-页面渲染 / 会话令牌 / 概览快照），这里把它们重新聚合到包命名空间，并完整保留
-原模块通过 ``from web.admin.shared import ...`` / ``import *`` 暴露的全部名字
-（含被各路由模块依赖的第三方/标准库再导出符号，如 ``cfg``、``Statistics`` 等）。
+页面渲染 / 会话令牌 / 概览快照），这里把它们重新聚合到包命名空间，并保留被各
+路由模块依赖的领域聚合符号（如 ``cfg``、``Statistics``、``RequestsException``
+等）。标准库 / ``typing`` / ``fastapi`` 等通用依赖不再经此转发，由各消费方直接导入。
 """
 # pyright: reportMissingModuleSource=false
 
 from __future__ import annotations
 
-# --- 原 shared.py 顶层导入：保留这些再导出符号以维持调用方的导入兼容性 ---
-import asyncio  # noqa: F401
-import base64  # noqa: F401
-import io  # noqa: F401
-import json  # noqa: F401
-import os  # noqa: F401
-import secrets  # noqa: F401
-import string  # noqa: F401
-import sys  # noqa: F401
-import time  # noqa: F401
-from collections import deque  # noqa: F401
-from http.cookies import SimpleCookie  # noqa: F401
-from typing import Any, Optional  # noqa: F401
-from urllib.parse import parse_qs, urlparse  # noqa: F401
-
+# --- 跨模块复用的领域依赖再导出（stdlib / typing / fastapi 由各消费方直接导入）---
 from core.http_constants import HTTP_TIMEOUT_DEFAULT  # noqa: F401
-from fastapi import APIRouter, Query, Request  # noqa: F401
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse  # noqa: F401
 
 try:
     import requests

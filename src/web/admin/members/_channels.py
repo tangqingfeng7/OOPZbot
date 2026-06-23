@@ -1,17 +1,16 @@
 """频道管理：列表、增删改、设置、可访问成员、在线成员与语音频道监控。"""
 
-from fastapi import APIRouter
+import time
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    JSONResponse,
-    Query,
-    Request,
     _get_sender,
     _resolve_area,
     get_resolver,
     logger,
     require_sender,
-    time,
 )
 
 router = APIRouter()

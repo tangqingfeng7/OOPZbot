@@ -1,13 +1,12 @@
 """成员管理：页面、域选择、成员列表/详情、禁言/封禁/角色等操作。"""
 
-from fastapi import APIRouter
+import time
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from web.admin.shared import (
-    HTMLResponse,
-    JSONResponse,
     MessageStatsDB,
-    Query,
-    Request,
     _MEMBERS_RESP_TTL,
     _get_sender,
     _invalidate_members_cache,
@@ -17,7 +16,6 @@ from web.admin.shared import (
     get_resolver,
     logger,
     require_sender,
-    time,
 )
 
 router = APIRouter()

@@ -1,10 +1,9 @@
 """向频道发送普通消息 / 公告样式消息。"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    JSONResponse,
-    Request,
     _get_sender,
     _resolve_area,
     require_sender,

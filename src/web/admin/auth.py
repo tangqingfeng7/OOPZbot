@@ -1,13 +1,13 @@
-from fastapi import APIRouter
+import secrets
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    JSONResponse,
-    Request,
     _admin_enabled,
     _clear_admin_session_token,
     _set_admin_session_token,
     cfg,
-    secrets,
 )
 
 router = APIRouter()

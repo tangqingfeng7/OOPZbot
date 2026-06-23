@@ -1,7 +1,7 @@
 from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
 
 from web.admin.shared import (
-    HTMLResponse,
     _render_admin_page,
 )
 
