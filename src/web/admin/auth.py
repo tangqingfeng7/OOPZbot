@@ -1,13 +1,14 @@
-from fastapi import APIRouter
+import secrets
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    JSONResponse,
-    Request,
     _admin_enabled,
     _clear_admin_session_token,
     _set_admin_session_token,
     cfg,
-    secrets,
+    read_json_body,
 )
 
 router = APIRouter()
@@ -23,7 +24,7 @@ async def admin_login(request: Request):
     password = cfg.admin_password()
     if not password:
         return JSONResponse({"ok": False, "error": "未配置 admin_password"}, status_code=503)
-    body = await request.json()
+    body = await read_json_body(request)
     submitted = str(body.get("password", ""))
     if not secrets.compare_digest(submitted, password):
         return JSONResponse({"ok": False, "error": "密码错误"}, status_code=401)

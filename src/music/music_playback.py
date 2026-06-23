@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from config import WEB_PLAYER_CONFIG

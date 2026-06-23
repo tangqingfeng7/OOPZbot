@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 import uuid
 import random
@@ -700,8 +699,8 @@ class MusicHandler(PlaybackMixin):
         for i, song in enumerate(details, start + 1):
             lines.append(f"  {i}. {song['name']} - {song['artists']}  [{song['durationText']}]")
 
-        lines.append(f"\n用法: /like play <编号> 播放指定歌曲")
-        lines.append(f"      /like list <页码> 翻页")
+        lines.append("\n用法: /like play <编号> 播放指定歌曲")
+        lines.append("      /like list <页码> 翻页")
 
         self.sender.send_message("\n".join(lines), channel=channel, area=area)
 

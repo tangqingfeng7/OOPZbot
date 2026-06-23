@@ -13,16 +13,19 @@ from typing import Any, Optional
 
 from core.database import (
     CN_TZ,
-    MessageStatsDB,
     ReminderDB,
     ScheduledMessageDB,
     cn_now,
-    cn_today,
 )
 from core.constants import build_mention
 from core.logger_config import get_logger
 
 logger = get_logger("Scheduler")
+
+# 相对时间（N分钟/小时/天后）的量级上限，避免超大数值让 timedelta 抛 OverflowError。
+# 取 ~400 天，远超 ReminderService 的 max_delay_hours，故超限值会落到
+# create_reminder 的「不能超过 N 小时」校验给出明确提示，而不是静默失败。
+_MAX_RELATIVE_MINUTES = 400 * 24 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -205,33 +208,35 @@ class ReminderService:
 
         m = re.match(r"(\d+)\s*分钟后\s+(.+)", raw, re.DOTALL)
         if m:
-            minutes = int(m.group(1))
+            minutes = min(int(m.group(1)), _MAX_RELATIVE_MINUTES)
             return now + timedelta(minutes=minutes), m.group(2).strip()
 
         m = re.match(r"(\d+)\s*小时后\s+(.+)", raw, re.DOTALL)
         if m:
-            hours = int(m.group(1))
+            hours = min(int(m.group(1)), _MAX_RELATIVE_MINUTES // 60)
             return now + timedelta(hours=hours), m.group(2).strip()
 
         m = re.match(r"(\d+)\s*天后\s+(.+)", raw, re.DOTALL)
         if m:
-            days = int(m.group(1))
+            days = min(int(m.group(1)), _MAX_RELATIVE_MINUTES // (24 * 60))
             return now + timedelta(days=days), m.group(2).strip()
 
-        m = re.match(r"明天\s*(\d{1,2})[:\uff1a](\d{2})\s+(.+)", raw, re.DOTALL)
-        if m:
-            tomorrow = now + timedelta(days=1)
-            fire_at = tomorrow.replace(
-                hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0,
-            )
-            return fire_at, m.group(3).strip()
-
-        m = re.match(r"后天\s*(\d{1,2})[:\uff1a](\d{2})\s+(.+)", raw, re.DOTALL)
-        if m:
-            day_after = now + timedelta(days=2)
-            fire_at = day_after.replace(
-                hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0,
-            )
-            return fire_at, m.group(3).strip()
+        # 形如 “明天08:00 内容” / “后天9：30 内容”，按相对天数 + 绝对时刻解析。
+        for keyword, day_offset in (("明天", 1), ("后天", 2)):
+            m = re.match(rf"{keyword}\s*(\d{{1,2}})[:\uff1a](\d{{2}})\s+(.+)", raw, re.DOTALL)
+            if m:
+                fire_at = ReminderService._at_clock(
+                    now + timedelta(days=day_offset), int(m.group(1)), int(m.group(2)),
+                )
+                if fire_at is None:
+                    return None, ""
+                return fire_at, m.group(3).strip()
 
         return None, ""
+
+    @staticmethod
+    def _at_clock(base: datetime, hour: int, minute: int) -> Optional[datetime]:
+        """把 ``base`` 调整到当天的 ``hour:minute``，时分越界则返回 None。"""
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        return base.replace(hour=hour, minute=minute, second=0, microsecond=0)

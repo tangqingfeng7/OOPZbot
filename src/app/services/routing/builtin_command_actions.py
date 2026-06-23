@@ -255,6 +255,12 @@ class SchedulerCommandActions:
             )
             return
         hour, minute = int(m.group(1)), int(m.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            self._sender.send_message(
+                "时间不合法，小时需 0-23、分钟需 0-59，例如 08:00",
+                channel=channel, area=area,
+            )
+            return
         rest = m.group(3).strip()
 
         weekdays = "0,1,2,3,4,5,6"
