@@ -32,9 +32,16 @@ class OneBotV11ServerConfig:
 
     send_connect_event: bool = True
 
+    heartbeat_enabled: bool = True
+    heartbeat_interval: float = 15.0
+
+    member_list_max: int = 5000
+
     enable_area_scoped_group_ban: bool = False
     enable_set_group_kick_as_area_kick: bool = False
     enable_set_group_leave_as_area_leave: bool = False
+    enable_set_group_admin_as_area_role: bool = False
+    group_admin_role_id: int = 0
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -93,8 +100,13 @@ def get_onebot_v11_config() -> OneBotV11ServerConfig:
         ws_reverse_event_url=str(raw.get("ws_reverse_event_url") or ""),
         ws_reverse_reconnect_interval=float(raw.get("ws_reverse_reconnect_interval") or 3.0),
         send_connect_event=_as_bool(raw.get("send_connect_event"), True),
+        heartbeat_enabled=_as_bool(raw.get("heartbeat_enabled"), True),
+        heartbeat_interval=float(raw.get("heartbeat_interval") or 15.0),
+        member_list_max=int(raw.get("member_list_max") or 5000),
         enable_area_scoped_group_ban=_as_bool(raw.get("enable_area_scoped_group_ban"), False),
         enable_set_group_kick_as_area_kick=_as_bool(raw.get("enable_set_group_kick_as_area_kick"), False),
         enable_set_group_leave_as_area_leave=_as_bool(raw.get("enable_set_group_leave_as_area_leave"), False),
+        enable_set_group_admin_as_area_role=_as_bool(raw.get("enable_set_group_admin_as_area_role"), False),
+        group_admin_role_id=int(raw.get("group_admin_role_id") or 0),
     )
     return cfg
