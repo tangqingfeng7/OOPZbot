@@ -11,10 +11,13 @@ class AppContextBuilder:
     """负责组装启动期使用的应用上下文。"""
 
     def build(self, sender: OopzSender, voice=None) -> AppContext:
-        notifier_callback = start_area_join_notifier(sender=sender)
         handler = CommandHandler(sender, voice_client=voice)
         onebot_config = get_onebot_v11_config()
         onebot_v11 = OneBotV11Service(sender, onebot_config) if onebot_config.enabled else None
+        notifier_callback = start_area_join_notifier(
+            sender=sender,
+            on_member_change=onebot_v11.emit_member_change if onebot_v11 else None,
+        )
 
         client = OopzClient(
             on_chat_message=handler.handle_message,

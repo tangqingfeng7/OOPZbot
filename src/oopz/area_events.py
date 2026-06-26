@@ -10,11 +10,16 @@ from __future__ import annotations
 import json
 from typing import Optional, Tuple
 
-EVENT_AREA_MEMBER_ENTER = 10
-EVENT_AREA_MEMBER_LEAVE = 11
-
-# Oopz pushes member changes under several event codes; these are treated as joins.
-OOPZ_JOIN_EVENTS = (17, 18, 20, 21, 22)
+# Authoritative Oopz WS event codes (source: Oopzbot-SDK
+# oopz_sdk/config/constants.py, cross-checked against captured ws_capture
+# samples). These have confirmed, non-membership meanings and must never be
+# read as area member changes — e.g. 19/20 are voice-channel leave/enter,
+# 11/12 are channel mute / text-ban, 18 is a channel-setting change. Treating
+# them as joins/leaves previously caused false group_increase / group_decrease.
+NON_MEMBER_EVENTS = frozenset({
+    1, 2, 4, 6, 7, 8, 9, 11, 12, 13, 18, 19, 20,
+    25, 26, 27, 28, 32, 52, 56, 57, 249, 253, 254,
+})
 
 _JOIN_KEYS = ("enter", "join", "add", "member_join", "join_area", "subscribe", "1", "enter_area")
 _LEAVE_KEYS = ("leave", "exit", "remove", "quit", "member_leave", "leave_area", "unsubscribe", "0")
@@ -27,6 +32,13 @@ def parse_member_event(event: int, data: dict) -> Optional[Tuple[str, str, str]]
     ``None`` when the event is not a recognizable member enter/leave (including
     channel-scoped events, which are ignored here).
     """
+    try:
+        event_int: Optional[int] = int(event)
+    except (TypeError, ValueError):
+        event_int = None
+    if event_int is not None and event_int in NON_MEMBER_EVENTS:
+        return None
+
     body_raw = data.get("body")
     if body_raw is None:
         return None
@@ -81,24 +93,18 @@ def parse_member_event(event: int, data: dict) -> Optional[Tuple[str, str, str]]
     if channel_id:
         return None
 
-    active_num = body.get("activeNum") if isinstance(body.get("activeNum"), (int, float)) else None
-    if active_num is None:
-        active_num = inner.get("activeNum")
-
     event_str = str(event).lower() if event is not None else ""
-    if event == 19:
-        if active_num is not None and active_num != 0:
-            return ("join", area, uid)
-        return ("leave", area, uid)
+    # Oopz has no reliable WS event code for area membership changes, so we never
+    # *guess* membership from numeric event codes. Joins are detected by member-
+    # list polling (see area_join_notifier); the WS path only classifies when the
+    # payload carries an explicit action string. Leaves are not covered by
+    # polling, so the WS path remains their only source.
     is_join = (
-        event == EVENT_AREA_MEMBER_ENTER
-        or event in OOPZ_JOIN_EVENTS
-        or event_str in ("10", "17", "18", "20", "21", "22", "enter", "join", "area_member_enter", "member_enter")
+        event_str in ("enter", "join", "area_member_enter", "member_enter")
         or action_raw in _JOIN_KEYS
     )
     is_leave = (
-        event == EVENT_AREA_MEMBER_LEAVE
-        or event_str in ("11", "leave", "exit", "area_member_leave", "member_leave")
+        event_str in ("leave", "exit", "area_member_leave", "member_leave")
         or action_raw in _LEAVE_KEYS
     )
     if is_join:

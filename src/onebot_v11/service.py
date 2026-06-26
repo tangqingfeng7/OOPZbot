@@ -61,6 +61,14 @@ class OneBotV11Service:
             return
         asyncio.run_coroutine_threadsafe(self.adapter.emit_raw_event(raw), self._loop)
 
+    def emit_member_change(self, action: str, area: str, uid: str) -> None:
+        """Thread-safe entry for the member-list poller to report join/leave."""
+        if not self.config.enabled or not self._loop:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.adapter.emit_member_change(action, area, uid), self._loop
+        )
+
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
         self._loop = loop

@@ -293,11 +293,11 @@ AUTO_RECALL_CONFIG = {
 }
 
 # 域成员加入/退出通知：有人加入或退出当前域时 Bot 在公屏发送消息
-# 退出：WebSocket 推送；加入：轮询域成员 API 检测新成员（因服务端不推送加入事件）
+# 服务端不推送可靠的成员事件，加入/退出均靠轮询域成员 API 对比快照检测
 AREA_JOIN_NOTIFY = {
     "enabled": False,
     "message_template": "欢迎 {name} 加入域～\n请阅读频道规则，祝你玩得开心！",  # 加入时消息，占位符: {name} {uid}；支持多行
-    "message_template_leave": "{name} 已退出域",  # 退出时消息
+    "message_template_leave": "{name} 已退出域",  # 退出时消息；留空("")则不在频道发提示，但 OneBot group_decrease 仍推送
     "poll_interval_seconds": 2,   # 轮询间隔（秒），最小 2；遇到 429 会自动退避并临时放慢
     "auto_assign_role_id": "",    # 新人自动分配的身份组 ID，留空则不分配
     "auto_assign_role_name": "",  # 或用身份组名称匹配（优先使用 role_id）

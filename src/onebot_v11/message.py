@@ -246,6 +246,32 @@ def to_v11_message(msg: dict[str, Any], *, store: OneBotStore) -> list[dict[str,
     return segments
 
 
+def _cq_escape(value: str, *, comma: bool) -> str:
+    text = value.replace("&", "&amp;").replace("[", "&#91;").replace("]", "&#93;")
+    return text.replace(",", "&#44;") if comma else text
+
+
+def cq_from_segments(segments: list[dict[str, Any]]) -> str:
+    """Render v11 message segments back into a CQ-code string for ``raw_message``.
+
+    Generic by design: any segment type renders as ``[CQ:type,k=v,...]`` so new
+    segment kinds round-trip without touching this function.
+    """
+    parts: list[str] = []
+    for segment in segments:
+        seg_type = str(segment.get("type") or "text")
+        data = segment.get("data") or {}
+        if seg_type == "text":
+            parts.append(_cq_escape(str(data.get("text") or ""), comma=False))
+            continue
+        if not data:
+            parts.append(f"[CQ:{seg_type}]")
+            continue
+        encoded = ",".join(f"{key}={_cq_escape(str(value), comma=True)}" for key, value in data.items())
+        parts.append(f"[CQ:{seg_type},{encoded}]")
+    return "".join(parts)
+
+
 def build_oopz_send_payload(
     parts: SendParts, *, store: OneBotStore
 ) -> tuple[str, list[dict[str, Any]], bool, list[dict[str, Any]], str]:

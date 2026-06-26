@@ -9,7 +9,13 @@ from config import OOPZ_CONFIG
 from core.logger_config import get_logger
 from oopz.area_events import parse_member_event
 from oopz.name_resolver import get_resolver
-from onebot_v11.message import build_oopz_send_payload, from_v11_message, normalize_v11_message, to_v11_message
+from onebot_v11.message import (
+    build_oopz_send_payload,
+    cq_from_segments,
+    from_v11_message,
+    normalize_v11_message,
+    to_v11_message,
+)
 from onebot_v11.store import (
     MessageRecord,
     OneBotStore,
@@ -175,6 +181,22 @@ class OneBotV11Adapter:
         await self._dispatch(payload)
         return payload
 
+    async def emit_member_change(self, action: str, area: str, uid: str) -> JsonDict:
+        """Emit a ``group_increase`` / ``group_decrease`` notice from an
+        authoritative out-of-band source (area member-list polling).
+
+        The Oopz WS stream has no reliable area-membership event code, so the
+        member-list poller (see ``services.area_join_notifier``) is the source of
+        truth and calls this with ``action`` in ``{"join", "leave"}``.
+        """
+        if action not in ("join", "leave") or not uid or uid == self.self_oopz_id:
+            return {}
+        payload = await asyncio.to_thread(self._member_notice_event, action, area, uid)
+        if not payload:
+            return {}
+        await self._dispatch(payload)
+        return payload
+
     async def _dispatch(self, payload: JsonDict) -> None:
         self._event_queue.append(payload)
         for sink in list(self._event_sinks):
@@ -264,6 +286,7 @@ class OneBotV11Adapter:
         timestamp = parse_oopz_timestamp(msg.get("timestamp"))
         resolver = get_resolver()
         nickname = resolver.user_cached(str(msg.get("person") or ""))
+        message = to_v11_message(msg, store=self.store)
 
         payload: JsonDict = {
             "time": timestamp,
@@ -273,8 +296,8 @@ class OneBotV11Adapter:
             "sub_type": "friend" if is_private else "normal",
             "message_id": message_id,
             "user_id": user_id,
-            "message": to_v11_message(msg, store=self.store),
-            "raw_message": str(msg.get("content") or msg.get("text") or ""),
+            "message": message,
+            "raw_message": cq_from_segments(message),
             "font": 0,
             "sender": {"user_id": user_id, "nickname": nickname},
             "extra": {
@@ -499,7 +522,9 @@ class OneBotV11Adapter:
         )
         if isinstance(result, dict) and "error" in result:
             raise RuntimeError(str(result["error"]))
-        oopz_message_id = self._extract_message_id_from_payload(result) or str(int(time.time() * 1_000_000))
+        oopz_message_id = self._extract_message_id_from_payload(result)
+        if not oopz_message_id:
+            raise RuntimeError("send failed: Oopz response has no message id")
         channel = str(result.get("channel") or "") if isinstance(result, dict) else ""
         ob_message_id = self.store.create_id(
             make_message_source(target=target, message_id=oopz_message_id)
@@ -628,6 +653,7 @@ class OneBotV11Adapter:
             make_message_source(area=area, channel=channel, message_id=oopz_message_id)
         ).number
         nickname = get_resolver().user_cached(uid)
+        message = to_v11_message({**msg, "area": area, "channel": channel}, store=self.store)
         return {
             "time": parse_oopz_timestamp(msg.get("timestamp")),
             "message_type": "group",
@@ -635,8 +661,8 @@ class OneBotV11Adapter:
             "user_id": user_id,
             "group_id": group_id,
             "sender": {"user_id": user_id, "nickname": nickname},
-            "message": to_v11_message({**msg, "area": area, "channel": channel}, store=self.store),
-            "raw_message": str(msg.get("content") or msg.get("text") or ""),
+            "message": message,
+            "raw_message": cq_from_segments(message),
         }
 
     def get_login_info(self, params: Mapping[str, Any]) -> JsonDict:
@@ -902,7 +928,7 @@ class OneBotV11Adapter:
         user_id: int | str | None = None,
         timestamp: str = "",
     ) -> JsonDict:
-        raw_message = "".join(str((segment.get("data") or {}).get("text") or "") for segment in message)
+        raw_message = cq_from_segments(message)
         payload: JsonDict = {
             "time": parse_oopz_timestamp(timestamp),
             "post_type": "message",
@@ -923,7 +949,9 @@ class OneBotV11Adapter:
             payload = response.json()
         elif isinstance(response, dict):
             payload = response
-        message_id = self._extract_message_id_from_payload(payload) or str(int(time.time() * 1_000_000))
+        message_id = self._extract_message_id_from_payload(payload)
+        if not message_id:
+            raise RuntimeError("send failed: Oopz response has no message id")
         timestamp = self._extract_timestamp_from_payload(payload) or str(int(time.time() * 1_000_000))
         return message_id, timestamp
 

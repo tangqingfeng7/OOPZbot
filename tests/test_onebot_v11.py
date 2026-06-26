@@ -114,9 +114,10 @@ class OneBotV11AdapterTest(unittest.TestCase):
     def test_member_enter_event_converts_to_group_increase(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter, _sender = self._adapter(tmpdir)
+            # Joins are only classified from an explicit action (WS code heuristic removed).
             raw = {
                 "event": 10,
-                "body": json.dumps({"data": {"person": "newbie-1", "area": "area-1"}}),
+                "body": json.dumps({"data": {"person": "newbie-1", "area": "area-1", "action": "join"}}),
             }
             event = asyncio.run(adapter.emit_raw_event(raw))
 
@@ -130,9 +131,11 @@ class OneBotV11AdapterTest(unittest.TestCase):
     def test_member_leave_event_converts_to_group_decrease(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter, _sender = self._adapter(tmpdir)
+            # No Oopz event code means "area member left"; only an explicit
+            # action string is treated as a leave (event 11 is voice-ban, not leave).
             raw = {
-                "event": 11,
-                "body": json.dumps({"data": {"person": "leaver-1", "area": "area-1"}}),
+                "event": 50,
+                "body": json.dumps({"data": {"person": "leaver-1", "area": "area-1", "action": "leave"}}),
             }
             event = asyncio.run(adapter.emit_raw_event(raw))
 
@@ -145,12 +148,39 @@ class OneBotV11AdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter, _sender = self._adapter(tmpdir)
             raw = {
-                "event": 11,
-                "body": json.dumps({"data": {"person": "bot-uid", "area": "area-1"}}),
+                "event": 10,
+                "body": json.dumps({"data": {"person": "bot-uid", "area": "area-1", "action": "join"}}),
             }
             event = asyncio.run(adapter.emit_raw_event(raw))
 
         self.assertEqual(event, {})
+
+    def test_emit_member_change_join_produces_group_increase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_member_change("join", "area-1", "newbie-1"))
+
+        self.assertEqual(event["post_type"], "notice")
+        self.assertEqual(event["notice_type"], "group_increase")
+        self.assertEqual(event["sub_type"], "approve")
+        self.assertEqual(event["extra"]["oopz_user_id"], "newbie-1")
+        self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
+
+    def test_emit_member_change_leave_produces_group_decrease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_member_change("leave", "area-1", "leaver-1"))
+
+        self.assertEqual(event["notice_type"], "group_decrease")
+        self.assertEqual(event["sub_type"], "leave")
+        self.assertEqual(event["extra"]["oopz_user_id"], "leaver-1")
+
+    def test_emit_member_change_ignores_self_and_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            self.assertEqual(asyncio.run(adapter.emit_member_change("join", "area-1", "bot-uid")), {})
+            self.assertEqual(asyncio.run(adapter.emit_member_change("join", "area-1", "")), {})
+            self.assertEqual(asyncio.run(adapter.emit_member_change("kick", "area-1", "u1")), {})
 
     def test_unknown_event_is_forwarded_as_meta_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -189,6 +219,18 @@ class OneBotV11AdapterTest(unittest.TestCase):
         sender.send_message.assert_called_once()
         self.assertEqual(sender.send_message.call_args.kwargs["area"], "area-1")
         self.assertEqual(sender.send_message.call_args.kwargs["channel"], "channel-1")
+
+    def test_send_group_msg_fails_when_response_has_no_message_id(self) -> None:
+        from onebot_v11.store import make_group_source
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, sender = self._adapter(tmpdir)
+            sender.send_message.return_value = SimpleNamespace(json=lambda: {"status": True})
+            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
+            result = asyncio.run(adapter.call_action("send_group_msg", {"group_id": group_id, "message": "hi"}))
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["retcode"], 1500)
 
     def test_send_group_msg_accepts_oopz_context_when_group_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -238,6 +280,21 @@ class OneBotV11AdapterTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(sender.send_message.call_args.kwargs["referenceMessageId"], "oopz-msg-1")
+
+    def test_incoming_message_raw_message_is_cq_encoded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_raw_event(_raw_message("(met)user-1(met) hi")))
+
+        at_segment = next(seg for seg in event["message"] if seg["type"] == "at")
+        self.assertEqual(event["raw_message"], f"[CQ:at,qq={at_segment['data']['qq']}] hi")
+
+    def test_incoming_message_raw_message_escapes_special_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_raw_event(_raw_message("a[b]&c")))
+
+        self.assertEqual(event["raw_message"], "a&#91;b&#93;&amp;c")
 
     def test_incoming_reply_is_restored_as_reply_segment(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -185,11 +185,16 @@ def _run_join_poll_loop(
     bot_uid: str,
     auto_role_id: str = "",
     auto_role_name: str = "",
+    message_template_leave: str = "",
+    on_member_change: Optional[Callable[[str, str, str], None]] = None,
 ) -> None:
     """
-    后台轮询域成员列表，发现新加入的成员则发送欢迎消息。
+    后台轮询域成员列表，对比快照得出加入 / 退出成员。
     支持多域：遍历 AreaConfigRegistry 中的所有域，每个域独立维护成员快照。
-    首次轮询只记录当前成员，不发送；之后每次对比上次集合，多出来的且非 bot 则发欢迎。
+    首次轮询只记录当前成员，不发送；之后每次对比上次集合：多出来的为加入（发欢迎
+    并自动分配身份组），少掉的为退出（发退出消息）。两类变更都会通过
+    ``on_member_change(action, area, uid)`` 通知外部消费者（如 OneBot v11），因为
+    Oopz WS 没有可靠的域成员事件码，轮询是这里唯一可信的来源。
     """
     from core.area_config import get_area_registry
 
@@ -197,6 +202,49 @@ def _run_join_poll_loop(
     first_run_set: Set[str] = set()
 
     current_interval = max(5, int(interval_seconds))
+
+    def _notify_member_change(action: str, area_id: str, uid: str) -> None:
+        if on_member_change is None:
+            return
+        try:
+            on_member_change(action, area_id, uid)
+        except Exception as e:
+            logger.warning("成员变更回调失败 action=%s area=%s uid=%s: %s", action, area_id[:8], uid[:8], e)
+
+    def _handle_join(area_id: str, channel: str, uid: str, area_cfg) -> None:
+        try:
+            name = _resolve_display_name(sender, uid, None)
+            join_msg = area_cfg.welcome_message if area_cfg.welcome_message else message_template_join
+            text = join_msg.format(name=name, uid=uid)
+            mention_text, mention_list = _build_member_mention(uid)
+            sender.send_message(
+                f"{mention_text}\n{text}",
+                area=area_id,
+                channel=channel,
+                auto_recall=False,
+                mentionList=mention_list,
+            )
+        except Exception as e:
+            logger.warning("域成员欢迎发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
+        a_role_id = area_cfg.auto_assign_role_id or auto_role_id
+        a_role_name = area_cfg.auto_assign_role_name or auto_role_name
+        _try_assign_role(sender, uid, area_id, a_role_id, a_role_name)
+        _notify_member_change("join", area_id, uid)
+
+    def _handle_leave(area_id: str, channel: str, uid: str, area_cfg) -> None:
+        try:
+            leave_msg = area_cfg.leave_message if area_cfg.leave_message else message_template_leave
+            if leave_msg:
+                name = _resolve_display_name(sender, uid, None)
+                sender.send_message(
+                    leave_msg.format(name=name, uid=uid),
+                    area=area_id,
+                    channel=channel,
+                    auto_recall=False,
+                )
+        except Exception as e:
+            logger.warning("域成员退出通知发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
+        _notify_member_change("leave", area_id, uid)
 
     def _fetch_member_uids(area: str) -> Tuple[Optional[Set[str]], bool]:
         page_size = 100
@@ -269,27 +317,16 @@ def _run_join_poll_loop(
                 else:
                     prev = last_uids_map.get(area_id, set())
                     new_uids = current_uids - prev
+                    left_uids = prev - current_uids
                     last_uids_map[area_id] = current_uids
                     for uid in new_uids:
                         if not uid or uid == bot_uid:
                             continue
-                        try:
-                            name = _resolve_display_name(sender, uid, None)
-                            join_msg = area_cfg.welcome_message if area_cfg.welcome_message else message_template_join
-                            text = join_msg.format(name=name, uid=uid)
-                            mention_text, mention_list = _build_member_mention(uid)
-                            sender.send_message(
-                                f"{mention_text}\n{text}",
-                                area=area_id,
-                                channel=channel,
-                                auto_recall=False,
-                                mentionList=mention_list,
-                            )
-                        except Exception as e:
-                            logger.warning("域成员欢迎发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
-                        a_role_id = area_cfg.auto_assign_role_id or auto_role_id
-                        a_role_name = area_cfg.auto_assign_role_name or auto_role_name
-                        _try_assign_role(sender, uid, area_id, a_role_id, a_role_name)
+                        _handle_join(area_id, channel, uid, area_cfg)
+                    for uid in left_uids:
+                        if not uid or uid == bot_uid:
+                            continue
+                        _handle_leave(area_id, channel, uid, area_cfg)
 
             if any_rate_limited:
                 next_interval = _next_poll_interval(interval_seconds, current_interval, True)
@@ -383,6 +420,7 @@ def start_area_join_notifier(
     sender: Optional[OopzSender] = None,
     message_template_join: str = "欢迎 {name} 加入域～",
     message_template_leave: str = "{name} 已退出域",
+    on_member_change: Optional[Callable[[str, str, str], None]] = None,
 ) -> Optional[Callable[[int, dict], None]]:
     try:
         import config as _config
@@ -396,9 +434,14 @@ def start_area_join_notifier(
     msg_join = str(config.get("message_template", message_template_join) or message_template_join)
     if "{name}" not in msg_join and "{uid}" not in msg_join:
         msg_join = "欢迎 {name} 加入域～"
-    msg_leave = str(config.get("message_template_leave", message_template_leave) or message_template_leave)
-    if "{name}" not in msg_leave and "{uid}" not in msg_leave:
-        msg_leave = "{name} 已退出域"
+    # 显式留空（"" 或 None）= 不在频道发退出提示，但 OneBot group_decrease 仍会推送。
+    raw_leave = config.get("message_template_leave", message_template_leave)
+    if raw_leave is None or (isinstance(raw_leave, str) and not raw_leave.strip()):
+        msg_leave = ""
+    else:
+        msg_leave = str(raw_leave)
+        if "{name}" not in msg_leave and "{uid}" not in msg_leave:
+            msg_leave = "{name} 已退出域"
 
     s = sender or OopzSender()
     # 加入事件服务端不推送，用轮询检测新成员并发欢迎
@@ -410,7 +453,7 @@ def start_area_join_notifier(
         logger.info("新人自动身份组已启用: id=%s, name=%s", auto_role_id or "(无)", auto_role_name or "(无)")
     poll_thread = threading.Thread(
         target=_run_join_poll_loop,
-        args=(s, msg_join, poll_interval, bot_uid, auto_role_id, auto_role_name),
+        args=(s, msg_join, poll_interval, bot_uid, auto_role_id, auto_role_name, msg_leave, on_member_change),
         daemon=True,
         name="AreaJoinPoll",
     )
