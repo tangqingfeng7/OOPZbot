@@ -301,6 +301,7 @@ AREA_JOIN_NOTIFY = {
     "poll_interval_seconds": 2,   # 轮询间隔（秒），最小 2；遇到 429 会自动退避并临时放慢
     "auto_assign_role_id": "",    # 新人自动分配的身份组 ID，留空则不分配
     "auto_assign_role_name": "",  # 或用身份组名称匹配（优先使用 role_id）
+    "member_fetch_max": 5000,     # 单次成员快照翻页上限；超过该人数的域会暂停加入/退出检测并告警
 }
 
 # 聊天自动回复配置

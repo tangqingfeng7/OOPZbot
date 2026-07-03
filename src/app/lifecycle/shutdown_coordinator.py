@@ -13,6 +13,11 @@ class ShutdownCoordinator:
         netease_runtime.stop()
 
         if context:
+            if context.dispatcher:
+                try:
+                    context.dispatcher.stop()
+                except Exception as exc:
+                    logger.warning("停止消息分发器时出现异常: %s", exc)
             if context.onebot_v11:
                 try:
                     context.onebot_v11.stop()

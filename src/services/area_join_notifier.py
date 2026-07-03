@@ -112,6 +112,49 @@ def _next_poll_interval(base_interval: int, current_interval: int, rate_limited:
     return min(max(current * 2, base), 60)
 
 
+def fetch_member_uid_snapshot(
+    sender: OopzSender,
+    area: str,
+    member_fetch_max: int = 5000,
+) -> Tuple[Optional[Set[str]], bool, bool]:
+    """分页拉取域成员快照。
+
+    返回 ``(uids, rate_limited, truncated)``：
+    - uids 为 None 表示本次拉取失败（rate_limited 标记是否为限流）；
+    - truncated=True 表示成员数超过 member_fetch_max、快照不完整，
+      调用方必须跳过本轮对比，否则窗口外成员会被误判为加入/退出。
+    """
+    page_size = 100
+    uids: Set[str] = set()
+    start = 0
+    while start < member_fetch_max:
+        result = sender.get_area_members(
+            area=area,
+            offset_start=start,
+            offset_end=start + page_size - 1,
+            quiet=True,
+        )
+        if "error" in result:
+            err = str(result.get("error") or "")
+            is_rl = err.startswith("HTTP 429") or err in ("invalid JSON", "empty response") or "服务异常" in err
+            return None, is_rl, False
+        members = result.get("members") or []
+        for m in members:
+            uid = _member_uid(m)
+            if uid:
+                uids.add(uid)
+        if len(members) < page_size:
+            return uids, False, False
+        try:
+            total = int(result.get("userCount") or result.get("total") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        if total and len(uids) >= total:
+            return uids, False, False
+        start += page_size
+    return uids, False, True
+
+
 def _build_member_mention(uid: str) -> Tuple[str, list]:
     """构造 Oopz 的 @ 用户正文片段和 mentionList。"""
     uid = (uid or "").strip()
@@ -187,6 +230,7 @@ def _run_join_poll_loop(
     auto_role_name: str = "",
     message_template_leave: str = "",
     on_member_change: Optional[Callable[[str, str, str], None]] = None,
+    member_fetch_max: int = 5000,
 ) -> None:
     """
     后台轮询域成员列表，对比快照得出加入 / 退出成员。
@@ -200,6 +244,7 @@ def _run_join_poll_loop(
 
     last_uids_map: dict[str, Set[str]] = {}
     first_run_set: Set[str] = set()
+    truncated_warned: Set[str] = set()
 
     current_interval = max(5, int(interval_seconds))
 
@@ -246,29 +291,8 @@ def _run_join_poll_loop(
             logger.warning("域成员退出通知发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
         _notify_member_change("leave", area_id, uid)
 
-    def _fetch_member_uids(area: str) -> Tuple[Optional[Set[str]], bool]:
-        page_size = 100
-        max_fetch = 1000
-        uids: Set[str] = set()
-        for start in range(0, max_fetch, page_size):
-            result = sender.get_area_members(
-                area=area,
-                offset_start=start,
-                offset_end=start + page_size - 1,
-                quiet=True,
-            )
-            if "error" in result:
-                err = str(result.get("error") or "")
-                is_rl = err.startswith("HTTP 429") or err in ("invalid JSON", "empty response") or "服务异常" in err
-                return None, is_rl
-            members = result.get("members") or []
-            for m in members:
-                uid = _member_uid(m)
-                if uid:
-                    uids.add(uid)
-            if len(members) < page_size:
-                break
-        return uids, False
+    def _fetch_member_uids(area: str) -> Tuple[Optional[Set[str]], bool, bool]:
+        return fetch_member_uid_snapshot(sender, area, member_fetch_max)
 
     def _resolve_area_channel(area_id: str) -> Tuple[str, str]:
         registry = get_area_registry()
@@ -304,10 +328,23 @@ def _run_join_poll_loop(
                     continue
 
                 area_cfg = registry.get(area_id)
-                current_uids, rate_limited = _fetch_member_uids(area_id)
+                current_uids, rate_limited, truncated = _fetch_member_uids(area_id)
 
                 if current_uids is None:
                     any_rate_limited = any_rate_limited or rate_limited
+                    continue
+
+                if truncated:
+                    # 快照不完整时跳过对比：窗口外成员会被误判为加入/退出，
+                    # 造成虚假欢迎消息、身份组误分配和 OneBot 假事件。
+                    if area_id not in truncated_warned:
+                        truncated_warned.add(area_id)
+                        logger.warning(
+                            "域 %s 成员数超过 member_fetch_max=%d，成员快照不完整，"
+                            "已暂停该域的加入/退出检测（可调大 AREA_JOIN_NOTIFY.member_fetch_max）",
+                            area_id[:8],
+                            member_fetch_max,
+                        )
                     continue
 
                 is_first = area_id not in first_run_set
@@ -449,11 +486,16 @@ def start_area_join_notifier(
     bot_uid = (OOPZ_CONFIG.get("person_uid") or "").strip()
     auto_role_id = str(config.get("auto_assign_role_id") or "").strip()
     auto_role_name = str(config.get("auto_assign_role_name") or "").strip()
+    try:
+        member_fetch_max = max(200, int(config.get("member_fetch_max", 5000)))
+    except (TypeError, ValueError):
+        member_fetch_max = 5000
     if auto_role_id or auto_role_name:
         logger.info("新人自动身份组已启用: id=%s, name=%s", auto_role_id or "(无)", auto_role_name or "(无)")
     poll_thread = threading.Thread(
         target=_run_join_poll_loop,
         args=(s, msg_join, poll_interval, bot_uid, auto_role_id, auto_role_name, msg_leave, on_member_change),
+        kwargs={"member_fetch_max": member_fetch_max},
         daemon=True,
         name="AreaJoinPoll",
     )

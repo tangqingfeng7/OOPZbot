@@ -17,3 +17,4 @@ class AppContext:
     notifier_callback: Optional[Any] = None
     onebot_v11: Optional[Any] = None
     voice: Optional[VoiceClient] = None
+    dispatcher: Optional[Any] = None
