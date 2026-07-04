@@ -373,20 +373,55 @@ class NeteaseCloud:
             logger.warning("网易云未获取到播放链接: song_id=%s level=%s", song_id, level)
         return None
 
-    def get_user_id(self) -> Optional[int]:
-        """获取当前登录用户的 ID"""
-        data = self._get("/user/account")
-        if not data or data.get("code") != 200:
+    def get_account_profile(self) -> Optional[dict[str, str]]:
+        """通过项目约定的认证接口获取当前登录账号。"""
+        if not self.cookie:
+            logger.debug("网易云账号身份查询跳过: 未配置 Cookie")
             return None
-        profile = data.get("profile")
-        return profile.get("userId") if profile else None
+        data = self._post_with_cookie(
+            "/login/status",
+            params={"timestamp": int(time.time() * 1000)},
+        )
+        response_data = data.get("data") if isinstance(data, dict) else None
+        raw_profile = response_data.get("profile") if isinstance(response_data, dict) else None
+        if not isinstance(raw_profile, dict) or not raw_profile.get("userId"):
+            logger.debug("网易云账号接口未返回可用身份: path=/login/status")
+            return None
+        logger.debug("网易云账号身份解析成功: path=/login/status")
+        return {
+            "user_id": str(raw_profile["userId"]),
+            "nickname": str(raw_profile.get("nickname") or ""),
+            "avatar_url": str(raw_profile.get("avatarUrl") or ""),
+        }
+
+    def get_user_id(self) -> Optional[int]:
+        """获取当前登录用户的 ID。"""
+        profile = self.get_account_profile()
+        if not profile:
+            return None
+        try:
+            return int(profile["user_id"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("网易云账号返回了无效的用户 ID")
+            return None
 
     def get_liked_ids(self, uid: int) -> list:
         """获取用户喜欢的歌曲 ID 列表"""
-        data = self._get("/likelist", params={"uid": uid})
-        if not data or data.get("code") != 200:
+        if not self.cookie:
+            logger.debug("网易云喜欢列表查询跳过: 未配置 Cookie")
             return []
-        return data.get("ids", [])
+        data = self._post_with_cookie(
+            "/likelist",
+            params={"uid": uid, "timestamp": int(time.time() * 1000)},
+        )
+        if not isinstance(data, dict) or data.get("code") != 200:
+            logger.debug("网易云喜欢列表接口未成功: path=/likelist")
+            return []
+        ids = data.get("ids")
+        if not isinstance(ids, list):
+            logger.debug("网易云喜欢列表响应缺少 ids: path=/likelist")
+            return []
+        return ids
 
     def get_song_detail(self, song_id: int) -> Optional[dict]:
         """通过歌曲 ID 获取歌曲详细信息"""

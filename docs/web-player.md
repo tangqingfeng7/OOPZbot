@@ -51,6 +51,7 @@ Web 播放器是一个独立的歌词与播放控制页面，与 Bot 播放状�
 | `token_ttl_seconds` | Web 随机访问令牌有效期（秒），`0` 表示不过期（不建议） |
 | `cookie_max_age_seconds` | 浏览器 cookie 有效期（秒）；未配置时默认与 `token_ttl_seconds` 一致 |
 | `cookie_secure` | 仅在 HTTPS 下发送 cookie（使用 Nginx + SSL 时设为 `True`） |
+| `send_link_enabled` | 是否在点歌通知中发送播放器链接（默认 `True`） |
 | `link_idle_release_seconds` | 播放列表空闲超时后释放随机访问链接（秒，`0` 表示不释放） |
 | `admin_enabled` | 是否启用管理后台（访问 `/admin`） |
 | `admin_password` | 管理后台登录密码 |

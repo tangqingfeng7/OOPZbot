@@ -97,6 +97,118 @@ class NeteaseCookiePlaybackTest(unittest.TestCase):
         self.assertEqual(data["cookie"], "MUSIC_U=abc")
         self.assertEqual(headers["Cookie"], "MUSIC_U=abc")
 
+    def test_get_user_id_prefers_nested_login_status_profile(self) -> None:
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, headers=None, timeout=10):
+                self.calls.append(("POST", url, data or {}, headers or {}))
+                return _FakeResponse({
+                    "data": {
+                        "code": 200,
+                        "profile": {"userId": 399919346, "nickname": "测试账号"},
+                    },
+                })
+
+            def get(self, url, params=None, headers=None, timeout=10):
+                self.calls.append(("GET", url, params or {}, headers or {}))
+                return _FakeResponse({"code": 200, "account": None, "profile": None})
+
+        session = FakeSession()
+        client = self._client(session)
+
+        user_id = client.get_user_id()
+
+        self.assertEqual(user_id, 399919346)
+        self.assertEqual(len(session.calls), 1)
+        method, request_url, data, headers = session.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(request_url, "http://netease.example/login/status")
+        self.assertEqual(data["cookie"], "MUSIC_U=abc")
+        self.assertIn("timestamp", data)
+        self.assertEqual(headers["Cookie"], "MUSIC_U=abc")
+
+    def test_get_user_id_does_not_fallback_to_another_endpoint(self) -> None:
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, headers=None, timeout=10):
+                self.calls.append(("POST", url))
+                return _FakeResponse({"data": {"code": 200, "profile": None}})
+
+            def get(self, url, params=None, headers=None, timeout=10):
+                self.calls.append(("GET", url))
+                return _FakeResponse({
+                    "code": 200,
+                    "account": {"id": 123456, "userName": "旧版账号"},
+                    "profile": None,
+                })
+
+        session = FakeSession()
+        client = self._client(session)
+
+        user_id = client.get_user_id()
+
+        self.assertIsNone(user_id)
+        self.assertEqual(
+            session.calls,
+            [("POST", "http://netease.example/login/status")],
+        )
+
+    def test_get_liked_ids_posts_cookie_in_body(self) -> None:
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, headers=None, timeout=10):
+                self.calls.append(("POST", url, data or {}, headers or {}))
+                return _FakeResponse({"code": 200, "ids": [10, 20, 30]})
+
+            def get(self, url, params=None, headers=None, timeout=10):
+                self.calls.append(("GET", url, params or {}, headers or {}))
+                return _FakeResponse({"code": 200, "ids": []})
+
+        session = FakeSession()
+        client = self._client(session)
+
+        liked_ids = client.get_liked_ids(399919346)
+
+        self.assertEqual(liked_ids, [10, 20, 30])
+        self.assertEqual(len(session.calls), 1)
+        method, request_url, data, headers = session.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(request_url, "http://netease.example/likelist")
+        self.assertEqual(data["uid"], 399919346)
+        self.assertEqual(data["cookie"], "MUSIC_U=abc")
+        self.assertIn("timestamp", data)
+        self.assertEqual(headers["Cookie"], "MUSIC_U=abc")
+
+    def test_get_liked_ids_does_not_fallback_after_failed_post(self) -> None:
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, data=None, headers=None, timeout=10):
+                self.calls.append(("POST", url))
+                return _FakeResponse({"code": 500})
+
+            def get(self, url, params=None, headers=None, timeout=10):
+                self.calls.append(("GET", url))
+                return _FakeResponse({"code": 200, "ids": [40]})
+
+        session = FakeSession()
+        client = self._client(session)
+
+        liked_ids = client.get_liked_ids(123456)
+
+        self.assertEqual(liked_ids, [])
+        self.assertEqual(
+            session.calls,
+            [("POST", "http://netease.example/likelist")],
+        )
+
     def test_get_song_url_rejects_free_trial_audio(self) -> None:
         class FakeSession:
             def __init__(self):

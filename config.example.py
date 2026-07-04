@@ -229,6 +229,7 @@ WEB_PLAYER_CONFIG = {
     "token_ttl_seconds": 86400,  # Web 随机访问令牌有效期（秒），0=不过期（不建议）
     "cookie_max_age_seconds": 86400,  # 浏览器 cookie 有效期（秒）；留空则跟 token_ttl_seconds 一致
     "cookie_secure": False,  # True=仅 HTTPS 发送 cookie；使用 Nginx + SSL 时应设为 True
+    "send_link_enabled": True,  # 点歌通知中是否发送 Web 播放器链接
     "link_idle_release_seconds": 1800,  # 播放列表空闲超过该秒数后，释放随机播放器链接（0=不释放）
     # 管理后台（访问 /admin）
     "admin_enabled": False,  # 是否启用管理后台

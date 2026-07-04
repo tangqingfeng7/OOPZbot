@@ -420,10 +420,19 @@
 
   var _csInstances = new Map();
 
+  function _csSetElevated(wrap, elevated) {
+    var targets = [
+      wrap.closest(".field"),
+      wrap.closest(".surface-card, .table-card, .action-row"),
+    ];
+    targets.forEach(function (target) {
+      if (target) target.classList.toggle("cs-elevated", elevated);
+    });
+  }
+
   function _csClose(wrap) {
     wrap.classList.remove("is-open");
-    var card = wrap.closest(".surface-card, .table-card, .action-row");
-    if (card) card.classList.remove("cs-elevated");
+    _csSetElevated(wrap, false);
   }
 
   function _csCloseAll(except) {
@@ -476,8 +485,7 @@
       _csCloseAll();
       if (!isOpen) {
         wrap.classList.add("is-open");
-        var card = wrap.closest(".surface-card, .table-card, .action-row");
-        if (card) card.classList.add("cs-elevated");
+        _csSetElevated(wrap, true);
         var selected = dropdown.querySelector(".is-selected");
         if (selected) selected.scrollIntoView({ block: "nearest" });
       }

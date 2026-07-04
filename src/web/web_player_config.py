@@ -60,6 +60,7 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
         "token_ttl_seconds": {"type": "int", "min": 0, "max": 7 * 24 * 3600, "default": 86400},
         "cookie_max_age_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 86400},
         "cookie_secure": {"type": "bool", "default": False},
+        "send_link_enabled": {"type": "bool", "default": True},
         "link_idle_release_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 1800},
         "admin_enabled": {"type": "bool", "default": False},
         "admin_password": {"type": "str", "max_len": 128, "sensitive": True, "default": ""},
@@ -681,7 +682,7 @@ def config_snapshot() -> dict:
                 section[field] = value if meta.get("expose_in_admin") else ""
                 section[f"{field}_configured"] = bool(value)
             else:
-                section[field] = target.get(field)
+                section[field] = target.get(field, copy.deepcopy(meta.get("default")))
         result[group_name] = section
     return result
 

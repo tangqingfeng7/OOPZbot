@@ -57,6 +57,7 @@ class WebPlayerConfigPersistTest(unittest.TestCase):
         self.assertNotIn("default", schema["web_player"]["admin_password"])
         self.assertEqual(schema["web_player"]["port"]["default"], 8080)
         self.assertEqual(schema["web_player"]["host"]["default"], "0.0.0.0")
+        self.assertTrue(schema["web_player"]["send_link_enabled"]["default"])
         self.assertEqual(schema["music"]["default_volume"]["default"], 50)
         self.assertEqual(schema["web_player"]["port"]["type"], "int")
 
@@ -65,6 +66,17 @@ class WebPlayerConfigPersistTest(unittest.TestCase):
         self.assertEqual(cfg.config_default("web_player", "host"), "0.0.0.0")
         self.assertIsInstance(cfg.web_port(), int)
         self.assertTrue(cfg.web_host())
+
+    def test_config_snapshot_uses_schema_default_for_missing_field(self) -> None:
+        marker = object()
+        old_value = cfg.WEB_PLAYER_CONFIG.pop("send_link_enabled", marker)
+        try:
+            snapshot = cfg.config_snapshot()
+        finally:
+            if old_value is not marker:
+                cfg.WEB_PLAYER_CONFIG["send_link_enabled"] = old_value
+
+        self.assertTrue(snapshot["web_player"]["send_link_enabled"])
 
     def test_persist_config_updates_creates_missing_music_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -141,6 +141,29 @@ body[data-admin-page]::after {
   background: rgba(255, 255, 255, 0.1);
 }
 
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .shell-topbar,
+  .page-hero,
+  .auth-card,
+  .surface-card,
+  .metric-card,
+  .summary-card,
+  .table-card,
+  .console-card,
+  .sticky-rail {
+    background: rgba(16, 16, 18, 0.9);
+  }
+
+  .surface-card:hover,
+  .metric-card:hover,
+  .summary-card:hover,
+  .table-card:hover,
+  .console-card:hover,
+  .auth-card:hover {
+    background: rgba(22, 22, 26, 0.94);
+  }
+}
+
 .shell-topbar {
   position: sticky;
   top: 12px;
@@ -880,14 +903,15 @@ select.select--compact {
   max-height: 260px;
   overflow-y: auto;
   overflow-x: hidden;
-  background: rgba(18, 18, 18, 0.9);
+  /* 近实色底：下拉面板悬浮在其他表单项上方，必须完全盖住底下内容 */
+  background: linear-gradient(180deg, rgba(30, 30, 34, 0.98), rgba(17, 17, 20, 0.98));
   backdrop-filter: blur(24px) saturate(1.4);
   -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-md);
   box-shadow:
-    0 4px 6px -1px rgba(0, 0, 0, 0.25),
-    0 12px 30px -4px rgba(0, 0, 0, 0.35);
+    0 4px 6px -1px rgba(0, 0, 0, 0.35),
+    0 12px 30px -4px rgba(0, 0, 0, 0.55);
   padding: 5px;
   z-index: 600;
   opacity: 0;
@@ -1095,6 +1119,10 @@ select.select--compact {
 .field {
   display: grid;
   gap: 8px;
+}
+
+.field[hidden] {
+  display: none;
 }
 
 .field label {
