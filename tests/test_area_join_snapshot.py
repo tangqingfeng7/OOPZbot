@@ -8,7 +8,13 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from services.area_join_notifier import fetch_member_uid_snapshot
+from services.area_join_notifier import (
+    OPERATE_LOG_MEMBER_OP_TYPES,
+    AreaOperateLogCursor,
+    fetch_member_uid_snapshot,
+    fetch_operate_log_changes,
+    parse_area_operate_log_changes,
+)
 
 
 def _members(start: int, count: int) -> list[dict]:
@@ -77,6 +83,65 @@ class FetchMemberSnapshotTest(unittest.TestCase):
         self.assertIsNone(uids)
         self.assertFalse(rate_limited)
         self.assertFalse(truncated)
+
+
+class AreaOperateLogChangeTest(unittest.TestCase):
+    def test_parse_join_and_leave_logs(self) -> None:
+        changes = parse_area_operate_log_changes(
+            "area-1",
+            {
+                "logs": [
+                    {"optUid": "user-1", "content": "加入域", "createTime": 100},
+                    {"optUid": "user-1", "content": "退出域", "createTime": 110},
+                    {"optUid": "user-2", "content": "移出域", "createTime": 120},
+                ]
+            },
+        )
+
+        self.assertEqual([c.action for c in changes], ["join", "leave"])
+        self.assertEqual([c.uid for c in changes], ["user-1", "user-1"])
+        self.assertEqual([c.create_time for c in changes], [100, 110])
+
+    def test_cursor_skips_initial_logs_and_consumes_new_logs_once(self) -> None:
+        cursor = AreaOperateLogCursor()
+        first_batch = parse_area_operate_log_changes(
+            "area-1",
+            {"logs": [{"optUid": "user-1", "content": "加入域", "createTime": 100}]},
+        )
+
+        self.assertEqual(cursor.consume("area-1", first_batch), [])
+        self.assertEqual(cursor.consume("area-1", first_batch), [])
+
+        second_batch = parse_area_operate_log_changes(
+            "area-1",
+            {
+                "logs": [
+                    {"optUid": "user-1", "content": "加入域", "createTime": 100},
+                    {"optUid": "user-2", "content": "退出域", "createTime": 110},
+                ]
+            },
+        )
+
+        fresh = cursor.consume("area-1", second_batch)
+        self.assertEqual(len(fresh), 1)
+        self.assertEqual(fresh[0].uid, "user-2")
+        self.assertEqual(fresh[0].action, "leave")
+
+    def test_fetch_operate_log_changes_uses_member_op_filters(self) -> None:
+        sender = Mock()
+        sender.get_area_operate_logs = Mock(
+            return_value={"logs": [{"optUid": "user-1", "content": "加入域", "createTime": 100}]}
+        )
+
+        changes, rate_limited = fetch_operate_log_changes(sender, "area-1")
+
+        self.assertFalse(rate_limited)
+        self.assertEqual(len(changes), 1)
+        sender.get_area_operate_logs.assert_called_once_with(
+            area="area-1",
+            offset=0,
+            op_types=OPERATE_LOG_MEMBER_OP_TYPES,
+        )
 
 
 if __name__ == "__main__":

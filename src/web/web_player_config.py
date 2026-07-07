@@ -74,11 +74,13 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
     },
     "area_join_notify": {
         "enabled": {"type": "bool", "default": False},
+        "event_source": {"type": "str", "max_len": 32, "default": "operate_logs"},
         "message_template": {"type": "str", "max_len": 200, "default": "欢迎 {name} 加入域～\n请阅读频道规则，祝你玩得开心！"},
         "message_template_leave": {"type": "str", "max_len": 200, "default": "{name} 已退出域"},
         "poll_interval_seconds": {"type": "int", "min": 2, "max": 3600, "default": 2},
         "auto_assign_role_id": {"type": "str", "max_len": 128, "default": ""},
         "auto_assign_role_name": {"type": "str", "max_len": 128, "default": ""},
+        "member_fetch_max": {"type": "int", "min": 200, "max": 100000, "default": 5000},
     },
     "chat": {
         "enabled": {"type": "bool", "default": True},

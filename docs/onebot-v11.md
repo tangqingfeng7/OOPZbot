@@ -235,7 +235,8 @@ Oopz 域成员加入/退出会转成 OneBot v11 的 `notice.group_increase` / `n
 
 - Oopz 的成员变更是「域级」事件，而 OneBot 的 `group` 对应「域 + 频道」。这里会把 `group_id` 映射到该域的**默认文字频道**（首个非语音频道，结果会缓存）；真实归属域可读 `extra.oopz_area_id`。
 - Oopz 协议**没有可靠的「域成员加入/退出」WS 事件**，因此适配器**不再从数字事件码猜测成员变更**：WS 路径仅当事件载荷显式带 `action=join` / `action=leave` 之类标识时才生成 `group_increase` / `group_decrease`，杜绝把语音/频道事件误报成成员增减。
-- `group_increase` / `group_decrease` 的**主要来源是旁路通知服务的成员列表轮询**（`services.area_join_notifier`）：它按 `AREA_JOIN_NOTIFY.poll_interval_seconds` 周期对比域成员快照，新增成员判为加入、消失成员判为退出，再统一推送给 OneBot v11。因此需要 `AREA_JOIN_NOTIFY.enabled = True` 才会有成员增减事件，且事件有最长一个轮询周期的延迟。
+- `group_increase` / `group_decrease` 的**主要来源是旁路通知服务**（`services.area_join_notifier`）：默认按 `AREA_JOIN_NOTIFY.poll_interval_seconds` 周期轮询域管理日志接口，只消费 `AREA_SUBSCRIBE` / `AREA_UNSUBSCRIBE` 记录，再统一推送给 OneBot v11。因此需要 `AREA_JOIN_NOTIFY.enabled = True` 才会有成员增减事件，且事件有最长一个轮询周期的延迟。
+- 如果将 `AREA_JOIN_NOTIFY.event_source` 显式设为 `member_snapshot`，才会使用旧的成员列表快照对比方案；该模式会受 `member_fetch_max` 和成员列表接口稳定性影响。
 - 轮询发现退出时也会按 `AREA_JOIN_NOTIFY.message_template_leave` 发送退出消息；如果只想要 OneBot 事件、不想在频道里发退出提示，把该模板留空即可。
 
 ### 心跳
