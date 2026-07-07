@@ -110,7 +110,7 @@
     function _applyProxyModeState() {
       const manual = val("cfg_proxy_mode") === "manual";
       document.querySelectorAll(".js-proxy-detail").forEach(function (el) {
-        el.style.opacity = manual ? "" : "0.45";
+        el.hidden = !manual;
       });
     }
 
@@ -626,6 +626,7 @@
       { id: "cfg_web_token_ttl", path: "web_player.token_ttl_seconds", nullish: true },
       { id: "cfg_web_cookie_age", path: "web_player.cookie_max_age_seconds", nullish: true },
       { id: "cfg_link_idle", path: "web_player.link_idle_release_seconds", nullish: true },
+      { id: "cfg_send_web_link", path: "web_player.send_link_enabled" },
       { id: "cfg_cookie_secure", path: "web_player.cookie_secure" },
       { id: "cfg_admin_session_ttl", path: "web_player.admin_session_ttl_seconds", nullish: true },
       { id: "cfg_admin_cookie_secure", path: "web_player.admin_cookie_secure" },

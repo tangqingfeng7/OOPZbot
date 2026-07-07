@@ -165,98 +165,53 @@ def _netease_login_message(payload: dict, default: str = "") -> str:
     )
 
 
-def _extract_netease_profile(payload: dict) -> Optional[dict]:
-    """从账号接口返回中提取昵称和用户 ID。"""
-    nested = _netease_response_data(payload)
-    profile = payload.get("profile") or nested.get("profile") or {}
-    account = payload.get("account") or nested.get("account") or {}
-    if not isinstance(profile, dict):
-        profile = {}
-    if not isinstance(account, dict):
-        account = {}
-
-    user_id = (
-        profile.get("userId")
-        or profile.get("userid")
-        or profile.get("id")
-        or account.get("id")
-        or account.get("userId")
-    )
-    if not user_id:
-        return None
-
-    nickname = (
-        profile.get("nickname")
-        or profile.get("name")
-        or account.get("userName")
-        or account.get("nickname")
-        or ""
-    )
-    return {
-        "user_id": str(user_id),
-        "nickname": str(nickname or ""),
-        "avatar_url": str(profile.get("avatarUrl") or profile.get("avatarUrlHttps") or ""),
-    }
-
-
 def _netease_account_status(base_url: str, cookie: str) -> dict:
-    """使用 Cookie 查询当前网易云登录账号。"""
+    """通过项目约定的 ``POST /login/status`` 查询当前网易云账号。"""
     cookie = (cookie or "").strip()
     if not cookie:
         logger.debug("网易云账号状态查询跳过: 未配置 Cookie")
         return {"ok": True, "logged_in": False, "message": "未配置网易云 Cookie"}
 
     logger.debug("网易云账号状态查询开始: base_url=%s %s", base_url, _cookie_debug_summary(cookie))
-    requests_to_try = (
-        (
-            "POST",
+    try:
+        payload, _ = _netease_api_post(
+            base_url,
             "/login/status",
-            _netease_timestamp_params({"cookie": cookie}),
-        ),
-        (
-            "GET",
-            "/user/account",
-            _netease_timestamp_params(),
-        ),
-    )
-    last_message = ""
-    for method, path, params in requests_to_try:
-        try:
-            logger.debug("网易云账号状态请求: method=%s path=%s", method, path)
-            if method == "POST":
-                payload, _ = _netease_api_post(base_url, path, data=params, headers={"Cookie": cookie})
-            else:
-                payload, _ = _netease_api_get(base_url, path, params=params, headers={"Cookie": cookie})
-        except Exception as exc:
-            last_message = str(exc)
-            logger.debug("网易云账号状态请求失败 (%s %s): %s", method, path, exc)
-            continue
-
-        nested = _netease_response_data(payload)
-        logger.debug(
-            "网易云账号状态接口返回: path=%s code=%s data_code=%s message=%s",
-            path,
-            payload.get("code"),
-            nested.get("code") if isinstance(nested, dict) else None,
-            _netease_login_message(payload, ""),
+            data=_netease_timestamp_params({"cookie": cookie}),
+            headers={"Cookie": cookie},
         )
-        profile = _extract_netease_profile(payload)
-        if profile:
-            logger.debug("网易云账号状态查询成功: path=%s %s", path, _debug_profile_text(profile))
-            return {
-                "ok": True,
-                "logged_in": True,
-                "profile": profile,
-                "message": "网易云账号已登录",
-            }
-        last_message = _netease_login_message(payload, last_message)
-        logger.debug("网易云账号状态未解析到 profile: path=%s message=%s", path, last_message)
+    except Exception as exc:
+        logger.debug("网易云账号状态请求失败: path=/login/status error=%s", exc)
+        return {"ok": False, "logged_in": False, "message": str(exc)}
 
-    logger.debug("网易云账号状态查询未登录: message=%s", last_message)
+    nested = _netease_response_data(payload)
+    message = _netease_login_message(payload, "")
+    logger.debug(
+        "网易云账号状态接口返回: path=/login/status code=%s data_code=%s message=%s",
+        payload.get("code"),
+        nested.get("code"),
+        message,
+    )
+    raw_profile = nested.get("profile")
+    if isinstance(raw_profile, dict) and raw_profile.get("userId"):
+        profile = {
+            "user_id": str(raw_profile["userId"]),
+            "nickname": str(raw_profile.get("nickname") or ""),
+            "avatar_url": str(raw_profile.get("avatarUrl") or ""),
+        }
+        logger.debug("网易云账号状态查询成功: path=/login/status %s", _debug_profile_text(profile))
+        return {
+            "ok": True,
+            "logged_in": True,
+            "profile": profile,
+            "message": "网易云账号已登录",
+        }
+
+    logger.debug("网易云账号状态未解析到 profile: path=/login/status message=%s", message)
     return {
         "ok": True,
         "logged_in": False,
-        "message": last_message or "Cookie 未登录或已过期",
+        "message": message or "Cookie 未登录或已过期",
     }
 
 
@@ -269,6 +224,5 @@ __all__ = [
     "_netease_qr_code",
     "_cookie_from_response",
     "_netease_login_message",
-    "_extract_netease_profile",
     "_netease_account_status",
 ]

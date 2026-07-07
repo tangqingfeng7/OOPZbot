@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
 from config import OOPZ_CONFIG
+from core.json_utils import compact_json
 from core.logger_config import get_logger
 from oopz.responses import (
     ApiResult,
@@ -141,6 +142,34 @@ class OopzApiMixin:
         return parse_mutation_response(resp, accept_code=accept_code, body_limit=body_limit)
 
     # ---- 域成员查询 ----
+
+    def get_area_operate_logs(
+        self,
+        area: Optional[str] = None,
+        offset: int = 0,
+        op_types: Optional[list[str]] = None,
+    ) -> dict:
+        """获取域管理日志。"""
+        area = area or OOPZ_CONFIG["default_area"]
+        params = {
+            "area": area,
+            "offset": str(max(0, int(offset or 0))),
+            "opTypes": compact_json(op_types if op_types is not None else []),
+        }
+        res = self._query(
+            "GET",
+            "/client/v1/area/v1/operateLogs",
+            params=params,
+            data_default={},
+            retry=RATE_LIMIT_RETRY,
+        )
+        if not res.ok:
+            logger.debug("获取域管理日志失败 area=%s: %s", str(area)[:8], res.error)
+            return {"error": res.error or "unknown error"}
+        data = res.data if isinstance(res.data, dict) else {}
+        if not isinstance(data.get("logs"), list):
+            data["logs"] = []
+        return data
 
     def _get_area_members_cache_store(self) -> dict:
         store = getattr(self, "_area_members_cache", None)

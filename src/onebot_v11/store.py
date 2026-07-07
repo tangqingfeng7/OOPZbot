@@ -41,8 +41,10 @@ class OneBotStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def _init_db(self) -> None:
@@ -81,18 +83,21 @@ class OneBotStore:
             raise ValueError("source is required")
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT source, number FROM onebot_v11_id_map WHERE source=?",
+                "SELECT number FROM onebot_v11_id_map WHERE source=?",
                 (source_text,),
             ).fetchone()
-            if row is not None:
-                return OneBotId(str(row["source"]), int(row["number"]), str(row["source"]))
-            number = self._new_unique_number(conn)
-            conn.execute(
-                "INSERT INTO onebot_v11_id_map(source, number, created_at) VALUES (?, ?, ?)",
-                (source_text, number, int(time.time())),
-            )
-            conn.commit()
-            return OneBotId(source_text, number, source_text)
+            if row is None:
+                conn.execute(
+                    "INSERT INTO onebot_v11_id_map(source, number, created_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(source) DO NOTHING",
+                    (source_text, self._new_unique_number(conn), int(time.time())),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT number FROM onebot_v11_id_map WHERE source=?",
+                    (source_text,),
+                ).fetchone()
+            return OneBotId(source_text, int(row["number"]), source_text)
 
     def createId(self, source: str | int) -> OneBotId:
         return self.create_id(source)

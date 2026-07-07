@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import deque
 from typing import Any, Awaitable, Callable, Mapping
 
 from config import OOPZ_CONFIG
 from core.logger_config import get_logger
+from oopz.area_events import parse_member_event
 from oopz.name_resolver import get_resolver
-from onebot_v11.message import build_oopz_send_payload, from_v11_message, normalize_v11_message, to_v11_message
+from onebot_v11.message import (
+    build_oopz_send_payload,
+    cq_from_segments,
+    from_v11_message,
+    normalize_v11_message,
+    to_v11_message,
+)
 from onebot_v11.store import (
     MessageRecord,
     OneBotStore,
@@ -82,22 +90,37 @@ class OneBotV11Adapter:
         *,
         self_oopz_id: str = "",
         db_path: str,
+        member_list_max: int = 5000,
         enable_area_scoped_group_ban: bool = False,
         enable_set_group_kick_as_area_kick: bool = False,
         enable_set_group_leave_as_area_leave: bool = False,
+        enable_set_group_admin_as_area_role: bool = False,
+        group_admin_role_id: int = 0,
     ) -> None:
         self.sender = sender
         self.self_oopz_id = str(self_oopz_id or OOPZ_CONFIG.get("person_uid") or "")
         self.store = OneBotStore(db_path)
         self.self_id = self.store.create_id(make_self_source(self.self_oopz_id)).number
+        self.member_list_max = int(member_list_max or 0)
         self._event_sinks: list[EventSink] = []
         self._event_queue: deque[JsonDict] = deque(maxlen=1000)
+        self._area_default_channel: dict[str, str] = {}
         self.enable_area_scoped_group_ban = enable_area_scoped_group_ban
         self.enable_set_group_kick_as_area_kick = enable_set_group_kick_as_area_kick
         self.enable_set_group_leave_as_area_leave = enable_set_group_leave_as_area_leave
+        self.enable_set_group_admin_as_area_role = enable_set_group_admin_as_area_role
+        self.group_admin_role_id = int(group_admin_role_id or 0)
         self._actions = self._build_actions()
+        self._ignored_events: set[int] = {EVENT_HEARTBEAT, EVENT_SERVER_ID, EVENT_AUTH}
+        self._event_builders: dict[int, Callable[[dict[str, Any]], JsonDict]] = {
+            EVENT_CHAT_MESSAGE: lambda raw: self._message_event(raw, is_private=False),
+            EVENT_PRIVATE_MESSAGE: lambda raw: self._message_event(raw, is_private=True),
+            EVENT_MESSAGE_DELETE: lambda raw: self._delete_event(raw, is_private=False),
+            EVENT_PRIVATE_MESSAGE_DELETE: lambda raw: self._delete_event(raw, is_private=True),
+            EVENT_FRIEND_REQUEST: self._friend_request_event,
+        }
 
-    def _build_actions(self) -> dict[str, Callable[[Mapping[str, Any]], Awaitable[Any]]]:
+    def _build_actions(self) -> dict[str, Callable[[Mapping[str, Any]], Any]]:
         actions = {
             "get_supported_actions": self.get_supported_actions,
             ".get_supported_actions": self.get_supported_actions,
@@ -113,6 +136,7 @@ class OneBotV11Adapter:
             "delete_msg": self.delete_msg,
             "recall_message": self.delete_msg,
             "get_msg": self.get_msg,
+            "get_group_msg_history": self.get_group_msg_history,
             "get_login_info": self.get_login_info,
             "get_stranger_info": self.get_stranger_info,
             "get_friend_list": self.get_friend_list,
@@ -130,6 +154,8 @@ class OneBotV11Adapter:
             actions["set_group_kick"] = self.set_group_kick
         if self.enable_set_group_leave_as_area_leave:
             actions["set_group_leave"] = self.set_group_leave
+        if self.enable_set_group_admin_as_area_role:
+            actions["set_group_admin"] = self.set_group_admin
         return actions
 
     def add_event_sink(self, sink: EventSink) -> None:
@@ -142,9 +168,36 @@ class OneBotV11Adapter:
             pass
 
     async def emit_raw_event(self, raw: dict[str, Any]) -> JsonDict:
-        payload = self._to_onebot_event(raw)
+        payload = await asyncio.to_thread(self._to_onebot_event, raw)
         if not payload:
             return {}
+        await self._dispatch(payload)
+        return payload
+
+    async def emit_event(self, payload: JsonDict) -> JsonDict:
+        """Fan out an already-built OneBot event (e.g. server-generated heartbeat)."""
+        if not payload:
+            return {}
+        await self._dispatch(payload)
+        return payload
+
+    async def emit_member_change(self, action: str, area: str, uid: str) -> JsonDict:
+        """Emit a ``group_increase`` / ``group_decrease`` notice from an
+        authoritative out-of-band source (area member-list polling).
+
+        The Oopz WS stream has no reliable area-membership event code, so the
+        member-list poller (see ``services.area_join_notifier``) is the source of
+        truth and calls this with ``action`` in ``{"join", "leave"}``.
+        """
+        if action not in ("join", "leave") or not uid or uid == self.self_oopz_id:
+            return {}
+        payload = await asyncio.to_thread(self._member_notice_event, action, area, uid)
+        if not payload:
+            return {}
+        await self._dispatch(payload)
+        return payload
+
+    async def _dispatch(self, payload: JsonDict) -> None:
         self._event_queue.append(payload)
         for sink in list(self._event_sinks):
             try:
@@ -153,22 +206,65 @@ class OneBotV11Adapter:
                     await result
             except Exception:
                 logger.exception("OneBot v11 事件推送失败")
-        return payload
 
     def _to_onebot_event(self, raw: dict[str, Any]) -> JsonDict:
         try:
             event = int(raw.get("event", -1))
         except (TypeError, ValueError):
             event = -1
-        if event in {EVENT_HEARTBEAT, EVENT_SERVER_ID, EVENT_AUTH}:
+        if event in self._ignored_events:
             return {}
-        if event in {EVENT_CHAT_MESSAGE, EVENT_PRIVATE_MESSAGE}:
-            return self._message_event(raw, is_private=event == EVENT_PRIVATE_MESSAGE)
-        if event in {EVENT_MESSAGE_DELETE, EVENT_PRIVATE_MESSAGE_DELETE}:
-            return self._delete_event(raw, is_private=event == EVENT_PRIVATE_MESSAGE_DELETE)
-        if event == EVENT_FRIEND_REQUEST:
-            return self._friend_request_event(raw)
+        builder = self._event_builders.get(event)
+        if builder is not None:
+            return builder(raw)
+        member = parse_member_event(event, raw)
+        if member is not None:
+            action, area, uid = member
+            if uid and uid != self.self_oopz_id:
+                return self._member_notice_event(action, area, uid)
+            return {}
         return self._meta_event(raw, event)
+
+    def _member_notice_event(self, action: str, area: str, uid: str) -> JsonDict:
+        is_join = action == "join"
+        user_id = self.store.create_id(make_user_source(uid)).number
+        payload: JsonDict = {
+            "time": int(time.time()),
+            "self_id": self.self_id,
+            "post_type": "notice",
+            "notice_type": "group_increase" if is_join else "group_decrease",
+            "sub_type": "approve" if is_join else "leave",
+            "user_id": user_id,
+            "operator_id": user_id,
+            "extra": {"oopz_area_id": area, "oopz_user_id": uid},
+        }
+        group_id = self._resolve_area_group_id(area)
+        if group_id is not None:
+            payload["group_id"] = group_id
+        return payload
+
+    def _resolve_area_group_id(self, area: str) -> int | None:
+        """Map an area to a representative (default text) channel group_id, cached."""
+        if not area:
+            return None
+        channel = self._area_default_channel.get(area)
+        if not channel:
+            channel = self._find_default_text_channel(area)
+            if channel:
+                self._area_default_channel[area] = channel
+        if not channel:
+            return None
+        return self.store.create_id(make_group_source(area=area, channel=channel)).number
+
+    def _find_default_text_channel(self, area: str) -> str:
+        for group in self.sender.get_area_channels(area=area, quiet=True):
+            for ch in group.get("channels") or []:
+                if str(ch.get("type") or "").upper() == "VOICE":
+                    continue
+                channel = str(ch.get("id") or "").strip()
+                if channel:
+                    return channel
+        return ""
 
     def _message_event(self, raw: dict[str, Any], *, is_private: bool) -> JsonDict:
         body = safe_json_parse(raw.get("body"), {})
@@ -190,6 +286,7 @@ class OneBotV11Adapter:
         timestamp = parse_oopz_timestamp(msg.get("timestamp"))
         resolver = get_resolver()
         nickname = resolver.user_cached(str(msg.get("person") or ""))
+        message = to_v11_message(msg, store=self.store)
 
         payload: JsonDict = {
             "time": timestamp,
@@ -199,8 +296,8 @@ class OneBotV11Adapter:
             "sub_type": "friend" if is_private else "normal",
             "message_id": message_id,
             "user_id": user_id,
-            "message": to_v11_message(msg, store=self.store),
-            "raw_message": str(msg.get("content") or msg.get("text") or ""),
+            "message": message,
+            "raw_message": cq_from_segments(message),
             "font": 0,
             "sender": {"user_id": user_id, "nickname": nickname},
             "extra": {
@@ -313,7 +410,7 @@ class OneBotV11Adapter:
         if handler is None:
             return failed(1404, f"unsupported action: {action}", echo=echo)
         try:
-            data = await handler(params or {})
+            data = await asyncio.to_thread(handler, params or {})
             return ok(data, echo=echo)
         except ValueError as exc:
             return failed(1400, str(exc), echo=echo)
@@ -325,43 +422,50 @@ class OneBotV11Adapter:
             logger.exception("OneBot v11 action 执行失败: %s", action)
             return failed(1500, str(exc), echo=echo)
 
-    async def get_supported_actions(self, params: Mapping[str, Any]) -> list[str]:
+    def get_supported_actions(self, params: Mapping[str, Any]) -> list[str]:
         return list(self._actions)
 
-    async def get_latest_events(self, params: Mapping[str, Any]) -> list[JsonDict]:
+    def get_latest_events(self, params: Mapping[str, Any]) -> list[JsonDict]:
         limit = int(params.get("limit") or 0)
         events = list(self._event_queue)
         return events[-limit:] if limit > 0 else events
 
-    async def get_status(self, params: Mapping[str, Any]) -> JsonDict:
-        return {"online": True, "good": True}
+    def get_status(self, params: Mapping[str, Any]) -> JsonDict:
+        return self.status_snapshot()
 
-    async def get_version_info(self, params: Mapping[str, Any]) -> JsonDict:
+    def status_snapshot(self) -> JsonDict:
+        return {
+            "online": True,
+            "good": True,
+            "self": {"platform": "oopz", "user_id": self.self_id},
+        }
+
+    def get_version_info(self, params: Mapping[str, Any]) -> JsonDict:
         return {"app_name": "oopz-bot", "app_version": "local", "protocol_version": "v11"}
 
-    async def can_send_image(self, params: Mapping[str, Any]) -> JsonDict:
+    def can_send_image(self, params: Mapping[str, Any]) -> JsonDict:
         return {"yes": True}
 
-    async def can_send_record(self, params: Mapping[str, Any]) -> JsonDict:
+    def can_send_record(self, params: Mapping[str, Any]) -> JsonDict:
         return {"yes": False}
 
-    async def cleanup_message_mapping(self, params: Mapping[str, Any]) -> JsonDict:
+    def cleanup_message_mapping(self, params: Mapping[str, Any]) -> JsonDict:
         seconds = int(params.get("older_than_seconds") or 7 * 24 * 3600)
         return {"deleted": self.store.cleanup_messages(seconds)}
 
-    async def send_msg(self, params: Mapping[str, Any]) -> JsonDict:
+    def send_msg(self, params: Mapping[str, Any]) -> JsonDict:
         message_type = str(params.get("message_type") or "")
         if message_type == "private":
-            return await self.send_private_msg(params)
+            return self.send_private_msg(params)
         if message_type == "group":
-            return await self.send_group_msg(params)
+            return self.send_group_msg(params)
         if params.get("group_id") is not None:
-            return await self.send_group_msg(params)
+            return self.send_group_msg(params)
         if params.get("user_id") is not None:
-            return await self.send_private_msg(params)
+            return self.send_private_msg(params)
         raise ValueError("message_type, group_id or user_id is required")
 
-    async def send_group_msg(self, params: Mapping[str, Any]) -> JsonDict:
+    def send_group_msg(self, params: Mapping[str, Any]) -> JsonDict:
         group_id = _require_int(params, "group_id")
         message = params.get("message") or ""
         auto_escape = _parse_bool(params.get("auto_escape"))
@@ -374,7 +478,7 @@ class OneBotV11Adapter:
             raise ValueError("unknown group_id; provide oopz_area_id and oopz_channel_id")
         self.store.create_id(make_group_source(area=area, channel=channel))
         parts = from_v11_message(message, sender=self.sender, store=self.store, auto_escape=auto_escape)
-        text, mention_list, mention_all, attachments = build_oopz_send_payload(parts, store=self.store)
+        text, mention_list, mention_all, attachments, reference = build_oopz_send_payload(parts, store=self.store)
         resp = self.sender.send_message(
             text,
             area=area,
@@ -382,6 +486,7 @@ class OneBotV11Adapter:
             mentionList=mention_list,
             isMentionAll=mention_all,
             attachments=attachments,
+            referenceMessageId=reference or None,
         )
         oopz_message_id, timestamp = self._extract_send_result(resp)
         ob_message_id = self.store.create_id(
@@ -403,13 +508,13 @@ class OneBotV11Adapter:
         )
         return {"message_id": ob_message_id}
 
-    async def send_private_msg(self, params: Mapping[str, Any]) -> JsonDict:
+    def send_private_msg(self, params: Mapping[str, Any]) -> JsonDict:
         user_id = _require_int(params, "user_id")
         message = params.get("message") or ""
         auto_escape = _parse_bool(params.get("auto_escape"))
         target = self._resolve_user_id(user_id)
         parts = from_v11_message(message, sender=self.sender, store=self.store, auto_escape=auto_escape)
-        text, mention_list, mention_all, attachments = build_oopz_send_payload(parts, store=self.store)
+        text, mention_list, mention_all, attachments, _reference = build_oopz_send_payload(parts, store=self.store)
         result = self.sender.send_private_message(
             target,
             text,
@@ -417,7 +522,9 @@ class OneBotV11Adapter:
         )
         if isinstance(result, dict) and "error" in result:
             raise RuntimeError(str(result["error"]))
-        oopz_message_id = self._extract_message_id_from_payload(result) or str(int(time.time() * 1_000_000))
+        oopz_message_id = self._extract_message_id_from_payload(result)
+        if not oopz_message_id:
+            raise RuntimeError("send failed: Oopz response has no message id")
         channel = str(result.get("channel") or "") if isinstance(result, dict) else ""
         ob_message_id = self.store.create_id(
             make_message_source(target=target, message_id=oopz_message_id)
@@ -437,7 +544,7 @@ class OneBotV11Adapter:
         )
         return {"message_id": ob_message_id}
 
-    async def delete_msg(self, params: Mapping[str, Any]) -> None:
+    def delete_msg(self, params: Mapping[str, Any]) -> None:
         message_id = _require_int(params, "message_id")
         record = self.store.get_message(message_id)
         area = channel = target = oopz_message_id = ""
@@ -469,7 +576,7 @@ class OneBotV11Adapter:
             raise RuntimeError(str(result["error"]))
         return None
 
-    async def set_friend_add_request(self, params: Mapping[str, Any]) -> JsonDict:
+    def set_friend_add_request(self, params: Mapping[str, Any]) -> JsonDict:
         approve = _require_bool(params, "approve")
         remark = str(params.get("remark") or "")
         flag = str(params.get("flag") or "").strip()
@@ -493,7 +600,7 @@ class OneBotV11Adapter:
                 raise RuntimeError(str(remark_result["error"]))
         return {}
 
-    async def get_msg(self, params: Mapping[str, Any]) -> JsonDict:
+    def get_msg(self, params: Mapping[str, Any]) -> JsonDict:
         message_id = _require_int(params, "message_id")
         record = self.store.get_message(message_id)
         if record is None:
@@ -525,7 +632,40 @@ class OneBotV11Adapter:
             data["group_id"] = self.store.create_id(make_group_source(area=record.area, channel=record.channel)).number
         return data
 
-    async def get_login_info(self, params: Mapping[str, Any]) -> JsonDict:
+    def get_group_msg_history(self, params: Mapping[str, Any]) -> JsonDict:
+        group_id = _require_int(params, "group_id")
+        area, channel = self._resolve_group_id(group_id)
+        count = int(params.get("count") or 20)
+        raw_messages = self.sender.get_channel_messages(area=area, channel=channel, size=count)
+        messages = [
+            self._history_message(msg, area, channel, group_id)
+            for msg in raw_messages
+            if isinstance(msg, Mapping)
+        ]
+        messages.reverse()
+        return {"messages": messages}
+
+    def _history_message(self, msg: Mapping[str, Any], area: str, channel: str, group_id: int) -> JsonDict:
+        uid = str(msg.get("person") or "")
+        user_id = self.store.create_id(make_user_source(uid)).number if uid else 0
+        oopz_message_id = str(msg.get("messageId") or msg.get("id") or "")
+        message_id = self.store.create_id(
+            make_message_source(area=area, channel=channel, message_id=oopz_message_id)
+        ).number
+        nickname = get_resolver().user_cached(uid)
+        message = to_v11_message({**msg, "area": area, "channel": channel}, store=self.store)
+        return {
+            "time": parse_oopz_timestamp(msg.get("timestamp")),
+            "message_type": "group",
+            "message_id": message_id,
+            "user_id": user_id,
+            "group_id": group_id,
+            "sender": {"user_id": user_id, "nickname": nickname},
+            "message": message,
+            "raw_message": cq_from_segments(message),
+        }
+
+    def get_login_info(self, params: Mapping[str, Any]) -> JsonDict:
         detail = self.sender.get_self_detail()
         return {
             "user_id": self.self_id,
@@ -533,7 +673,7 @@ class OneBotV11Adapter:
             "extra": detail,
         }
 
-    async def get_stranger_info(self, params: Mapping[str, Any]) -> JsonDict:
+    def get_stranger_info(self, params: Mapping[str, Any]) -> JsonDict:
         user_id = _require_int(params, "user_id")
         uid = self._resolve_user_id(user_id)
         detail = self.sender.get_person_detail_full(uid)
@@ -545,7 +685,7 @@ class OneBotV11Adapter:
             "extra": detail,
         }
 
-    async def get_friend_list(self, params: Mapping[str, Any]) -> list[JsonDict]:
+    def get_friend_list(self, params: Mapping[str, Any]) -> list[JsonDict]:
         friends = self.sender.get_friendship()
         output: list[JsonDict] = []
         for friend in friends or []:
@@ -563,7 +703,7 @@ class OneBotV11Adapter:
             })
         return output
 
-    async def get_group_list(self, params: Mapping[str, Any]) -> list[JsonDict]:
+    def get_group_list(self, params: Mapping[str, Any]) -> list[JsonDict]:
         groups: list[JsonDict] = []
         for area_obj in self.sender.get_joined_areas(quiet=True) or []:
             area = str(area_obj.get("id") or area_obj.get("area") or area_obj.get("area_id") or "")
@@ -584,7 +724,7 @@ class OneBotV11Adapter:
                     })
         return groups
 
-    async def get_group_info(self, params: Mapping[str, Any]) -> JsonDict:
+    def get_group_info(self, params: Mapping[str, Any]) -> JsonDict:
         group_id = _require_int(params, "group_id")
         area, channel = self._resolve_group_id(group_id)
         info = self.sender.get_channel_setting_info(channel)
@@ -596,7 +736,7 @@ class OneBotV11Adapter:
             "extra": {"oopz_area_id": area, "oopz_channel_id": channel},
         }
 
-    async def get_group_member_info(self, params: Mapping[str, Any]) -> JsonDict:
+    def get_group_member_info(self, params: Mapping[str, Any]) -> JsonDict:
         group_id = _require_int(params, "group_id")
         user_id = _require_int(params, "user_id")
         area, channel = self._resolve_group_id(group_id)
@@ -605,7 +745,7 @@ class OneBotV11Adapter:
         area_detail = self.sender.get_user_area_detail(uid, area=area)
         return self._format_member(group_id, user_id, uid, area, channel, info, area_detail)
 
-    async def get_group_member_list(self, params: Mapping[str, Any]) -> list[JsonDict]:
+    def get_group_member_list(self, params: Mapping[str, Any]) -> list[JsonDict]:
         group_id = _require_int(params, "group_id")
         area, channel = self._resolve_group_id(group_id)
         members = self._get_all_area_members(area)
@@ -630,7 +770,7 @@ class OneBotV11Adapter:
             output.append(self._format_member(group_id, user_id, uid, area, channel, info, member))
         return output
 
-    async def set_group_name(self, params: Mapping[str, Any]) -> JsonDict:
+    def set_group_name(self, params: Mapping[str, Any]) -> JsonDict:
         group_id = _require_int(params, "group_id")
         name = str(params.get("group_name") or "").strip()
         if not name:
@@ -641,7 +781,7 @@ class OneBotV11Adapter:
             raise RuntimeError(str(result["error"]))
         return {}
 
-    async def set_group_ban(self, params: Mapping[str, Any]) -> JsonDict:
+    def set_group_ban(self, params: Mapping[str, Any]) -> JsonDict:
         group_id = _require_int(params, "group_id")
         user_id = _require_int(params, "user_id")
         duration_seconds = int(params.get("duration") or 0)
@@ -655,7 +795,7 @@ class OneBotV11Adapter:
             raise RuntimeError(str(result["error"]))
         return {}
 
-    async def set_group_kick(self, params: Mapping[str, Any]) -> JsonDict:
+    def set_group_kick(self, params: Mapping[str, Any]) -> JsonDict:
         group_id = _require_int(params, "group_id")
         user_id = _require_int(params, "user_id")
         area, _channel = self._resolve_group_id(group_id)
@@ -668,10 +808,23 @@ class OneBotV11Adapter:
             raise RuntimeError(str(result["error"]))
         return {}
 
-    async def set_group_leave(self, params: Mapping[str, Any]) -> JsonDict:
+    def set_group_leave(self, params: Mapping[str, Any]) -> JsonDict:
         group_id = _require_int(params, "group_id")
         area, _channel = self._resolve_group_id(group_id)
         result = self.sender.leave_area(area)
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(str(result["error"]))
+        return {}
+
+    def set_group_admin(self, params: Mapping[str, Any]) -> JsonDict:
+        if not self.group_admin_role_id:
+            raise ValueError("group_admin_role_id is not configured")
+        group_id = _require_int(params, "group_id")
+        user_id = _require_int(params, "user_id")
+        enable = _require_bool(params, "enable")
+        area, _channel = self._resolve_group_id(group_id)
+        uid = self._resolve_user_id(user_id)
+        result = self.sender.edit_user_role(uid, self.group_admin_role_id, add=enable, area=area)
         if isinstance(result, dict) and "error" in result:
             raise RuntimeError(str(result["error"]))
         return {}
@@ -705,9 +858,9 @@ class OneBotV11Adapter:
                 break
             if len(batch) < page_size:
                 break
-            start += page_size
-            if start >= 1000:
+            if self.member_list_max and len(members) >= self.member_list_max:
                 break
+            start += page_size
         return members
 
     def _resolve_user_id(self, user_id: int | str) -> str:
@@ -775,7 +928,7 @@ class OneBotV11Adapter:
         user_id: int | str | None = None,
         timestamp: str = "",
     ) -> JsonDict:
-        raw_message = "".join(str((segment.get("data") or {}).get("text") or "") for segment in message)
+        raw_message = cq_from_segments(message)
         payload: JsonDict = {
             "time": parse_oopz_timestamp(timestamp),
             "post_type": "message",
@@ -796,7 +949,9 @@ class OneBotV11Adapter:
             payload = response.json()
         elif isinstance(response, dict):
             payload = response
-        message_id = self._extract_message_id_from_payload(payload) or str(int(time.time() * 1_000_000))
+        message_id = self._extract_message_id_from_payload(payload)
+        if not message_id:
+            raise RuntimeError("send failed: Oopz response has no message id")
         timestamp = self._extract_timestamp_from_payload(payload) or str(int(time.time() * 1_000_000))
         return message_id, timestamp
 

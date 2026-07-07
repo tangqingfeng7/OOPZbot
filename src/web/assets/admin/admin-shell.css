@@ -23,7 +23,7 @@
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.25);
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.12);
   --shadow-glow: 0 0 40px -8px var(--accent-glow);
-  --content-width: 1360px;
+  --content-width: calc(100vw - 32px);
   --font-display: "Syne", "Noto Sans SC", sans-serif;
   --font-numbers: "Outfit", "Noto Sans SC", sans-serif;
   --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -86,6 +86,7 @@ body[data-admin-page]::after {
   position: relative;
   z-index: 1;
   width: min(var(--content-width), calc(100% - 32px));
+  max-width: calc(100vw - 32px);
   margin: 0 auto;
   padding: 16px 0 28px;
 }
@@ -141,6 +142,29 @@ body[data-admin-page]::after {
   background: rgba(255, 255, 255, 0.1);
 }
 
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .shell-topbar,
+  .page-hero,
+  .auth-card,
+  .surface-card,
+  .metric-card,
+  .summary-card,
+  .table-card,
+  .console-card,
+  .sticky-rail {
+    background: rgba(16, 16, 18, 0.9);
+  }
+
+  .surface-card:hover,
+  .metric-card:hover,
+  .summary-card:hover,
+  .table-card:hover,
+  .console-card:hover,
+  .auth-card:hover {
+    background: rgba(22, 22, 26, 0.94);
+  }
+}
+
 .shell-topbar {
   position: sticky;
   top: 12px;
@@ -181,6 +205,10 @@ body[data-admin-page]::after {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.section-head > * {
+  min-width: 0;
 }
 
 .topbar-main {
@@ -323,6 +351,7 @@ thead th,
   display: grid;
   gap: 14px;
   margin-top: 14px;
+  min-width: 0;
 }
 
 .page-hero {
@@ -465,6 +494,18 @@ thead th,
 .metrics-grid {
   display: grid;
   gap: 14px;
+  min-width: 0;
+}
+
+.dashboard-grid > *,
+.music-grid > *,
+.stats-grid > *,
+.system-grid > *,
+.config-layout > *,
+.summary-grid > *,
+.split-layout > *,
+.metrics-grid > * {
+  min-width: 0;
 }
 
 .dashboard-grid {
@@ -513,6 +554,11 @@ thead th,
 .console-card,
 .sticky-rail {
   padding: 14px;
+  min-width: 0;
+}
+
+.console-card {
+  overflow: hidden;
 }
 
 .metric-card,
@@ -880,14 +926,15 @@ select.select--compact {
   max-height: 260px;
   overflow-y: auto;
   overflow-x: hidden;
-  background: rgba(18, 18, 18, 0.9);
+  /* 近实色底：下拉面板悬浮在其他表单项上方，必须完全盖住底下内容 */
+  background: linear-gradient(180deg, rgba(30, 30, 34, 0.98), rgba(17, 17, 20, 0.98));
   backdrop-filter: blur(24px) saturate(1.4);
   -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-md);
   box-shadow:
-    0 4px 6px -1px rgba(0, 0, 0, 0.25),
-    0 12px 30px -4px rgba(0, 0, 0, 0.35);
+    0 4px 6px -1px rgba(0, 0, 0, 0.35),
+    0 12px 30px -4px rgba(0, 0, 0, 0.55);
   padding: 5px;
   z-index: 600;
   opacity: 0;
@@ -1095,6 +1142,10 @@ select.select--compact {
 .field {
   display: grid;
   gap: 8px;
+}
+
+.field[hidden] {
+  display: none;
 }
 
 .field label {
@@ -1425,6 +1476,9 @@ select.select--compact {
 }
 
 .table-shell {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-md);
@@ -1432,8 +1486,9 @@ select.select--compact {
 
 table {
   width: 100%;
-  min-width: 620px;
+  min-width: min(620px, 100%);
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 thead th {
@@ -1449,6 +1504,13 @@ tbody td {
   border-top: 1px solid rgba(255, 255, 255, 0.05);
   vertical-align: middle;
   font-size: 13px;
+}
+
+thead th,
+tbody td,
+code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 tbody tr {
@@ -1486,6 +1548,9 @@ tbody tr:nth-child(even) {
 
 .console {
   margin: 0;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 260px;
   max-height: 480px;
   overflow: auto;
@@ -1500,6 +1565,8 @@ tbody tr:nth-child(even) {
   font-size: 11.5px;
   line-height: 1.85;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
@@ -1510,6 +1577,7 @@ tbody tr:nth-child(even) {
 
 .link-box input {
   flex: 1 1 auto;
+  min-width: 0;
 }
 
 .msg {

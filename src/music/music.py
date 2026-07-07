@@ -1238,9 +1238,10 @@ class MusicHandler(PlaybackMixin):
             f"时长: {song_data['duration']}"
         )
 
-        link = self._get_web_link(area=song_data.get("area", ""))
-        if link:
-            text += f"\n{link}"
+        if bool(WEB_PLAYER_CONFIG.get("send_link_enabled", True)):
+            link = self._get_web_link(area=song_data.get("area", ""))
+            if link:
+                text += f"\n{link}"
 
         attachments = song_data.get("attachments", [])
         if attachments:

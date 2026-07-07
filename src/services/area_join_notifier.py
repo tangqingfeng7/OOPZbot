@@ -1,7 +1,7 @@
-import json
 import re
 import threading
 import time
+from dataclasses import dataclass
 from typing import Optional, Tuple, Callable, Set
 
 from config import OOPZ_CONFIG
@@ -10,6 +10,76 @@ from core.constants import build_mention
 from core.logger_config import get_logger
 
 logger = get_logger("AreaJoinNotifier")
+
+
+EVENT_SOURCE_OPERATE_LOGS = "operate_logs"
+EVENT_SOURCE_MEMBER_SNAPSHOT = "member_snapshot"
+EVENT_SOURCE_CHOICES = (EVENT_SOURCE_OPERATE_LOGS, EVENT_SOURCE_MEMBER_SNAPSHOT)
+OPERATE_LOG_MEMBER_OP_TYPES = ["AREA_SUBSCRIBE", "AREA_UNSUBSCRIBE"]
+OPERATE_LOG_PERMISSION_DENIED_KEYWORDS = (
+    "暂无进行此操作的权限",
+    "没有权限",
+    "无权限",
+    "权限不足",
+    "permission",
+    "forbidden",
+)
+_JOIN_CONTENT = "\u52a0\u5165\u57df"
+_LEAVE_CONTENT = "\u9000\u51fa\u57df"
+
+
+@dataclass(frozen=True)
+class AreaMemberChange:
+    action: str
+    area: str
+    uid: str
+    create_time: int
+    content: str
+
+    @property
+    def key(self) -> tuple[int, str, str, str]:
+        return (self.create_time, self.uid, self.action, self.content)
+
+
+class AreaOperateLogCursor:
+    """记录已消费的域管理日志，避免重复触发成员事件。"""
+
+    def __init__(self, max_seen_per_area: int = 200):
+        self.max_seen_per_area = max(20, int(max_seen_per_area))
+        self._initialized: set[str] = set()
+        self._seen: dict[str, set[tuple[int, str, str, str]]] = {}
+        self._order: dict[str, list[tuple[int, str, str, str]]] = {}
+
+    def consume(self, area: str, changes: list[AreaMemberChange]) -> list[AreaMemberChange]:
+        area = str(area or "").strip()
+        ordered = sorted(changes, key=lambda c: (c.create_time, c.uid, c.action))
+        if not area:
+            return []
+        if area not in self._initialized:
+            for change in ordered:
+                self._mark_seen(area, change.key)
+            self._initialized.add(area)
+            return []
+
+        fresh: list[AreaMemberChange] = []
+        seen = self._seen.setdefault(area, set())
+        for change in ordered:
+            if change.key in seen:
+                continue
+            fresh.append(change)
+            self._mark_seen(area, change.key)
+        return fresh
+
+    def _mark_seen(self, area: str, key: tuple[int, str, str, str]) -> None:
+        seen = self._seen.setdefault(area, set())
+        order = self._order.setdefault(area, [])
+        if key in seen:
+            return
+        seen.add(key)
+        order.append(key)
+        while len(order) > self.max_seen_per_area:
+            old = order.pop(0)
+            seen.discard(old)
 
 
 _UID_LIKE = re.compile(
@@ -47,8 +117,7 @@ def _resolve_display_name(sender: OopzSender, uid: str, cached: Optional[str] = 
     return cached or (uid[:8] + "…" if len(uid) > 8 else uid)
 
 
-EVENT_AREA_MEMBER_ENTER = 10
-EVENT_AREA_MEMBER_LEAVE = 11
+from oopz.area_events import parse_member_event as _parse_member_event
 
 
 _area_channel_cache: dict = {"area": "", "channel": "", "ts": 0.0}
@@ -112,6 +181,108 @@ def _next_poll_interval(base_interval: int, current_interval: int, rate_limited:
     if not rate_limited:
         return base
     return min(max(current * 2, base), 60)
+
+
+def fetch_member_uid_snapshot(
+    sender: OopzSender,
+    area: str,
+    member_fetch_max: int = 5000,
+) -> Tuple[Optional[Set[str]], bool, bool]:
+    """分页拉取域成员快照。
+
+    返回 ``(uids, rate_limited, truncated)``：
+    - uids 为 None 表示本次拉取失败（rate_limited 标记是否为限流）；
+    - truncated=True 表示成员数超过 member_fetch_max、快照不完整，
+      调用方必须跳过本轮对比，否则窗口外成员会被误判为加入/退出。
+    """
+    page_size = 100
+    uids: Set[str] = set()
+    start = 0
+    while start < member_fetch_max:
+        result = sender.get_area_members(
+            area=area,
+            offset_start=start,
+            offset_end=start + page_size - 1,
+            quiet=True,
+        )
+        if "error" in result:
+            err = str(result.get("error") or "")
+            is_rl = err.startswith("HTTP 429") or err in ("invalid JSON", "empty response") or "服务异常" in err
+            return None, is_rl, False
+        members = result.get("members") or []
+        for m in members:
+            uid = _member_uid(m)
+            if uid:
+                uids.add(uid)
+        if len(members) < page_size:
+            return uids, False, False
+        try:
+            total = int(result.get("userCount") or result.get("total") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        if total and len(uids) >= total:
+            return uids, False, False
+        start += page_size
+    return uids, False, True
+
+
+def parse_area_operate_log_changes(area: str, payload: dict) -> list[AreaMemberChange]:
+    """从域管理日志接口数据中解析成员加入/退出事件。"""
+    if not isinstance(payload, dict):
+        return []
+    logs = payload.get("logs") or []
+    if not isinstance(logs, list):
+        return []
+
+    changes: list[AreaMemberChange] = []
+    for item in logs:
+        if not isinstance(item, dict):
+            continue
+        uid = str(item.get("optUid") or item.get("uid") or item.get("person") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if not uid or not content:
+            continue
+        if content == _JOIN_CONTENT:
+            action = "join"
+        elif content == _LEAVE_CONTENT:
+            action = "leave"
+        else:
+            continue
+        try:
+            create_time = int(item.get("createTime") or item.get("time") or item.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            create_time = 0
+        changes.append(
+            AreaMemberChange(
+                action=action,
+                area=area,
+                uid=uid,
+                create_time=create_time,
+                content=content,
+            )
+        )
+    return changes
+
+
+def is_operate_log_permission_denied(error: str) -> bool:
+    """判断域管理日志接口失败是否由权限不足导致。"""
+    text = str(error or "").strip()
+    lower_text = text.lower()
+    return any(keyword in text or keyword in lower_text for keyword in OPERATE_LOG_PERMISSION_DENIED_KEYWORDS)
+
+
+def fetch_operate_log_changes(sender: OopzSender, area: str) -> Tuple[Optional[list[AreaMemberChange]], bool, str]:
+    """拉取一页域管理日志并解析成员变更。"""
+    result = sender.get_area_operate_logs(
+        area=area,
+        offset=0,
+        op_types=OPERATE_LOG_MEMBER_OP_TYPES,
+    )
+    if "error" in result:
+        err = str(result.get("error") or "")
+        rate_limited = err.startswith("HTTP 429") or "429" in err
+        return None, rate_limited, err
+    return parse_area_operate_log_changes(area, result), False, ""
 
 
 def _build_member_mention(uid: str) -> Tuple[str, list]:
@@ -187,42 +358,136 @@ def _run_join_poll_loop(
     bot_uid: str,
     auto_role_id: str = "",
     auto_role_name: str = "",
+    message_template_leave: str = "",
+    on_member_change: Optional[Callable[[str, str, str], None]] = None,
+    member_fetch_max: int = 5000,
+    event_source: str = EVENT_SOURCE_OPERATE_LOGS,
 ) -> None:
     """
-    后台轮询域成员列表，发现新加入的成员则发送欢迎消息。
-    支持多域：遍历 AreaConfigRegistry 中的所有域，每个域独立维护成员快照。
-    首次轮询只记录当前成员，不发送；之后每次对比上次集合，多出来的且非 bot 则发欢迎。
+    后台轮询域成员事件。
+
+    默认使用域管理日志接口解析加入/退出事件；如配置为 member_snapshot，
+    则保留旧的成员列表快照对比实现。两种模式不会自动兜底切换。
     """
     from core.area_config import get_area_registry
 
     last_uids_map: dict[str, Set[str]] = {}
     first_run_set: Set[str] = set()
+    truncated_warned: Set[str] = set()
+    operate_log_cursor = AreaOperateLogCursor()
+    operate_log_disabled_areas: Set[str] = set()
+    source = event_source if event_source in EVENT_SOURCE_CHOICES else EVENT_SOURCE_OPERATE_LOGS
 
-    current_interval = max(5, int(interval_seconds))
+    min_interval = 5 if source == EVENT_SOURCE_MEMBER_SNAPSHOT else 2
+    base_interval = max(min_interval, int(interval_seconds))
+    current_interval = base_interval
 
-    def _fetch_member_uids(area: str) -> Tuple[Optional[Set[str]], bool]:
-        page_size = 100
-        max_fetch = 1000
-        uids: Set[str] = set()
-        for start in range(0, max_fetch, page_size):
-            result = sender.get_area_members(
-                area=area,
-                offset_start=start,
-                offset_end=start + page_size - 1,
-                quiet=True,
+    def _notify_member_change(action: str, area_id: str, uid: str) -> None:
+        if on_member_change is None:
+            return
+        try:
+            on_member_change(action, area_id, uid)
+        except Exception as e:
+            logger.warning("成员变更回调失败 action=%s area=%s uid=%s: %s", action, area_id[:8], uid[:8], e)
+
+    def _handle_join(area_id: str, channel: str, uid: str, area_cfg) -> None:
+        try:
+            name = _resolve_display_name(sender, uid, None)
+            join_msg = area_cfg.welcome_message if area_cfg.welcome_message else message_template_join
+            text = join_msg.format(name=name, uid=uid)
+            mention_text, mention_list = _build_member_mention(uid)
+            sender.send_message(
+                f"{mention_text}\n{text}",
+                area=area_id,
+                channel=channel,
+                auto_recall=False,
+                mentionList=mention_list,
             )
-            if "error" in result:
-                err = str(result.get("error") or "")
-                is_rl = err.startswith("HTTP 429") or err in ("invalid JSON", "empty response") or "服务异常" in err
-                return None, is_rl
-            members = result.get("members") or []
-            for m in members:
-                uid = _member_uid(m)
-                if uid:
-                    uids.add(uid)
-            if len(members) < page_size:
-                break
-        return uids, False
+        except Exception as e:
+            logger.warning("域成员欢迎发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
+        a_role_id = area_cfg.auto_assign_role_id or auto_role_id
+        a_role_name = area_cfg.auto_assign_role_name or auto_role_name
+        _try_assign_role(sender, uid, area_id, a_role_id, a_role_name)
+        _notify_member_change("join", area_id, uid)
+
+    def _handle_leave(area_id: str, channel: str, uid: str, area_cfg) -> None:
+        try:
+            leave_msg = area_cfg.leave_message if area_cfg.leave_message else message_template_leave
+            if leave_msg:
+                name = _resolve_display_name(sender, uid, None)
+                sender.send_message(
+                    leave_msg.format(name=name, uid=uid),
+                    area=area_id,
+                    channel=channel,
+                    auto_recall=False,
+                )
+        except Exception as e:
+            logger.warning("域成员退出通知发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
+        _notify_member_change("leave", area_id, uid)
+
+    def _fetch_member_uids(area: str) -> Tuple[Optional[Set[str]], bool, bool]:
+        return fetch_member_uid_snapshot(sender, area, member_fetch_max)
+
+    def _handle_operate_log_area(area_id: str, channel: str, area_cfg) -> bool:
+        if area_id in operate_log_disabled_areas:
+            return False
+
+        changes, rate_limited, error = fetch_operate_log_changes(sender, area_id)
+        if changes is None:
+            if is_operate_log_permission_denied(error):
+                operate_log_disabled_areas.add(area_id)
+                logger.warning(
+                    "域管理日志无权限，已在本进程内停止轮询该域 area=%s: %s",
+                    area_id[:8],
+                    error,
+                )
+                return False
+            logger.warning("域管理日志轮询失败，跳过本轮 area=%s: %s", area_id[:8], error)
+            return rate_limited
+        for change in operate_log_cursor.consume(area_id, changes):
+            if not change.uid or change.uid == bot_uid:
+                continue
+            if change.action == "join":
+                _handle_join(area_id, channel, change.uid, area_cfg)
+            elif change.action == "leave":
+                _handle_leave(area_id, channel, change.uid, area_cfg)
+        return False
+
+    def _handle_member_snapshot_area(area_id: str, channel: str, area_cfg) -> bool:
+        current_uids, rate_limited, truncated = _fetch_member_uids(area_id)
+
+        if current_uids is None:
+            return rate_limited
+
+        if truncated:
+            if area_id not in truncated_warned:
+                truncated_warned.add(area_id)
+                logger.warning(
+                    "域 %s 成员数量超过 member_fetch_max=%d，成员快照不完整，已暂停该域的加入/退出检测",
+                    area_id[:8],
+                    member_fetch_max,
+                )
+            return False
+
+        is_first = area_id not in first_run_set
+        if is_first:
+            last_uids_map[area_id] = current_uids
+            first_run_set.add(area_id)
+            return False
+
+        prev = last_uids_map.get(area_id, set())
+        new_uids = current_uids - prev
+        left_uids = prev - current_uids
+        last_uids_map[area_id] = current_uids
+        for uid in new_uids:
+            if not uid or uid == bot_uid:
+                continue
+            _handle_join(area_id, channel, uid, area_cfg)
+        for uid in left_uids:
+            if not uid or uid == bot_uid:
+                continue
+            _handle_leave(area_id, channel, uid, area_cfg)
+        return False
 
     def _resolve_area_channel(area_id: str) -> Tuple[str, str]:
         registry = get_area_registry()
@@ -252,146 +517,35 @@ def _run_join_poll_loop(
             any_rate_limited = False
 
             for area in poll_areas:
+                if source == EVENT_SOURCE_OPERATE_LOGS and area in operate_log_disabled_areas:
+                    continue
                 area_channel = _resolve_area_channel(area)
                 area_id, channel = area_channel
                 if not area_id or not channel:
                     continue
-
-                area_cfg = registry.get(area_id)
-                current_uids, rate_limited = _fetch_member_uids(area_id)
-
-                if current_uids is None:
-                    any_rate_limited = any_rate_limited or rate_limited
+                if source == EVENT_SOURCE_OPERATE_LOGS and area_id in operate_log_disabled_areas:
                     continue
 
-                is_first = area_id not in first_run_set
-                if is_first:
-                    last_uids_map[area_id] = current_uids
-                    first_run_set.add(area_id)
+                area_cfg = registry.get(area_id)
+                if source == EVENT_SOURCE_MEMBER_SNAPSHOT:
+                    rate_limited = _handle_member_snapshot_area(area_id, channel, area_cfg)
                 else:
-                    prev = last_uids_map.get(area_id, set())
-                    new_uids = current_uids - prev
-                    last_uids_map[area_id] = current_uids
-                    for uid in new_uids:
-                        if not uid or uid == bot_uid:
-                            continue
-                        try:
-                            name = _resolve_display_name(sender, uid, None)
-                            join_msg = area_cfg.welcome_message if area_cfg.welcome_message else message_template_join
-                            text = join_msg.format(name=name, uid=uid)
-                            mention_text, mention_list = _build_member_mention(uid)
-                            sender.send_message(
-                                f"{mention_text}\n{text}",
-                                area=area_id,
-                                channel=channel,
-                                auto_recall=False,
-                                mentionList=mention_list,
-                            )
-                        except Exception as e:
-                            logger.warning("域成员欢迎发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
-                        a_role_id = area_cfg.auto_assign_role_id or auto_role_id
-                        a_role_name = area_cfg.auto_assign_role_name or auto_role_name
-                        _try_assign_role(sender, uid, area_id, a_role_id, a_role_name)
+                    rate_limited = _handle_operate_log_area(area_id, channel, area_cfg)
+                any_rate_limited = any_rate_limited or rate_limited
 
             if any_rate_limited:
-                next_interval = _next_poll_interval(interval_seconds, current_interval, True)
+                next_interval = _next_poll_interval(base_interval, current_interval, True)
                 if next_interval != current_interval:
                     logger.warning("域成员加入轮询: 检测到限流，轮询间隔调整为 %ss", next_interval)
                 current_interval = next_interval
-            elif current_interval != max(5, int(interval_seconds)):
-                current_interval = max(5, int(interval_seconds))
+            elif current_interval != base_interval:
+                current_interval = base_interval
                 logger.info("域成员加入轮询: 成员接口已恢复，轮询间隔恢复为 %ss", current_interval)
 
             time.sleep(current_interval)
         except Exception as e:
             logger.warning("域成员加入轮询异常: %s", e)
             time.sleep(current_interval)
-
-
-def _parse_member_event(event: int, data: dict) -> Optional[Tuple[str, str, str]]:
-    body_raw = data.get("body")
-    if body_raw is None:
-        return None
-    if isinstance(body_raw, str):
-        try:
-            body = json.loads(body_raw)
-        except json.JSONDecodeError:
-            body = {}
-    else:
-        body = body_raw
-
-    inner = body.get("data")
-    if isinstance(inner, str):
-        try:
-            inner = json.loads(inner)
-        except json.JSONDecodeError:
-            inner = {}
-    if not inner and isinstance(body.get("data"), dict):
-        inner = body["data"]
-    if not inner:
-        inner = body
-
-    def _str_uid(v) -> str:
-        if v is None:
-            return ""
-        if isinstance(v, dict):
-            return str(v.get("id") or v.get("uid") or v.get("personId") or v.get("userId") or "").strip()
-        return str(v).strip()
-
-    top = data if isinstance(data, dict) else {}
-    area = (inner.get("area") or inner.get("areaId") or body.get("area") or body.get("areaId") or top.get("area") or top.get("areaId") or "").strip()
-    if not area and isinstance(inner.get("area"), dict):
-        area = str(inner["area"].get("id") or inner["area"].get("areaId") or "").strip()
-    uid = _str_uid(inner.get("person")) or _str_uid(inner.get("uid")) or _str_uid(inner.get("target")) or inner.get("userId") or _str_uid(body.get("person")) or body.get("uid") or body.get("userId") or _str_uid(top.get("person")) or top.get("uid") or ""
-    if not uid:
-        persons = body.get("persons") or inner.get("persons") or []
-        if isinstance(persons, list) and persons:
-            uid = _str_uid(persons[0]) if isinstance(persons[0], dict) else str(persons[0]).strip()
-        else:
-            uid = ""
-
-    action_raw = (inner.get("action") or inner.get("type") or inner.get("event") or inner.get("actionType") or body.get("action") or body.get("type") or body.get("actionType") or top.get("action") or top.get("type") or "").strip().lower()
-
-    if not area or not uid:
-        return None
-
-    channel_id = (inner.get("channel") or inner.get("channelId") or body.get("channel") or body.get("channelId") or top.get("channel") or top.get("channelId") or "")
-    if isinstance(channel_id, dict):
-        channel_id = str(channel_id.get("id") or channel_id.get("channelId") or "").strip()
-    else:
-        channel_id = str(channel_id).strip() if channel_id else ""
-    if channel_id:
-        return None
-
-    active_num = body.get("activeNum") if isinstance(body.get("activeNum"), (int, float)) else None
-    if active_num is None:
-        active_num = inner.get("activeNum")
-
-    join_keys = ("enter", "join", "add", "member_join", "join_area", "subscribe", "1", "enter_area")
-    leave_keys = ("leave", "exit", "remove", "quit", "member_leave", "leave_area", "unsubscribe", "0")
-    event_str = str(event).lower() if event is not None else ""
-    oopz_join_events = (17, 18, 20, 21, 22)
-    if event == 19:
-        if active_num is not None and active_num != 0:
-            return ("join", area, uid)
-        return ("leave", area, uid)
-    is_join = (
-        event == EVENT_AREA_MEMBER_ENTER
-        or event in oopz_join_events
-        or event_str in ("10", "17", "18", "20", "21", "22", "enter", "join", "area_member_enter", "member_enter")
-        or action_raw in join_keys
-    )
-    is_leave = (
-        event == EVENT_AREA_MEMBER_LEAVE
-        or event_str in ("11", "leave", "exit", "area_member_leave", "member_leave")
-        or action_raw in leave_keys
-    )
-    if is_join:
-        return ("join", area, uid)
-    if is_leave:
-        return ("leave", area, uid)
-
-    return None
 
 
 def make_ws_handler(
@@ -471,6 +625,7 @@ def start_area_join_notifier(
     sender: Optional[OopzSender] = None,
     message_template_join: str = "欢迎 {name} 加入域～",
     message_template_leave: str = "{name} 已退出域",
+    on_member_change: Optional[Callable[[str, str, str], None]] = None,
 ) -> Optional[Callable[[int, dict], None]]:
     try:
         import config as _config
@@ -484,9 +639,14 @@ def start_area_join_notifier(
     msg_join = str(config.get("message_template", message_template_join) or message_template_join)
     if "{name}" not in msg_join and "{uid}" not in msg_join:
         msg_join = "欢迎 {name} 加入域～"
-    msg_leave = str(config.get("message_template_leave", message_template_leave) or message_template_leave)
-    if "{name}" not in msg_leave and "{uid}" not in msg_leave:
-        msg_leave = "{name} 已退出域"
+    # 显式留空（"" 或 None）= 不在频道发退出提示，但 OneBot group_decrease 仍会推送。
+    raw_leave = config.get("message_template_leave", message_template_leave)
+    if raw_leave is None or (isinstance(raw_leave, str) and not raw_leave.strip()):
+        msg_leave = ""
+    else:
+        msg_leave = str(raw_leave)
+        if "{name}" not in msg_leave and "{uid}" not in msg_leave:
+            msg_leave = "{name} 已退出域"
 
     s = sender or OopzSender()
     # 加入事件服务端不推送，用轮询检测新成员并发欢迎
@@ -494,11 +654,20 @@ def start_area_join_notifier(
     bot_uid = (OOPZ_CONFIG.get("person_uid") or "").strip()
     auto_role_id = str(config.get("auto_assign_role_id") or "").strip()
     auto_role_name = str(config.get("auto_assign_role_name") or "").strip()
+    try:
+        member_fetch_max = max(200, int(config.get("member_fetch_max", 5000)))
+    except (TypeError, ValueError):
+        member_fetch_max = 5000
+    event_source = str(config.get("event_source") or EVENT_SOURCE_OPERATE_LOGS).strip()
+    if event_source not in EVENT_SOURCE_CHOICES:
+        logger.warning("AREA_JOIN_NOTIFY.event_source=%s 无效，使用 %s", event_source, EVENT_SOURCE_OPERATE_LOGS)
+        event_source = EVENT_SOURCE_OPERATE_LOGS
     if auto_role_id or auto_role_name:
         logger.info("新人自动身份组已启用: id=%s, name=%s", auto_role_id or "(无)", auto_role_name or "(无)")
     poll_thread = threading.Thread(
         target=_run_join_poll_loop,
-        args=(s, msg_join, poll_interval, bot_uid, auto_role_id, auto_role_name),
+        args=(s, msg_join, poll_interval, bot_uid, auto_role_id, auto_role_name, msg_leave, on_member_change),
+        kwargs={"member_fetch_max": member_fetch_max, "event_source": event_source},
         daemon=True,
         name="AreaJoinPoll",
     )

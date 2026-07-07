@@ -173,6 +173,48 @@ class MusicModeTest(unittest.TestCase):
         set_active_area.assert_called_once_with("area-2", redis_client=q.redis)
         self.assertFalse(self.handler._web_link_released_due_to_idle)
 
+    def test_song_request_omits_web_link_when_sending_is_disabled(self) -> None:
+        self.handler.names = Mock()
+        self.handler.names.user.return_value = "测试用户"
+        self.handler._get_web_link = Mock(return_value="[打开播放器](https://example.test/player)")
+        song = {
+            "platform": "netease",
+            "name": "测试歌曲",
+            "artists": "测试歌手",
+            "album": "测试专辑",
+            "duration": "3:00",
+            "area": "area-1",
+            "user": "user-1",
+            "attachments": [],
+        }
+
+        with patch.dict("music.music.WEB_PLAYER_CONFIG", {"send_link_enabled": False}):
+            text = self.handler._build_song_request_text(song)
+
+        self.assertNotIn("打开播放器", text)
+        self.handler._get_web_link.assert_not_called()
+
+    def test_song_request_includes_web_link_when_sending_is_enabled(self) -> None:
+        self.handler.names = Mock()
+        self.handler.names.user.return_value = "测试用户"
+        self.handler._get_web_link = Mock(return_value="[打开播放器](https://example.test/player)")
+        song = {
+            "platform": "netease",
+            "name": "测试歌曲",
+            "artists": "测试歌手",
+            "album": "测试专辑",
+            "duration": "3:00",
+            "area": "area-1",
+            "user": "user-1",
+            "attachments": [],
+        }
+
+        with patch.dict("music.music.WEB_PLAYER_CONFIG", {"send_link_enabled": True}):
+            text = self.handler._build_song_request_text(song)
+
+        self.assertIn("[打开播放器](https://example.test/player)", text)
+        self.handler._get_web_link.assert_called_once_with(area="area-1")
+
     def test_start_playing_uses_explicit_area_queue(self) -> None:
         area_queue = Mock()
         self.handler._get_queue = Mock(return_value=area_queue)

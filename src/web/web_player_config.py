@@ -60,6 +60,7 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
         "token_ttl_seconds": {"type": "int", "min": 0, "max": 7 * 24 * 3600, "default": 86400},
         "cookie_max_age_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 86400},
         "cookie_secure": {"type": "bool", "default": False},
+        "send_link_enabled": {"type": "bool", "default": True},
         "link_idle_release_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 1800},
         "admin_enabled": {"type": "bool", "default": False},
         "admin_password": {"type": "str", "max_len": 128, "sensitive": True, "default": ""},
@@ -73,11 +74,13 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
     },
     "area_join_notify": {
         "enabled": {"type": "bool", "default": False},
+        "event_source": {"type": "str", "max_len": 32, "default": "operate_logs"},
         "message_template": {"type": "str", "max_len": 200, "default": "欢迎 {name} 加入域～\n请阅读频道规则，祝你玩得开心！"},
         "message_template_leave": {"type": "str", "max_len": 200, "default": "{name} 已退出域"},
         "poll_interval_seconds": {"type": "int", "min": 2, "max": 3600, "default": 2},
         "auto_assign_role_id": {"type": "str", "max_len": 128, "default": ""},
         "auto_assign_role_name": {"type": "str", "max_len": 128, "default": ""},
+        "member_fetch_max": {"type": "int", "min": 200, "max": 100000, "default": 5000},
     },
     "chat": {
         "enabled": {"type": "bool", "default": True},
@@ -681,7 +684,7 @@ def config_snapshot() -> dict:
                 section[field] = value if meta.get("expose_in_admin") else ""
                 section[f"{field}_configured"] = bool(value)
             else:
-                section[field] = target.get(field)
+                section[field] = target.get(field, copy.deepcopy(meta.get("default")))
         result[group_name] = section
     return result
 

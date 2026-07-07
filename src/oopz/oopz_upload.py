@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import ipaddress
 import os
+import socket
+from urllib.parse import urlparse
 
 import requests
 from PIL import Image
@@ -15,6 +18,79 @@ from core.logger_config import get_logger
 logger = get_logger("OopzUpload")
 
 UPLOAD_PUT_TIMEOUT = (10, 60)
+
+# 远程素材下载安全上限：防止超大响应一次性读进内存把进程打爆。
+MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024      # 20 MB
+MAX_AUDIO_DOWNLOAD_BYTES = 100 * 1024 * 1024     # 100 MB
+_DOWNLOAD_CHUNK = 64 * 1024
+
+
+class RemoteFetchError(Exception):
+    """远程素材下载被拒绝（SSRF 防护）或超出大小上限。"""
+
+
+def _is_public_host(host: str) -> bool:
+    """域名 / IP 解析出的每个地址都必须是公网地址，否则视为不安全。"""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return False
+    return True
+
+
+def _validate_remote_url(url: str) -> None:
+    """拒绝非 http(s) 以及指向内网/环回/保留地址的 URL（SSRF 防护）。"""
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in ("http", "https"):
+        raise RemoteFetchError(f"不支持的 URL scheme: {parsed.scheme or '(空)'}")
+    host = parsed.hostname or ""
+    if not host:
+        raise RemoteFetchError("URL 缺少主机名")
+    # 注意：这里做的是解析期校验，无法完全防住 DNS rebinding，但能挡掉
+    # 直接用内网域名 / IP 的 SSRF，对当前威胁模型足够。
+    if not _is_public_host(host):
+        raise RemoteFetchError(f"目标地址不是公网地址，已拒绝: {host}")
+
+
+def _download_limited(session, url, *, max_bytes, timeout, headers=None) -> tuple[bytes, str]:
+    """带 SSRF 校验与大小上限的流式下载，返回 (内容字节, Content-Type)。"""
+    _validate_remote_url(url)
+    resp = session.get(url, stream=True, timeout=timeout, headers=headers or {})
+    try:
+        resp.raise_for_status()
+        declared = resp.headers.get("Content-Length")
+        if declared is not None:
+            try:
+                if int(declared) > max_bytes:
+                    raise RemoteFetchError(f"远程文件过大: 声明 {declared} 字节 > 上限 {max_bytes}")
+            except ValueError:
+                pass
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise RemoteFetchError(f"远程文件超过大小上限 {max_bytes} 字节")
+            chunks.append(chunk)
+        return b"".join(chunks), resp.headers.get("Content-Type", "")
+    finally:
+        resp.close()
 
 
 def get_image_info(file_path: str) -> tuple[int, int, int]:
@@ -57,9 +133,12 @@ class UploadMixin:
     def upload_file_from_url(self, image_url: str) -> dict:
         """从网络 URL 下载图片并上传到 Oopz（不落地磁盘）"""
         try:
-            resp = self.session.get(image_url, stream=True, timeout=HTTP_TIMEOUT_MEDIA)
-            resp.raise_for_status()
-            image_bytes = resp.content
+            image_bytes, _content_type = _download_limited(
+                self.session,
+                image_url,
+                max_bytes=MAX_IMAGE_DOWNLOAD_BYTES,
+                timeout=HTTP_TIMEOUT_MEDIA,
+            )
 
             img = Image.open(io.BytesIO(image_bytes))
             width, height = img.size
@@ -107,14 +186,14 @@ class UploadMixin:
     ) -> dict:
         """从网络 URL 下载音频并上传到 Oopz（AUDIO 类型）"""
         try:
-            resp = self.session.get(audio_url, timeout=HTTP_TIMEOUT_DOWNLOAD, headers={
-                "Referer": "https://music.163.com/",
-            })
-            resp.raise_for_status()
-            audio_bytes = resp.content
+            audio_bytes, content_type = _download_limited(
+                self.session,
+                audio_url,
+                max_bytes=MAX_AUDIO_DOWNLOAD_BYTES,
+                timeout=HTTP_TIMEOUT_DOWNLOAD,
+                headers={"Referer": "https://music.163.com/"},
+            )
             file_size = len(audio_bytes)
-
-            content_type = resp.headers.get("Content-Type", "")
             if "mp4" in content_type or "m4a" in content_type:
                 ext = ".m4a"
             elif "flac" in content_type:

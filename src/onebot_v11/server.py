@@ -29,6 +29,7 @@ class OneBotV11Server:
         self._session: ClientSession | None = None
         self._ws_clients: dict[web.WebSocketResponse, WsRole] = {}
         self._reverse_tasks: list[asyncio.Task[None]] = []
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._started = False
         self._setup_routes()
 
@@ -47,12 +48,18 @@ class OneBotV11Server:
         if self.config.enable_ws_reverse:
             for url, role in self._reverse_targets():
                 self._reverse_tasks.append(asyncio.create_task(self._reverse_ws_loop(url, role)))
+        if self.config.heartbeat_enabled and self.config.heartbeat_interval > 0:
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self) -> None:
         if not self._started:
             return
         self._started = False
         self.adapter.remove_event_sink(self.broadcast_event)
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            await asyncio.gather(self._heartbeat_task, return_exceptions=True)
+            self._heartbeat_task = None
         for task in self._reverse_tasks:
             task.cancel()
         if self._reverse_tasks:
@@ -216,7 +223,7 @@ class OneBotV11Server:
         return 403 if auth or query_token else 401
 
     def _http_post_headers(self, raw_body: bytes) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", "X-Self-ID": str(getattr(self.adapter, "self_id", ""))}
+        headers = {"Content-Type": "application/json", "X-Self-ID": str(self.adapter.self_id)}
         if self.config.secret:
             digest = hmac.new(self.config.secret.encode("utf-8"), raw_body, hashlib.sha1).hexdigest()
             headers["X-Signature"] = f"sha1={digest}"
@@ -273,7 +280,7 @@ class OneBotV11Server:
 
     def _reverse_ws_headers(self, role: WsRole) -> dict[str, str]:
         headers = {
-            "X-Self-ID": str(getattr(self.adapter, "self_id", "")),
+            "X-Self-ID": str(self.adapter.self_id),
             "X-Client-Role": {"api": "API", "event": "Event", "universal": "Universal"}[role],
             "User-Agent": "CQHttp/4.15.0",
         }
@@ -284,10 +291,36 @@ class OneBotV11Server:
     def _connect_event(self) -> JsonDict:
         return {
             "time": int(time.time()),
-            "self_id": int(getattr(self.adapter, "self_id", 0) or 0),
+            "self_id": self.adapter.self_id,
             "post_type": "meta_event",
             "meta_event_type": "lifecycle",
             "sub_type": "connect",
+        }
+
+    async def _heartbeat_loop(self) -> None:
+        interval = self.config.heartbeat_interval
+        while self._started:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            if not self._started:
+                break
+            try:
+                await self.adapter.emit_event(self._heartbeat_event())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("OneBot v11 心跳广播失败")
+
+    def _heartbeat_event(self) -> JsonDict:
+        return {
+            "time": int(time.time()),
+            "self_id": self.adapter.self_id,
+            "post_type": "meta_event",
+            "meta_event_type": "heartbeat",
+            "status": self.adapter.status_snapshot(),
+            "interval": int(self.config.heartbeat_interval * 1000),
         }
 
     @staticmethod

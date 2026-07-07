@@ -29,8 +29,8 @@ class ChatInteractionService:
         try:
             from services.conversation_memory import create_conversation_memory
             from core.queue_manager import get_redis_client
-            redis_client = get_redis_client()
-            self._memory = create_conversation_memory(redis_client)
+            # 传 provider 而非客户端实例：Redis 从内存降级恢复后自动跟随。
+            self._memory = create_conversation_memory(get_redis_client)
         except Exception as e:
             logger.debug("ConversationMemory 初始化失败（AI 上下文记忆不可用）: %s", e)
             self._memory = None

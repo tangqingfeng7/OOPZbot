@@ -20,9 +20,12 @@ class OneBotV11Service:
         self.adapter = OneBotV11Adapter(
             sender,
             db_path=config.db_path,
+            member_list_max=config.member_list_max,
             enable_area_scoped_group_ban=config.enable_area_scoped_group_ban,
             enable_set_group_kick_as_area_kick=config.enable_set_group_kick_as_area_kick,
             enable_set_group_leave_as_area_leave=config.enable_set_group_leave_as_area_leave,
+            enable_set_group_admin_as_area_role=config.enable_set_group_admin_as_area_role,
+            group_admin_role_id=config.group_admin_role_id,
         )
         self.server = OneBotV11Server(self.adapter, config)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -57,6 +60,14 @@ class OneBotV11Service:
         if not self.config.enabled or not self._loop:
             return
         asyncio.run_coroutine_threadsafe(self.adapter.emit_raw_event(raw), self._loop)
+
+    def emit_member_change(self, action: str, area: str, uid: str) -> None:
+        """Thread-safe entry for the member-list poller to report join/leave."""
+        if not self.config.enabled or not self._loop:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.adapter.emit_member_change(action, area, uid), self._loop
+        )
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()

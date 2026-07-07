@@ -195,6 +195,7 @@ copy private_key.example.py private_key.py
 | `token_ttl_seconds` | Web 随机访问令牌有效期（秒），`0` 表示不过期（不建议） |
 | `cookie_max_age_seconds` | 浏览器 cookie 有效期（秒）；留空时默认跟 `token_ttl_seconds` 一致 |
 | `cookie_secure` | 是否仅在 HTTPS 下发送 cookie（使用 Nginx + SSL 时设为 `True`） |
+| `send_link_enabled` | 是否在点歌通知中发送 Web 播放器链接（默认 `True`） |
 | `link_idle_release_seconds` | 播放列表空闲超时后释放随机链接（秒，`0` 表示不释放） |
 
 > **注意**：长期配置只认 `config.py`。管理后台 `/admin` -> 配置页面保存时会写回 `config.py`，并同步更新当前进程，不需要重启。
@@ -239,16 +240,18 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 
 ### 域成员加入/退出通知 (`AREA_JOIN_NOTIFY`)
 
-用户加入或退出当前域时，Bot 在公屏发送欢迎/再见消息。**退出**依赖 WebSocket 推送（event 11 等）；**加入**因服务端不推送，改为轮询域成员 API 检测新成员。
+用户加入或退出当前域时，Bot 在公屏发送欢迎/再见消息，并同步生成 OneBot v11 的群成员增减事件。默认通过域管理日志接口轮询加入/退出记录；如果显式配置为 `member_snapshot`，才会使用旧的成员列表快照对比方案。
 
 | 配置项 | 说明 |
 |--------|------|
 | `enabled` | 是否启用（默认 `False`） |
+| `event_source` | 成员事件来源，默认 `operate_logs`。可选：`operate_logs`=轮询域管理日志；`member_snapshot`=轮询成员列表并对比快照 |
 | `message_template` | 加入时消息模板，占位符：`{name}`、`{uid}`（默认 `"欢迎 {name} 加入域～"`） |
 | `message_template_leave` | 退出时消息模板，占位符：`{name}`、`{uid}`（默认 `"{name} 已退出域"`） |
-| `poll_interval_seconds` | 轮询间隔（秒），最小 2；默认 2。若成员接口返回 429，程序会自动退避并临时放慢轮询 |
+| `poll_interval_seconds` | 轮询间隔（秒），`operate_logs` 最小 2，`member_snapshot` 最小 5；默认 2。遇到 429 会自动退避并临时放慢轮询 |
 | `auto_assign_role_id` | 新人自动分配的身份组 ID，留空则不分配 |
 | `auto_assign_role_name` | 或用身份组名称匹配（优先使用 `auto_assign_role_id`） |
+| `member_fetch_max` | `member_snapshot` 模式下单次成员快照翻页上限，超过该人数会跳过该域的快照对比并告警；`operate_logs` 模式不使用 |
 
 需配置 `default_area`、`default_channel`（或由 Bot 自动取第一个已加入域及第一个文字频道）。通知消息与 Bot 其他消息一致，默认使用**公告样式**。
 

@@ -22,6 +22,8 @@ data/_events_debug.jsonl
 data/clash/
 
 # === Python ===
+.venv/
+.venv-*/
 __pycache__/
 *.py[cod]
 *.pyo

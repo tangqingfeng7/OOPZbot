@@ -19,10 +19,16 @@ class ConversationMemory:
 
     REDIS_KEY_PREFIX = "ai:history"
 
-    def __init__(self, redis_client, max_rounds: int = 10, ttl_seconds: int = 1800):
-        self._redis = redis_client
+    def __init__(self, redis_provider, max_rounds: int = 10, ttl_seconds: int = 1800):
+        # redis_provider 为零参可调用，返回当前 Redis 客户端。
+        # 每次访问现取而非持有引用：Redis 从内存降级恢复后自动跟随切换。
+        self._redis_provider = redis_provider
         self._max_rounds = max(0, int(max_rounds))
         self._ttl = max(0, int(ttl_seconds))
+
+    @property
+    def _redis(self):
+        return self._redis_provider()
 
     def _key(self, user: str, channel: str) -> str:
         return f"{self.REDIS_KEY_PREFIX}:{user}:{channel}"
@@ -89,8 +95,11 @@ class ConversationMemory:
         return count
 
 
-def create_conversation_memory(redis_client) -> Optional[ConversationMemory]:
-    """工厂函数：从 DOUBAO_CONFIG 读取参数创建 ConversationMemory 实例。"""
+def create_conversation_memory(redis_provider) -> Optional[ConversationMemory]:
+    """工厂函数：从 DOUBAO_CONFIG 读取参数创建 ConversationMemory 实例。
+
+    redis_provider: 零参可调用（如 core.queue_manager.get_redis_client）。
+    """
     try:
         from config import DOUBAO_CONFIG
     except Exception:
@@ -107,4 +116,4 @@ def create_conversation_memory(redis_client) -> Optional[ConversationMemory]:
         return None
 
     logger.info("AI 对话上下文记忆已启用: max_rounds=%d, ttl=%ds", max_rounds, ttl)
-    return ConversationMemory(redis_client, max_rounds=max_rounds, ttl_seconds=ttl)
+    return ConversationMemory(redis_provider, max_rounds=max_rounds, ttl_seconds=ttl)

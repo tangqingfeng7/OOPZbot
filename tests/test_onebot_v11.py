@@ -75,6 +75,11 @@ class OneBotV11AdapterTest(unittest.TestCase):
         sender.get_person_detail_full.return_value = {"name": "用户一", "memberLevel": 3}
         sender.get_user_area_detail.return_value = {"roleName": "成员"}
         sender.get_self_detail.return_value = {"name": "机器人"}
+        sender.edit_user_role.return_value = {"status": True}
+        sender.get_channel_messages.return_value = [
+            {"person": "user-2", "messageId": "hist-2", "timestamp": "1770000002000000", "content": "second"},
+            {"person": "user-1", "messageId": "hist-1", "timestamp": "1770000001000000", "content": "first"},
+        ]
         return OneBotV11Adapter(
             sender,
             self_oopz_id="bot-uid",
@@ -105,6 +110,77 @@ class OneBotV11AdapterTest(unittest.TestCase):
         self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
         self.assertIsNotNone(stored)
         self.assertEqual(stored.oopz_message_id, "oopz-msg-1")
+
+    def test_member_enter_event_converts_to_group_increase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            # Joins are only classified from an explicit action (WS code heuristic removed).
+            raw = {
+                "event": 10,
+                "body": json.dumps({"data": {"person": "newbie-1", "area": "area-1", "action": "join"}}),
+            }
+            event = asyncio.run(adapter.emit_raw_event(raw))
+
+        self.assertEqual(event["post_type"], "notice")
+        self.assertEqual(event["notice_type"], "group_increase")
+        self.assertEqual(event["sub_type"], "approve")
+        self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
+        self.assertEqual(event["extra"]["oopz_user_id"], "newbie-1")
+        self.assertIn("group_id", event)
+
+    def test_member_leave_event_converts_to_group_decrease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            # No Oopz event code means "area member left"; only an explicit
+            # action string is treated as a leave (event 11 is voice-ban, not leave).
+            raw = {
+                "event": 50,
+                "body": json.dumps({"data": {"person": "leaver-1", "area": "area-1", "action": "leave"}}),
+            }
+            event = asyncio.run(adapter.emit_raw_event(raw))
+
+        self.assertEqual(event["post_type"], "notice")
+        self.assertEqual(event["notice_type"], "group_decrease")
+        self.assertEqual(event["sub_type"], "leave")
+        self.assertEqual(event["extra"]["oopz_user_id"], "leaver-1")
+
+    def test_self_member_event_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            raw = {
+                "event": 10,
+                "body": json.dumps({"data": {"person": "bot-uid", "area": "area-1", "action": "join"}}),
+            }
+            event = asyncio.run(adapter.emit_raw_event(raw))
+
+        self.assertEqual(event, {})
+
+    def test_emit_member_change_join_produces_group_increase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_member_change("join", "area-1", "newbie-1"))
+
+        self.assertEqual(event["post_type"], "notice")
+        self.assertEqual(event["notice_type"], "group_increase")
+        self.assertEqual(event["sub_type"], "approve")
+        self.assertEqual(event["extra"]["oopz_user_id"], "newbie-1")
+        self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
+
+    def test_emit_member_change_leave_produces_group_decrease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_member_change("leave", "area-1", "leaver-1"))
+
+        self.assertEqual(event["notice_type"], "group_decrease")
+        self.assertEqual(event["sub_type"], "leave")
+        self.assertEqual(event["extra"]["oopz_user_id"], "leaver-1")
+
+    def test_emit_member_change_ignores_self_and_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            self.assertEqual(asyncio.run(adapter.emit_member_change("join", "area-1", "bot-uid")), {})
+            self.assertEqual(asyncio.run(adapter.emit_member_change("join", "area-1", "")), {})
+            self.assertEqual(asyncio.run(adapter.emit_member_change("kick", "area-1", "u1")), {})
 
     def test_unknown_event_is_forwarded_as_meta_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -144,6 +220,18 @@ class OneBotV11AdapterTest(unittest.TestCase):
         self.assertEqual(sender.send_message.call_args.kwargs["area"], "area-1")
         self.assertEqual(sender.send_message.call_args.kwargs["channel"], "channel-1")
 
+    def test_send_group_msg_fails_when_response_has_no_message_id(self) -> None:
+        from onebot_v11.store import make_group_source
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, sender = self._adapter(tmpdir)
+            sender.send_message.return_value = SimpleNamespace(json=lambda: {"status": True})
+            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
+            result = asyncio.run(adapter.call_action("send_group_msg", {"group_id": group_id, "message": "hi"}))
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["retcode"], 1500)
+
     def test_send_group_msg_accepts_oopz_context_when_group_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter, sender = self._adapter(tmpdir)
@@ -176,6 +264,59 @@ class OneBotV11AdapterTest(unittest.TestCase):
         self.assertEqual(stored.raw["message"], [
             {"type": "text", "data": {"text": "[CQ:at,qq=123] hello"}}
         ])
+
+    def test_send_group_msg_reply_segment_maps_to_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, sender = self._adapter(tmpdir)
+            incoming = asyncio.run(adapter.emit_raw_event(_raw_message("hello")))
+            group_id = incoming["group_id"]
+            result = asyncio.run(adapter.call_action("send_group_msg", {
+                "group_id": group_id,
+                "message": [
+                    {"type": "reply", "data": {"id": str(incoming["message_id"])}},
+                    {"type": "text", "data": {"text": "re"}},
+                ],
+            }))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(sender.send_message.call_args.kwargs["referenceMessageId"], "oopz-msg-1")
+
+    def test_incoming_message_raw_message_is_cq_encoded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_raw_event(_raw_message("(met)user-1(met) hi")))
+
+        at_segment = next(seg for seg in event["message"] if seg["type"] == "at")
+        self.assertEqual(event["raw_message"], f"[CQ:at,qq={at_segment['data']['qq']}] hi")
+
+    def test_incoming_message_raw_message_escapes_special_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            event = asyncio.run(adapter.emit_raw_event(_raw_message("a[b]&c")))
+
+        self.assertEqual(event["raw_message"], "a&#91;b&#93;&amp;c")
+
+    def test_incoming_reply_is_restored_as_reply_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            raw = {
+                "event": 9,
+                "body": json.dumps({
+                    "data": {
+                        "person": "user-1",
+                        "area": "area-1",
+                        "channel": "channel-1",
+                        "messageId": "oopz-msg-9",
+                        "timestamp": "1770000000000000",
+                        "content": "reply body",
+                        "referenceMessageId": "oopz-msg-ref",
+                    }
+                }),
+            }
+            event = asyncio.run(adapter.emit_raw_event(raw))
+
+        self.assertEqual(event["message"][0]["type"], "reply")
+        self.assertEqual(event["message"][1], {"type": "text", "data": {"text": "reply body"}})
 
     def test_delete_msg_uses_saved_message_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -244,6 +385,52 @@ class OneBotV11AdapterTest(unittest.TestCase):
         sender.post_friendship_response.assert_called_once_with("friend-1", 4455, True)
         sender.set_user_remark_name.assert_called_once_with("friend-1", "备注")
 
+    def test_get_group_msg_history_returns_chronological_messages(self) -> None:
+        from onebot_v11.store import make_group_source
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, sender = self._adapter(tmpdir)
+            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
+            result = asyncio.run(adapter.call_action("get_group_msg_history", {
+                "group_id": group_id,
+                "count": 10,
+            }))
+
+        self.assertEqual(result["status"], "ok")
+        messages = result["data"]["messages"]
+        self.assertEqual([m["raw_message"] for m in messages], ["first", "second"])
+        self.assertEqual(messages[0]["message_type"], "group")
+        self.assertEqual(messages[0]["group_id"], group_id)
+        sender.get_channel_messages.assert_called_once_with(area="area-1", channel="channel-1", size=10)
+
+    def test_set_group_admin_requires_role_and_grants_when_enabled(self) -> None:
+        from onebot_v11.store import make_group_source, make_user_source
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, sender = self._adapter(
+                tmpdir,
+                enable_set_group_admin_as_area_role=True,
+                group_admin_role_id=42,
+            )
+            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
+            user_id = adapter.store.create_id(make_user_source("user-1")).number
+            result = asyncio.run(adapter.call_action("set_group_admin", {
+                "group_id": group_id,
+                "user_id": user_id,
+                "enable": True,
+            }))
+
+        self.assertEqual(result["status"], "ok")
+        sender.edit_user_role.assert_called_once_with("user-1", 42, add=True, area="area-1")
+
+    def test_set_group_admin_is_absent_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter, _sender = self._adapter(tmpdir)
+            result = asyncio.run(adapter.call_action("set_group_admin", {"group_id": 1, "user_id": 1, "enable": True}))
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["retcode"], 1404)
+
     def test_set_group_leave_is_available_when_enabled(self) -> None:
         from onebot_v11.store import make_group_source
 
@@ -293,6 +480,147 @@ class OneBotV11ServerTest(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_heartbeat_is_broadcast_to_event_clients(self) -> None:
+        async def scenario() -> None:
+            from aiohttp import ClientSession, WSMsgType
+            from onebot_v11.config import OneBotV11ServerConfig
+            from onebot_v11.server import OneBotV11Server
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                adapter = self._adapter(tmpdir)
+                server = OneBotV11Server(
+                    adapter,
+                    OneBotV11ServerConfig(
+                        enabled=True,
+                        host="127.0.0.1",
+                        port=0,
+                        send_connect_event=False,
+                        heartbeat_enabled=True,
+                        heartbeat_interval=0.2,
+                    ),
+                )
+                await server.start()
+                try:
+                    async with ClientSession() as session:
+                        ws = await session.ws_connect(f"http://127.0.0.1:{server.bound_port}/event")
+                        msg = await asyncio.wait_for(ws.receive(), timeout=3)
+                        self.assertEqual(msg.type, WSMsgType.TEXT)
+                        payload = json.loads(msg.data)
+                        self.assertEqual(payload["post_type"], "meta_event")
+                        self.assertEqual(payload["meta_event_type"], "heartbeat")
+                        self.assertEqual(payload["interval"], 200)
+                        self.assertTrue(payload["status"]["online"])
+                        await ws.close()
+                finally:
+                    await server.stop()
+
+        asyncio.run(scenario())
+
+    def test_http_post_reporting_delivers_events(self) -> None:
+        async def scenario() -> None:
+            from aiohttp import web
+            from onebot_v11.config import OneBotV11ServerConfig
+            from onebot_v11.server import OneBotV11Server
+
+            received: list = []
+
+            async def handler(request):
+                received.append(await request.json())
+                return web.Response(text="ok")
+
+            receiver = web.Application()
+            receiver.router.add_post("/onebot", handler)
+            runner = web.AppRunner(receiver)
+            await runner.setup()
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                adapter = self._adapter(tmpdir)
+                server = OneBotV11Server(
+                    adapter,
+                    OneBotV11ServerConfig(
+                        enabled=True,
+                        host="127.0.0.1",
+                        port=0,
+                        enable_http=False,
+                        enable_ws=False,
+                        enable_http_post=True,
+                        http_post_urls=[f"http://127.0.0.1:{port}/onebot"],
+                        heartbeat_enabled=False,
+                    ),
+                )
+                await server.start()
+                try:
+                    await adapter.emit_raw_event(_raw_message("post hello"))
+                    self.assertTrue(received)
+                    self.assertEqual(received[0]["raw_message"], "post hello")
+                finally:
+                    await server.stop()
+                    await runner.cleanup()
+
+        asyncio.run(scenario())
+
+    def test_reverse_websocket_delivers_events(self) -> None:
+        async def scenario() -> None:
+            from aiohttp import WSMsgType, web
+            from onebot_v11.config import OneBotV11ServerConfig
+            from onebot_v11.server import OneBotV11Server
+
+            received: list = []
+            connected = asyncio.Event()
+
+            async def ws_handler(request):
+                ws = web.WebSocketResponse()
+                await ws.prepare(request)
+                connected.set()
+                async for msg in ws:
+                    if msg.type == WSMsgType.TEXT:
+                        received.append(json.loads(msg.data))
+                return ws
+
+            app = web.Application()
+            app.router.add_get("/ws", ws_handler)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                adapter = self._adapter(tmpdir)
+                server = OneBotV11Server(
+                    adapter,
+                    OneBotV11ServerConfig(
+                        enabled=True,
+                        host="127.0.0.1",
+                        port=0,
+                        enable_http=False,
+                        enable_ws=False,
+                        enable_ws_reverse=True,
+                        ws_reverse_url=f"ws://127.0.0.1:{port}/ws",
+                        send_connect_event=False,
+                        heartbeat_enabled=False,
+                    ),
+                )
+                await server.start()
+                try:
+                    await asyncio.wait_for(connected.wait(), timeout=3)
+                    await asyncio.sleep(0.1)
+                    await adapter.emit_raw_event(_raw_message("reverse hello"))
+                    for _ in range(60):
+                        if received:
+                            break
+                        await asyncio.sleep(0.05)
+                    self.assertTrue(received)
+                    self.assertEqual(received[-1]["raw_message"], "reverse hello")
+                finally:
+                    await server.stop()
+                    await runner.cleanup()
+
+        asyncio.run(scenario())
+
     def test_forward_websocket_receives_events(self) -> None:
         async def scenario() -> None:
             from aiohttp import ClientSession, WSMsgType
@@ -319,6 +647,22 @@ class OneBotV11ServerTest(unittest.TestCase):
                     await server.stop()
 
         asyncio.run(scenario())
+
+
+class OneBotStoreTest(unittest.TestCase):
+    def test_create_id_is_stable_under_concurrent_same_source(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from onebot_v11.store import OneBotStore, make_user_source
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = OneBotStore(Path(tmpdir) / "ids.sqlite3")
+            source = make_user_source("concurrent-user")
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                numbers = list(pool.map(lambda _: store.create_id(source).number, range(64)))
+
+            self.assertEqual(len(set(numbers)), 1)
+            self.assertEqual(store.resolve_id(numbers[0]).source, source)
 
 
 if __name__ == "__main__":

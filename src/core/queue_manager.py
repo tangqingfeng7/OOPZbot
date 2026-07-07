@@ -21,6 +21,9 @@ logger = get_logger("QueueManager")
 
 _redis_client = None
 _redis_lock = threading.Lock()
+# 处于内存降级状态时，每隔该秒数尝试重连一次真实 Redis。
+_REDIS_RETRY_INTERVAL = 30.0
+_last_redis_retry = 0.0
 
 
 class _InMemoryRedis:
@@ -178,8 +181,11 @@ class QueueManager:
 
     @property
     def redis(self):
-        if self._redis is None:
-            self._redis = get_redis_client()
+        # 每次访问都对齐全局客户端：内存降级恢复为真实 Redis 后，
+        # 已创建的 QueueManager 实例也能自动切回。
+        client = get_redis_client()
+        if client is not self._redis:
+            self._redis = client
         return self._redis
 
     def _qkey(self) -> str:
@@ -347,19 +353,46 @@ class QueueManager:
         return val
 
 
+def _try_connect_redis():
+    """尝试建立真实 Redis 连接，失败返回 None。"""
+    try:
+        client = redis.Redis(**REDIS_CONFIG)
+        client.ping()
+        return client
+    except Exception as e:
+        logger.debug(f"Redis 连接尝试失败: {e}")
+        return None
+
+
 def get_redis_client(force_reset: bool = False):
-    """返回全局共享 Redis 客户端；连接失败时统一回退到内存实现。"""
-    global _redis_client
+    """返回全局共享 Redis 客户端；连接失败时统一回退到内存实现。
+
+    内存降级不是永久的：之后每隔 _REDIS_RETRY_INTERVAL 秒在访问时探测一次
+    真实 Redis，恢复后自动切回（内存实现中的临时数据不迁移，播放队列等
+    会从 Redis 中的持久数据重新开始）。
+    """
+    global _redis_client, _last_redis_retry
     with _redis_lock:
         if force_reset:
             _redis_client = None
+
+        if isinstance(_redis_client, _InMemoryRedis):
+            now = time.time()
+            if now - _last_redis_retry >= _REDIS_RETRY_INTERVAL:
+                _last_redis_retry = now
+                client = _try_connect_redis()
+                if client is not None:
+                    logger.info("Redis 已恢复，从内存队列切回 Redis")
+                    _redis_client = client
+
         if _redis_client is None:
-            try:
-                client = redis.Redis(**REDIS_CONFIG)
-                client.ping()
+            _last_redis_retry = time.time()
+            client = _try_connect_redis()
+            if client is not None:
                 logger.info("Redis 连接成功")
                 _redis_client = client
-            except Exception as e:
-                logger.error(f"Redis 连接失败，将使用内存队列: {e}")
+            else:
+                logger.error("Redis 连接失败，将使用内存队列（每 %.0fs 自动重试）", _REDIS_RETRY_INTERVAL)
                 _redis_client = _InMemoryRedis()
+
         return _redis_client

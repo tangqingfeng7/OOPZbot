@@ -229,6 +229,7 @@ WEB_PLAYER_CONFIG = {
     "token_ttl_seconds": 86400,  # Web 随机访问令牌有效期（秒），0=不过期（不建议）
     "cookie_max_age_seconds": 86400,  # 浏览器 cookie 有效期（秒）；留空则跟 token_ttl_seconds 一致
     "cookie_secure": False,  # True=仅 HTTPS 发送 cookie；使用 Nginx + SSL 时应设为 True
+    "send_link_enabled": True,  # 点歌通知中是否发送 Web 播放器链接
     "link_idle_release_seconds": 1800,  # 播放列表空闲超过该秒数后，释放随机播放器链接（0=不释放）
     # 管理后台（访问 /admin）
     "admin_enabled": False,  # 是否启用管理后台
@@ -265,10 +266,20 @@ ONEBOT_V11_CONFIG = {
     "ws_reverse_reconnect_interval": 3.0,
     "send_connect_event": True,
 
+    # OneBot 级心跳元事件（部分框架靠它判活），间隔单位秒
+    "heartbeat_enabled": True,
+    "heartbeat_interval": 15.0,
+
+    # get_group_member_list 单次返回成员上限（0 表示不限制）
+    "member_list_max": 5000,
+
     # 高风险群管理动作默认关闭；开启后会映射到 Oopz 域级操作
     "enable_area_scoped_group_ban": False,
     "enable_set_group_kick_as_area_kick": False,
     "enable_set_group_leave_as_area_leave": False,
+    # set_group_admin 映射为给/取消域身份组；需同时配置 group_admin_role_id
+    "enable_set_group_admin_as_area_role": False,
+    "group_admin_role_id": 0,
 }
 
 # Bot 消息自动撤回配置
@@ -283,14 +294,16 @@ AUTO_RECALL_CONFIG = {
 }
 
 # 域成员加入/退出通知：有人加入或退出当前域时 Bot 在公屏发送消息
-# 退出：WebSocket 推送；加入：轮询域成员 API 检测新成员（因服务端不推送加入事件）
+# 默认轮询域管理日志接口；如需旧快照方案，可将 event_source 改为 member_snapshot
 AREA_JOIN_NOTIFY = {
     "enabled": False,
+    "event_source": "operate_logs",  # 成员事件来源：operate_logs=管理日志轮询；member_snapshot=成员列表快照对比
     "message_template": "欢迎 {name} 加入域～\n请阅读频道规则，祝你玩得开心！",  # 加入时消息，占位符: {name} {uid}；支持多行
-    "message_template_leave": "{name} 已退出域",  # 退出时消息
+    "message_template_leave": "{name} 已退出域",  # 退出时消息；留空("")则不在频道发提示，但 OneBot group_decrease 仍推送
     "poll_interval_seconds": 2,   # 轮询间隔（秒），最小 2；遇到 429 会自动退避并临时放慢
     "auto_assign_role_id": "",    # 新人自动分配的身份组 ID，留空则不分配
     "auto_assign_role_name": "",  # 或用身份组名称匹配（优先使用 role_id）
+    "member_fetch_max": 5000,     # 单次成员快照翻页上限；超过该人数的域会暂停加入/退出检测并告警
 }
 
 # 聊天自动回复配置

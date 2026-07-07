@@ -142,8 +142,10 @@ def _normalize_volume(value, fallback: int | None = None) -> int:
 
 def get_redis() -> redis.Redis:
     global _redis
-    if _redis is None:
-        _redis = get_redis_client()
+    # 始终对齐全局客户端：Redis 从内存降级中恢复后，Web 层自动切回。
+    client = get_redis_client()
+    if client is not _redis:
+        _redis = client
     return _redis
 
 
