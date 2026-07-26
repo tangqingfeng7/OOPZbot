@@ -266,13 +266,21 @@ class MentionRouterAliasGoldenTest(unittest.TestCase):
 class HelpCatalogDerivationTest(unittest.TestCase):
     """锁定 help_catalog 的主题级管理员分类派生，确保零行为变更且不与注册表背离。"""
 
-    # 迁移前 ADMIN_ONLY_TOPICS 的原始硬编码值（golden snapshot）。
-    _LEGACY_ADMIN_ONLY_TOPICS = frozenset({"plugin", "schedule"})
+    # 主题级 admin 判定改为 fail-closed（主题内任一命令 admin=True 即受限）后的期望值。
+    # 早先是 AND 归约 + /role /roles 挂在 admin 主题下，导致 admin 主题被降级成公开，
+    # 非管理员发「帮助 管理」能看到全量管理命令清单。
+    _EXPECTED_ADMIN_ONLY_TOPICS = frozenset({"plugin", "schedule", "admin"})
 
-    def test_admin_only_topics_match_legacy(self) -> None:
+    def test_admin_only_topics_are_fail_closed(self) -> None:
         from app.services.interaction.help_catalog import ADMIN_ONLY_TOPICS
 
-        self.assertEqual(set(ADMIN_ONLY_TOPICS), set(self._LEGACY_ADMIN_ONLY_TOPICS))
+        self.assertEqual(set(ADMIN_ONLY_TOPICS), set(self._EXPECTED_ADMIN_ONLY_TOPICS))
+
+    def test_admin_topic_is_restricted(self) -> None:
+        # 回归守卫：管理主题必须受限，且不能再被任何公开命令降级
+        from app.services.interaction.help_catalog import ADMIN_ONLY_TOPICS
+
+        self.assertIn("admin", ADMIN_ONLY_TOPICS)
 
     def test_every_registry_topic_has_catalog_entry(self) -> None:
         # 注册表引用的每个 help_topic 都必须在 HELP_TOPICS 中存在，杜绝悬挂引用。
@@ -284,17 +292,27 @@ class HelpCatalogDerivationTest(unittest.TestCase):
         self.assertEqual(dangling, set(), f"注册表引用了不存在的帮助主题: {sorted(dangling)}")
 
     def test_admin_only_topics_consistent_with_independent_rule(self) -> None:
-        # 独立重算「主题内命令全为 admin 才算管理员主题」，防止派生逻辑回归。
+        # 独立重算「主题内任一命令为 admin 即算管理员主题」，防止派生逻辑回退成 fail-open。
         from app.services.interaction.help_catalog import ADMIN_ONLY_TOPICS
         from domain.routing.command_registry import COMMANDS
 
-        by_topic: dict[str, bool] = {}
-        for spec in COMMANDS:
-            if spec.help_topic is None:
-                continue
-            by_topic[spec.help_topic] = by_topic.get(spec.help_topic, True) and spec.admin
-        expected = {topic for topic, admin_only in by_topic.items() if admin_only}
+        expected = {spec.help_topic for spec in COMMANDS if spec.admin and spec.help_topic}
         self.assertEqual(set(ADMIN_ONLY_TOPICS), expected)
+
+    def test_non_admin_overview_hides_restricted_topics(self) -> None:
+        # 过滤必须基于 ADMIN_ONLY_TOPICS 而非行文本字面量
+        from app.services.interaction.help_catalog import (
+            ADMIN_ONLY_TOPICS,
+            HELP_TOPICS,
+            overview_lines,
+        )
+
+        public = "\n".join(overview_lines(is_admin=False))
+        admin = "\n".join(overview_lines(is_admin=True))
+        for key in ADMIN_ONLY_TOPICS:
+            label = HELP_TOPICS[key].menu_label
+            self.assertNotIn(f"帮助 {label}", public, f"非管理员总览泄漏了受限主题 {key}")
+            self.assertIn(f"帮助 {label}", admin)
 
 
 class OverviewMenuDerivationTest(unittest.TestCase):
@@ -353,6 +371,66 @@ class CommandSuggestionsConsistencyTest(unittest.TestCase):
         self.assertEqual(
             unknown, set(), f"建议触发词未对应任何命令别名(疑似改名/删除漂移): {sorted(unknown)}"
         )
+
+
+class MentionAdminGateGuardTest(unittest.TestCase):
+    """守卫：注册表里每条 admin=True 的 mention 别名，非管理员都进不了内置动作。
+
+    slash 侧本就有 `if is_admin` 的第二层门，mention 侧早先完全没有，
+    全靠第一层闸门的前缀匹配 —— 插件用公开前缀盖过内置管理命令时就会漏。
+    """
+
+    def _build_router(self, *, is_admin: bool):
+        from unittest.mock import Mock
+        from app.services.routing.mention_command_router import MentionCommandRouter
+
+        runtime = Mock()
+        runtime.plugins.try_dispatch_mention.return_value = False
+        runtime.services.interaction.music.handle_mention.return_value = False
+        runtime.services.routing.access.is_admin.return_value = is_admin
+        router = MentionCommandRouter(runtime)
+        router._actions = Mock()  # 内置动作整体替身：命中即可见，且不会真的执行
+        return router, runtime
+
+    def test_every_admin_mention_alias_is_blocked_for_non_admin(self) -> None:
+        from domain.routing.command_registry import admin_mention_prefixes
+
+        aliases = admin_mention_prefixes()
+        self.assertTrue(aliases, "注册表里应当存在 admin mention 别名")
+
+        for alias in aliases:
+            for text in (alias, f"{alias} 目标"):
+                with self.subTest(text=text):
+                    router, runtime = self._build_router(is_admin=False)
+
+                    fell_into_ai_chat = router.dispatch(text, "c", "a", "u")
+
+                    self.assertFalse(fell_into_ai_chat)
+                    self.assertEqual(
+                        router._actions.mock_calls, [], f"管理命令 {text!r} 在非管理员身份下被执行"
+                    )
+                    runtime.sender.send_message.assert_called_once()
+                    self.assertIn("无权限", runtime.sender.send_message.call_args.args[0])
+
+    def test_admin_still_reaches_builtin_actions(self) -> None:
+        from domain.routing.command_registry import admin_mention_prefixes
+
+        alias = sorted(admin_mention_prefixes())[0]
+        router, runtime = self._build_router(is_admin=True)
+
+        router.dispatch(f"{alias} 目标", "c", "a", "u")
+
+        # 管理员不该收到拒绝消息
+        for call in runtime.sender.send_message.call_args_list:
+            self.assertNotIn("无权限", call.args[0] if call.args else "")
+
+    def test_public_mention_is_untouched_by_the_gate(self) -> None:
+        router, runtime = self._build_router(is_admin=False)
+
+        router.dispatch("帮助", "c", "a", "u")
+
+        for call in runtime.sender.send_message.call_args_list:
+            self.assertNotIn("无权限", call.args[0] if call.args else "")
 
 
 if __name__ == "__main__":

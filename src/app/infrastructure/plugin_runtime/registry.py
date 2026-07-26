@@ -168,6 +168,40 @@ class PluginRegistry:
                 return True
         return False
 
+    def has_admin_only_mention_prefix(self, text: str) -> bool:
+        """判断是否存在声明为管理员专属的插件 mention 前缀匹配。
+
+        权限闸门只认内置管理命令名单，命中不了就直接放行；
+        """
+        if not text:
+            return False
+        for name in self._order:
+            module = self._modules.get(name)
+            if not module:
+                continue
+            capabilities = self._get_command_capabilities(module)
+            if not capabilities.mention_prefixes or capabilities.is_public_command:
+                continue
+            if any(text.startswith(p) for p in capabilities.mention_prefixes):
+                return True
+        return False
+
+    def has_admin_only_slash_command(self, command: str) -> bool:
+        """判断是否存在声明为管理员专属的插件 slash 命令匹配。"""
+        cmd = (command or "").strip().lower()
+        if not cmd:
+            return False
+        for name in self._order:
+            module = self._modules.get(name)
+            if not module:
+                continue
+            capabilities = self._get_command_capabilities(module)
+            if not capabilities.slash_commands or capabilities.is_public_command:
+                continue
+            if cmd in capabilities.slash_commands:
+                return True
+        return False
+
     def try_dispatch_mention(
         self,
         text: str,

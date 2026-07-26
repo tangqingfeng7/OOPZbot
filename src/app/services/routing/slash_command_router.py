@@ -76,7 +76,7 @@ class SlashCommandRouter:
             (slash_of("voice"), lambda: self._actions.interaction.show_voice_channels(channel, area)),
             (slash_of("daily"), lambda: self._actions.interaction.show_daily_speech(channel, area)),
             (slash_of("health"), lambda: self._actions.interaction.show_health_check(channel, area)),
-            (slash_of("setup"), lambda: self._actions.interaction.show_setup_wizard(channel, area)),
+            (slash_of("setup"), lambda: self._actions.interaction.show_setup_wizard(channel, area, user)),
             (slash_of("mute"), lambda: self._actions.moderation.mute_user(raw, channel, area, "用法: /禁言 谁 10")),
             (slash_of("unmute"), lambda: self._actions.moderation.unmute_user(raw, channel, area, "用法: /解禁 谁")),
             (slash_of("mute_mic"), lambda: self._actions.moderation.mute_mic(raw, channel, area, "用法: /禁麦 谁")),

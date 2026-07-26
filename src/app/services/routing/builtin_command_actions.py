@@ -57,8 +57,8 @@ class InteractionCommandActions:
     def show_health_check(self, channel: str, area: str) -> None:
         self._services.interaction.setup.show_health_check(channel, area)
 
-    def show_setup_wizard(self, channel: str, area: str) -> None:
-        self._services.interaction.setup.show_setup_wizard(channel, area)
+    def show_setup_wizard(self, channel: str, area: str, user: str = "") -> None:
+        self._services.interaction.setup.show_setup_wizard(channel, area, user)
 
     def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
         self._services.interaction.common.generate_image(prompt, channel, area, user)

@@ -29,6 +29,23 @@ class BotApplication:
         self._voice_runtime = VoiceRuntimeBuilder()
         self._context: Optional[AppContext] = None
 
+    @staticmethod
+    def _warn_if_no_admins() -> None:
+        """未配置管理员时明确告知后果与出路。
+
+        权限判定是 fail-closed 的，空名单下所有管理命令对任何人都不可用；
+        后台默认关闭、密码默认为空，也不能靠后台自救 —— 不提示的话，
+        用户只会看到「无权限」而不知道该改哪里。
+        """
+        from config import ADMIN_UIDS
+
+        if ADMIN_UIDS:
+            return
+        logger.warning("=" * 50)
+        logger.warning("未配置 ADMIN_UIDS，所有管理命令对任何人都不可用。")
+        logger.warning("在频道里发送 /setup 可查看你的 UID 与配置步骤。")
+        logger.warning("=" * 50)
+
     def _install_signal_handlers(self) -> None:
         def _graceful_stop(signum, _frame):
             name = signal.Signals(signum).name
@@ -45,6 +62,7 @@ class BotApplication:
         logger.info("=" * 50)
         logger.info("Oopz Bot 正在启动...")
         logger.info("=" * 50)
+        self._warn_if_no_admins()
 
         self._install_signal_handlers()
         try:

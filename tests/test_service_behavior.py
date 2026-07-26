@@ -15,13 +15,19 @@ if str(SRC_ROOT) not in sys.path:
 class CommandAccessServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.plugins = Mock()
+        # 裸 Mock 的任意方法都返回真值；这两个是「拦截」语义，默认必须为假
+        self.plugins.has_admin_only_mention_prefix.return_value = False
+        self.plugins.has_admin_only_slash_command.return_value = False
         self.runtime = SimpleNamespace(plugins=self.plugins, bot_mention="(met)bot(met)")
 
-    def test_is_admin_allows_anyone_when_admin_list_empty(self) -> None:
+    def test_is_admin_is_fail_closed_when_admin_list_empty(self) -> None:
+        # 空名单曾被当作「所有人都是管理员」——那是首启默认态，
+        # 等于装好即全员可用禁言/封禁/撤回/插件管理
         import app.services.routing.command_access_service as module
 
         with patch.object(module, "ADMIN_UIDS", []):
-            self.assertTrue(module.CommandAccessService.is_admin("user-1"))
+            self.assertFalse(module.CommandAccessService.is_admin("user-1"))
+            self.assertFalse(module.CommandAccessService.has_configured_admins())
 
     def test_is_admin_checks_membership_when_admin_list_present(self) -> None:
         import app.services.routing.command_access_service as module
@@ -59,6 +65,34 @@ class CommandAccessServiceTest(unittest.TestCase):
             self.assertTrue(service.is_public_command("/plugin-demo arg"))
 
         self.plugins.has_public_slash_command.assert_called_once_with("/plugin-demo")
+
+    def test_admin_membership_still_checked_when_list_present(self) -> None:
+        import app.services.routing.command_access_service as module
+
+        with patch.object(module, "ADMIN_UIDS", ["admin-1"]):
+            self.assertTrue(module.CommandAccessService.has_configured_admins())
+            self.assertTrue(module.CommandAccessService.is_admin("admin-1"))
+            self.assertFalse(module.CommandAccessService.is_admin("user-1"))
+
+    def test_plugin_declared_admin_only_mention_is_not_public(self) -> None:
+        # 内置管理名单只覆盖内置命令；插件声明的 is_public_command=False
+        # 若不在这里拦住，闸门会因为内置名单没命中而直接放行
+        from app.services.routing.command_access_service import CommandAccessService
+
+        service = CommandAccessService(self.runtime)
+        self.plugins.has_admin_only_mention_prefix.return_value = True
+
+        self.assertFalse(service.is_public_command("(met)bot(met) 签到"))
+        self.plugins.has_public_mention_prefix.assert_not_called()
+
+    def test_plugin_declared_admin_only_slash_is_not_public(self) -> None:
+        from app.services.routing.command_access_service import CommandAccessService
+
+        service = CommandAccessService(self.runtime)
+        self.plugins.has_admin_only_slash_command.return_value = True
+
+        self.assertFalse(service.is_public_command("/checkin"))
+        self.plugins.has_public_slash_command.assert_not_called()
 
 
 class RoleServiceTest(unittest.TestCase):
@@ -1096,9 +1130,12 @@ class SetupServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
         self.plugins = Mock()
+        self.access = Mock()
+        self.access.has_configured_admins.return_value = True
         self.handler = SimpleNamespace(
             infrastructure=SimpleNamespace(sender=self.sender),
             plugins=self.plugins,
+            services=SimpleNamespace(routing=SimpleNamespace(access=self.access)),
         )
 
     def test_show_health_check_reports_failures_and_next_steps(self) -> None:
@@ -1157,6 +1194,72 @@ class SetupServiceTest(unittest.TestCase):
         self.assertIn("设置后台安全与持久化", message)
         self.assertIn("前往配置中心设置 admin_password", message)
         self.assertIn("/health", message)
+        # 已配置管理员时不该出现引导段
+        self.assertNotIn("尚未配置管理员", message)
+
+    def _wizard_message(self, user: str) -> str:
+        from app.services.interaction.setup_service import SetupService
+
+        service = SetupService(self.handler)
+        with patch.object(service, "build_report", return_value={"wizard_steps": []}):
+            service.show_setup_wizard("channel-1", "area-1", user)
+        return self.sender.send_message.call_args.args[0]
+
+    def test_wizard_echoes_caller_uid_when_no_admins_configured(self) -> None:
+        # 权限是 fail-closed 的，空名单下所有管理命令不可用；
+        # 向导必须回显 UID，否则用户拿不到填进 ADMIN_UIDS 的值
+        self.access.has_configured_admins.return_value = False
+
+        message = self._wizard_message("uid-abc123")
+
+        self.assertIn("尚未配置管理员", message)
+        self.assertIn("uid-abc123", message)
+        self.assertIn("ADMIN_UIDS", message)
+
+    def test_wizard_falls_back_when_caller_uid_unknown(self) -> None:
+        self.access.has_configured_admins.return_value = False
+
+        message = self._wizard_message("")
+
+        self.assertIn("尚未配置管理员", message)
+        self.assertIn("个人信息", message)
+
+
+class ProfanitySelfLockTest(unittest.TestCase):
+    """未配置管理员时必须全员免检，否则服主自己会被自动禁言且无法解禁。"""
+
+    def _service(self, *, has_admins: bool):
+        from app.services.routing.command_message_service import CommandMessageService
+
+        access = Mock()
+        access.has_configured_admins.return_value = has_admins
+        access.is_admin.return_value = False
+        runtime = Mock()
+        runtime.services.routing.access = access
+        return CommandMessageService(runtime), access
+
+    def test_empty_admin_list_skips_profanity_for_everyone(self) -> None:
+        import app.services.routing.command_message_service as module
+
+        service, _ = self._service(has_admins=False)
+        ctx = SimpleNamespace(user="someone", message_id="m1", content="x", channel="c", area="a")
+
+        with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):
+            self.assertFalse(service.handle_profanity(ctx))
+
+    def test_configured_admin_list_still_checks_non_admins(self) -> None:
+        import app.services.routing.command_message_service as module
+
+        service, access = self._service(has_admins=True)
+        ctx = SimpleNamespace(
+            user="someone", message_id="m1", content="x", channel="c", area="a", timestamp=0
+        )
+
+        with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):
+            service.handle_profanity(ctx)
+
+        # 名单已配置时不再全员免检，必须逐个判定身份
+        access.is_admin.assert_called_with("someone")
 
 
 if __name__ == "__main__":

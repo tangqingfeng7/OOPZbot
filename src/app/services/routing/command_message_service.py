@@ -77,7 +77,12 @@ class CommandMessageService:
         if not PROFANITY_CONFIG.get("enabled"):
             return False
 
-        skip = PROFANITY_CONFIG.get("skip_admins") and self._runtime.services.routing.access.is_admin(ctx.user)
+        access = self._runtime.services.routing.access
+        # 未配置管理员名单时保留全员免检：否则首启服主自己会被自动禁言，
+        # 而「解禁」是管理命令、在 fail-closed 下正好被挡住，形成自锁。
+        skip = PROFANITY_CONFIG.get("skip_admins") and (
+            not access.has_configured_admins() or access.is_admin(ctx.user)
+        )
         if skip or ctx.user == self._bot_uid:
             return False
 

@@ -1,7 +1,10 @@
 import re
 
-from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
+from core.constants import Msg
 from domain.routing.command_registry import mention_of
+from domain.routing.public_command_rules import is_public_mention_text
+
+from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
 
 from .builtin_command_actions import build_builtin_command_actions
 
@@ -76,7 +79,7 @@ class MentionCommandRouter:
             (mention_of("voice"), lambda: self._actions.interaction.show_voice_channels(channel, area)),
             (mention_of("daily"), lambda: self._actions.interaction.show_daily_speech(channel, area)),
             (mention_of("health"), lambda: self._actions.interaction.show_health_check(channel, area)),
-            (mention_of("setup"), lambda: self._actions.interaction.show_setup_wizard(channel, area)),
+            (mention_of("setup"), lambda: self._actions.interaction.show_setup_wizard(channel, area, user)),
             (mention_of("clear_history"), lambda: self._actions.recall.clear_history(channel, area)),
             (mention_of("blocklist"), lambda: self._actions.moderation.show_block_list(channel, area)),
             (mention_of("plugin_list"), lambda: self._actions.plugins.show_plugin_list(channel, area)),
@@ -164,6 +167,26 @@ class MentionCommandRouter:
         from app.services.interaction.help_catalog import suggest_command_usages
         return bool(suggest_command_usages(text, limit=1))
 
+    def _reject_admin_only(self, text: str, channel: str, area: str, user: str) -> bool:
+        """第二层权限门：与 slash 侧 dispatch 里的 is_admin 判断对称。
+
+        第一层闸门在 CommandMessageService.reject_unauthorized_command，但插件可以用
+        公开前缀盖过内置管理命令的判定（见 CommandAccessService.is_public_command），
+        所以内置管理命令在真正执行前必须自己再确认一次身份。
+
+        管理命令名单同样从注册表派生，新增 admin=True 的命令自动纳入。
+        """
+        if is_public_mention_text(text):
+            return False
+        if self._services.routing.access.is_admin(user):
+            return False
+        self._sender.send_message(
+            f"{Msg.ERR} 无权限，仅管理员可使用该指令",
+            channel=channel,
+            area=area,
+        )
+        return True
+
     def dispatch(self, text: str, channel: str, area: str, user: str) -> bool:
         """分发 @bot 命令。返回 True 表示该消息落入了 AI 聊天（用户消息不应被撤回）。"""
         if self._plugins.try_dispatch_mention(
@@ -175,6 +198,12 @@ class MentionCommandRouter:
         ):
             return False
         if self._services.interaction.music.handle_mention(text, channel, area, user):
+            return False
+
+        # 插件与音乐保持既有优先级；进入内置命令前补一层与 slash 侧对称的管理员门。
+        # 必须排在插件之后：否则某个公开插件的合法前缀若恰是管理前缀的延伸
+        # （如「插件商店」之于「插件」），会被误杀。
+        if self._reject_admin_only(text, channel, area, user):
             return False
 
         for aliases, callback in self._exact_rules(channel, area, user):

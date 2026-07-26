@@ -67,8 +67,9 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("voice", ("/voice",), ("语音", "语音频道", "语音在线", "谁在语音"), help_topic="query"),
     CommandSpec("daily", ("/daily", "/quote"), ("每日一句", "一句", "名言", "语录", "鸡汤"), help_topic="query"),
     CommandSpec("whois", ("/whois",), ("查看", "资料", "查询资料"), help_topic="query"),
-    CommandSpec("role", ("/role",), ("角色",), help_topic="admin"),
-    CommandSpec("roles", ("/roles",), ("可分配角色", "分配角色"), help_topic="admin"),
+    # 这两条是查身份组，本就是公开查询；挂在 admin 主题下会把整个管理主题降级成公开
+    CommandSpec("role", ("/role",), ("角色",), help_topic="query"),
+    CommandSpec("roles", ("/roles",), ("可分配角色", "分配角色"), help_topic="query"),
     CommandSpec("search", ("/search",), ("搜索成员", "搜索", "找人"), help_topic="query"),
     CommandSpec("enter", ("/enter",), ("进入频道", "进入"), help_topic="query"),
     # --- 提醒 / 统计（公开） ---
@@ -124,13 +125,19 @@ def admin_mention_prefixes() -> tuple[str, ...]:
 
 
 def admin_only_help_topics() -> frozenset[str]:
-    """所有归属命令均为管理员专属的帮助主题集合。
+    """含管理员专属命令的帮助主题集合。
 
-    某主题只要存在任一公开命令即视为公开主题；无任何命令归属的主题不计入。
+    判定是 fail-closed：主题下**只要有一条** ``admin=True`` 的命令，整个主题就
+    不对非管理员展示。早先按「全部命令都是 admin 才算管理主题」归约，一条公开
+    命令就能把整个主题降级成公开 —— ``admin`` 主题正是因为混进了公开的
+    ``/role`` / ``/roles``，导致非管理员发「帮助 管理」能看到全量管理命令清单。
+
+    代价是主题里少数公开命令会一并被藏起来，所以公开命令应挂到它真正所属的
+    主题（如查询类挂 ``query``），而不是靠这里放行。
     """
     by_topic: dict[str, bool] = {}
     for spec in COMMANDS:
         if spec.help_topic is None:
             continue
-        by_topic[spec.help_topic] = by_topic.get(spec.help_topic, True) and spec.admin
-    return frozenset(topic for topic, admin_only in by_topic.items() if admin_only)
+        by_topic[spec.help_topic] = by_topic.get(spec.help_topic, False) or spec.admin
+    return frozenset(topic for topic, has_admin in by_topic.items() if has_admin)

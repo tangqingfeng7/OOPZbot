@@ -177,15 +177,32 @@ def _display_width(text: str) -> int:
     return sum(2 if ord(ch) > 0x7F else 1 for ch in text)
 
 
-def _build_overview_lines() -> tuple[str, ...]:
+def _overview_lines_for_keys(keys: tuple[str, ...]) -> tuple[str, ...]:
     """从各主题的 menu_label/menu_blurb 派生总览菜单，标签按显示宽度对齐。"""
-    label_width = max(_display_width(HELP_TOPICS[key].menu_label) for key in MENU_ORDER)
+    label_width = max(_display_width(HELP_TOPICS[key].menu_label) for key in keys)
     lines = ["帮助主题:"]
-    for key in MENU_ORDER:
+    for key in keys:
         topic = HELP_TOPICS[key]
         pad = " " * (label_width - _display_width(topic.menu_label))
         lines.append(f"  帮助 {topic.menu_label}{pad}  {topic.menu_blurb}")
     return tuple(lines)
+
+
+def _build_overview_lines() -> tuple[str, ...]:
+    return _overview_lines_for_keys(MENU_ORDER)
+
+
+def overview_lines(is_admin: bool) -> tuple[str, ...]:
+    """总览菜单；非管理员不展示管理员专属主题。
+
+    过滤依据是 ADMIN_ONLY_TOPICS（从命令注册表派生），不是行文本字面量 ——
+    菜单标签的对齐空格是按显示宽度动态生成的，按整行字面量匹配来过滤会在
+    任何人改动 menu_label 字宽时静默失效。
+    """
+    if is_admin:
+        return HELP_TOPICS["overview"].lines
+    keys = tuple(key for key in MENU_ORDER if key not in ADMIN_ONLY_TOPICS)
+    return _overview_lines_for_keys(keys)
 
 
 HELP_TOPICS["overview"] = replace(HELP_TOPICS["overview"], lines=_build_overview_lines())

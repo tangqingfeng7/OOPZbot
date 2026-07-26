@@ -75,6 +75,12 @@ class PluginRuntime:
     def has_public_slash_command(self, command: str) -> bool:
         return self._registry.has_public_slash_command(command)
 
+    def has_admin_only_mention_prefix(self, text: str) -> bool:
+        return self._registry.has_admin_only_mention_prefix(text)
+
+    def has_admin_only_slash_command(self, command: str) -> bool:
+        return self._registry.has_admin_only_slash_command(command)
+
     def try_dispatch_mention(
         self,
         text: str,

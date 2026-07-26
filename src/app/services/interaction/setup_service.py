@@ -48,7 +48,34 @@ class SetupService:
         ]
         self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def show_setup_wizard(self, channel: str, area: str) -> None:
+    def _admin_setup_lines(self, user: str) -> list[str]:
+        """未配置管理员时的引导。
+
+        权限判定是 fail-closed 的（见 CommandAccessService.is_admin），空名单下
+        所有管理命令都不可用；而后台默认关闭、密码默认为空，也不能靠后台自救。
+        所以这里必须回显调用者 UID —— 否则用户拿不到填进 ADMIN_UIDS 的值。
+        """
+        if self._runtime.services.routing.access.has_configured_admins():
+            return []
+        lines = [
+            "",
+            "【尚未配置管理员】当前所有管理命令对任何人都不可用。",
+            "请按以下步骤配置：",
+        ]
+        if user:
+            lines.append(f"1. 你的 UID: {user}")
+        else:
+            lines.append("1. 发送 @bot 个人信息 获取你的 UID")
+        lines += [
+            "2. 编辑项目根目录 config.py，填入 ADMIN_UIDS = [\"上面的 UID\"]",
+            "3. 重启 Bot 生效",
+            "",
+            "也可以先在 config.py 里设置 WEB_PLAYER_CONFIG 的 admin_enabled=True",
+            "与 admin_password，重启后从 /admin 后台管理。",
+        ]
+        return lines
+
+    def show_setup_wizard(self, channel: str, area: str, user: str = "") -> None:
         report = self.build_report()
         lines = ["【首启向导】按顺序完成以下步骤"]
         for index, step in enumerate(report["wizard_steps"], start=1):
@@ -66,6 +93,7 @@ class SetupService:
                 lines.append(f"   建议操作: {step['actions'][0]}")
             if step.get("page"):
                 lines.append(f"   后台入口: {step['page']}")
+        lines += self._admin_setup_lines(user)
         lines += [
             "",
             "可用命令:",
