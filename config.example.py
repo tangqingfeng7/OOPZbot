@@ -41,6 +41,9 @@ PROXY_ALIAS_CONFIG = {
     "host": "127.0.0.1",
     "http_port": 7890,   # clash / clash-http / clash-mixed / mihomo
     "socks_port": 7891,  # clash-socks / mihomo-socks
+    # Clash / mihomo 开 fake-ip 时，本机 DNS 返回的是占位地址而非真实目标，
+    # 远程素材下载的 SSRF 防护会跳过这些段的判定。改过 fake-ip-range 才需要动这项。
+    "fake_ip_ranges": ["198.18.0.0/15", "fdfe:dcba:9876::/64"],
 }
 
 # HTTP 请求头模板

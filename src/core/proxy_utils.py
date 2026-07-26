@@ -4,6 +4,7 @@ Shared proxy helpers for requests, websocket-client, Playwright, and Selenium.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from dataclasses import dataclass
@@ -52,6 +53,54 @@ def _build_proxy_aliases() -> dict[str, str]:
 
 
 _PROXY_ALIASES = _build_proxy_aliases()
+
+# Clash / mihomo 的 fake-ip 模式会给每个查询到的域名分配一个占位地址，本机 DNS
+# 返回的就是这个占位地址，真实解析发生在代理侧。这些段在 ipaddress 里被判为
+# private，会让「解析后校验是否公网」的 SSRF 防护把所有域名都误杀。
+# 默认取 Clash 出厂 fake-ip 段，可用 config.PROXY_ALIAS_CONFIG["fake_ip_ranges"] 覆盖。
+_DEFAULT_FAKE_IP_RANGES = ("198.18.0.0/15", "fdfe:dcba:9876::/64")
+
+
+def _build_fake_ip_networks() -> tuple:
+    """构建 fake-ip 占位段列表；config 不可用或配置非法时回退默认值。"""
+    raw = _DEFAULT_FAKE_IP_RANGES
+    try:
+        from config import PROXY_ALIAS_CONFIG  # type: ignore
+
+        configured = PROXY_ALIAS_CONFIG.get("fake_ip_ranges")
+        if configured:
+            raw = tuple(configured)
+    except Exception:
+        pass
+
+    networks = []
+    for item in raw:
+        try:
+            networks.append(ipaddress.ip_network(str(item).strip(), strict=False))
+        except ValueError:
+            _log.warning("忽略无法解析的 fake-ip 段: %s", item)
+    return tuple(networks)
+
+
+_FAKE_IP_NETWORKS = _build_fake_ip_networks()
+
+
+def is_fake_ip(ip) -> bool:
+    """判断地址是否落在代理的 fake-ip 占位段内。
+
+    占位地址只是 DNS 层的临时映射，不代表真实目标，因此不能据此判断内外网。
+    接受 ``ipaddress`` 对象或可解析为地址的字符串；无法解析时返回 False。
+    """
+    if isinstance(ip, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+        addr = ip
+    else:
+        try:
+            addr = ipaddress.ip_address(str(ip))
+        except ValueError:
+            return False
+    return any(addr in network for network in _FAKE_IP_NETWORKS)
+
+
 _DEFAULT_PORTS = {
     "http": 80,
     "https": 443,

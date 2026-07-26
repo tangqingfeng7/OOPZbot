@@ -14,6 +14,7 @@ from PIL import Image
 
 from core.http_constants import HTTP_TIMEOUT_DOWNLOAD, HTTP_TIMEOUT_MEDIA
 from core.logger_config import get_logger
+from core.proxy_utils import is_fake_ip
 
 logger = get_logger("OopzUpload")
 
@@ -29,26 +30,56 @@ class RemoteFetchError(Exception):
     """远程素材下载被拒绝（SSRF 防护）或超出大小上限。"""
 
 
+def _is_public_ip(ip) -> bool:
+    """单个地址是否为公网地址。"""
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
 def _is_public_host(host: str) -> bool:
-    """域名 / IP 解析出的每个地址都必须是公网地址，否则视为不安全。"""
+    """域名 / IP 解析出的每个地址都必须是公网地址，否则视为不安全。
+
+    两种情况分开处理：
+
+    - host 本身是 IP 字面量：直接校验，不经 DNS。占位段地址同样按内网拒绝，
+      因为无法反查它对应哪个域名。
+    - host 是域名：解析后逐个校验，但跳过代理的 fake-ip 占位地址
+      （见 ``core.proxy_utils.is_fake_ip``）—— 那只是 DNS 层的临时映射，
+      真实解析由代理完成，据此判断内外网是错的。若解析结果全是占位地址，
+      说明本机无从得知真实目标，交由代理决定路由。
+    """
+    try:
+        return _is_public_ip(ipaddress.ip_address(host))
+    except ValueError:
+        pass  # 不是 IP 字面量，按域名走 DNS 解析
+
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return False
+    if not infos:
+        return False
+
+    resolved_real_address = False
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             return False
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
+        if is_fake_ip(ip):
+            continue
+        resolved_real_address = True
+        if not _is_public_ip(ip):
             return False
+
+    if not resolved_real_address:
+        logger.debug("%s 仅解析出代理 fake-ip 占位地址，跳过公网校验，交由代理路由", host)
     return True
 
 
