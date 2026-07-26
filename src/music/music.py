@@ -1043,15 +1043,7 @@ class MusicHandler(PlaybackMixin):
                     result = self.queue.redis.blpop(KEY_WEB_COMMANDS, timeout=2)
                     if result:
                         _, cmd_raw = result
-                        raw = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)
-                        cmd_area, cmd = decode_web_command(raw)
-                        if not self._web_command_applies_here(cmd_area):
-                            logger.info(
-                                "跳过来自其他域的 Web 控制命令: area=%s cmd=%s",
-                                cmd_area[:8], cmd[:20],
-                            )
-                            continue
-                        self._execute_web_command(cmd)
+                        self._consume_web_command(cmd_raw)
                 except Exception as e:
                     now = time.time()
                     if now - last_warn_at >= 30:
@@ -1063,6 +1055,22 @@ class MusicHandler(PlaybackMixin):
 
         t = threading.Thread(target=_listener, daemon=True)
         t.start()
+
+    def _consume_web_command(self, cmd_raw) -> bool:
+        """解码一条 Web 控制命令并按域决定是否执行。返回是否执行了。
+
+        从监听线程的循环体里抽出来，好让「跨域命令会被跳过」这件事能被直接测到 ——
+        埋在 while 循环 + BLPOP 里的话，把域校验整段删掉测试也照样绿。
+        """
+        raw = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)
+        cmd_area, cmd = decode_web_command(raw)
+        if not self._web_command_applies_here(cmd_area):
+            logger.info(
+                "跳过来自其他域的 Web 控制命令: area=%s cmd=%s", cmd_area[:8], cmd[:20]
+            )
+            return False
+        self._execute_web_command(cmd)
+        return True
 
     def _web_command_applies_here(self, cmd_area: str) -> bool:
         """命令是否该由当前正在播放的域执行。

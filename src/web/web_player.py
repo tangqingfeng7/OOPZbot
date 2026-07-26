@@ -285,9 +285,12 @@ def execute_control_action(action: str, body: dict, redis_client: redis.Redis, a
         redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, f"seek:{seek_time}"))
         return {"ok": True}
     if action == "volume":
+        # 音量是 Agora 输出设备的属性，不是域的属性：bot 同一时刻只在一个语音频道，
+        # 全仓 KEY_VOLUME 也只有这一个全局键。带域下发会让写入生效、命令被丢弃，
+        # 于是 /api/status 读到的值和实际在响的音量长期背离。
         vol = _normalize_volume(body.get("value"))
         redis_client.set(KEY_VOLUME, str(vol))
-        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, f"volume:{vol}"))
+        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command("", f"volume:{vol}"))
         return {"ok": True, "volume": vol}
     if action == "mode":
         mode = body.get("value") or body.get("mode")
@@ -348,9 +351,11 @@ def execute_queue_action(action: str, index, redis_client: redis.Redis, area: st
 
 def _queue_action_without_lua(action: str, queue_key: str, idx: int, redis_client) -> dict:
     """Redis 降级到内存实现时的队列操作回退。"""
-    item = redis_client.lindex(queue_key, idx)
-    if item is None:
+    # 边界判定与 LUA 脚本保持一致：lindex 支持负索引（idx=-1 返回队尾），
+    # 单靠它判 None 会放行负数，而端点的默认值恰好是 body.get("index", -1)。
+    if idx < 0 or idx >= redis_client.llen(queue_key):
         return {"ok": False, "error": "索引无效"}
+    item = redis_client.lindex(queue_key, idx)
     redis_client.lset(queue_key, idx, "__REMOVED__")
     redis_client.lrem(queue_key, 1, "__REMOVED__")
     if action == "top":

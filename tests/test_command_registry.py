@@ -454,13 +454,59 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         router._actions = Mock()
         return router
 
-    def test_router_holds_no_per_request_user_state(self) -> None:
+    def test_dispatch_hands_the_caller_identity_to_the_action(self) -> None:
+        """端到端：走真实 dispatch，断言动作收到的是这次调用的 user。
+
+        这是修复的实际接线点。只测 _arg_rules 的闭包绑定抓不到它 —— 把
+        dispatch 里的实参换成空串、换成 channel、或者改回实例字段中转，
+        闭包用例全都照过。
+        """
         router = self._router()
-        leaked = [
-            name for name, value in vars(router).items()
-            if isinstance(value, str) and "user" in name
-        ]
-        self.assertEqual(leaked, [], f"调用者身份不能存在实例字段上: {leaked}")
+
+        router.dispatch("/whois 张三", "chan-A", "area-1", "user-A")
+
+        router._actions.community.show_whois.assert_called_once_with(
+            "张三", "chan-A", "area-1", "user-A"
+        )
+
+    def test_a_concurrent_dispatch_does_not_pollute_this_one(self) -> None:
+        """另一个 worker 在本次分发中途插入时，本次仍须按自己的身份执行。
+
+        真实竞态是 4 个 worker 并行跑同一个 router 单例；单线程等价复现是可重入 ——
+        让 music 分发钩子（排在 _arg_rules 之前，正是那个窗口）再进一次 dispatch，
+        相当于另一线程抢先写完了共享状态。
+
+        顺序调用两次是抓不到的：实例字段中转在不交错时表现完全正常。
+        """
+        router = self._router()
+        reentered = []
+
+        def _interleave(*_args, **_kwargs):
+            if not reentered:
+                reentered.append(True)
+                router.dispatch("/whois 乙", "chan-B", "area-2", "user-B")
+            return False
+
+        router._services.interaction.music.handle_slash.side_effect = _interleave
+
+        router.dispatch("/whois 甲", "chan-A", "area-1", "user-A")
+
+        self.assertTrue(reentered, "夹层调用没被触发，用例失去意义")
+        self.assertIn(
+            ("甲", "chan-A", "area-1", "user-A"),
+            [c.args for c in router._actions.community.show_whois.call_args_list],
+            "本次分发被另一次调用的身份污染了",
+        )
+
+    def test_help_topic_gate_receives_the_dispatching_user(self) -> None:
+        """/help <主题> 是主题级 fail-closed 的判定入口，喂进去的 user 必须干净。"""
+        router = self._router()
+
+        router.dispatch("/help 管理", "chan-B", "area-1", "plain-uid")
+
+        router._actions.interaction.show_help.assert_called_once_with(
+            "chan-B", "area-1", "plain-uid", "管理"
+        )
 
     def test_arg_rules_bind_the_user_passed_in(self) -> None:
         router = self._router()

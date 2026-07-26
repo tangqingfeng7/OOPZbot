@@ -7,6 +7,7 @@
 import ast
 import sys
 import threading
+from unittest import mock
 import unittest
 from pathlib import Path
 
@@ -87,6 +88,60 @@ class SignedRequestTimeoutTest(unittest.TestCase):
             self.sender.session.calls.clear()
             call()
             self.assertEqual(self.sender.session.calls[0]["timeout"], HTTP_TIMEOUT_API_SLOW)
+
+
+class SlowTierPassthroughTest(unittest.TestCase):
+    """确有批量语义的接口要走慢档，且 timeout 能从业务方法穿透到传输层。
+
+    只断言常数分档没有意义 —— 得确认它真的被那三个接口用上了。
+    """
+
+    def _api(self):
+        from oopz.oopz_api import OopzApiMixin
+
+        class _Api(OopzApiMixin):
+            def __init__(self):
+                self.sent = []
+
+            def _get(self, path, params=None, *, timeout=None):
+                self.sent.append({"path": path, "timeout": timeout})
+                return _Resp()
+
+            def _request(self, method, path, body=None, *, timeout=None):
+                self.sent.append({"path": path, "timeout": timeout})
+                return _Resp()
+
+        return _Api()
+
+    def test_timeout_passes_through_query_and_mutation(self) -> None:
+        api = self._api()
+
+        api._query("POST", "/x", body={}, timeout=HTTP_TIMEOUT_API_SLOW)
+        api._mutation("act", "POST", "/y", body={}, timeout=HTTP_TIMEOUT_API_SLOW)
+
+        self.assertEqual(
+            [c["timeout"] for c in api.sent],
+            [HTTP_TIMEOUT_API_SLOW, HTTP_TIMEOUT_API_SLOW],
+        )
+
+    def test_default_is_none_so_transport_picks_the_default_tier(self) -> None:
+        api = self._api()
+        api._query("GET", "/x")
+
+        self.assertIsNone(api.sent[0]["timeout"], "不传时应交给传输层用默认档，而不是在这里写死")
+
+    def test_batch_endpoints_use_the_slow_tier(self) -> None:
+        import config
+
+        api = self._api()
+        api.get_user_area_detail = lambda *a, **k: {}
+        with mock.patch.dict(config.OOPZ_CONFIG, {"default_area": "A1"}, clear=False):
+            api.get_person_infos_batch(["u1"])
+            api.search_area_members(area="A1", keyword="x")
+            api.get_area_members(area="A1")
+
+        slow = [c for c in api.sent if c["timeout"] == HTTP_TIMEOUT_API_SLOW]
+        self.assertEqual(len(slow), 3, f"三个批量接口都应走慢档，实际: {api.sent}")
 
 
 class NoTimeoutlessOutboundCallTest(unittest.TestCase):

@@ -5,9 +5,11 @@ try/except 吞成静默失败；ping() 恒返回 True 又让 /health 在 Redis �
 一片绿。
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -88,13 +90,27 @@ class DegradedStateTest(unittest.TestCase):
         qm._redis_client = _InMemoryRedis()
         self.assertTrue(is_degraded())
 
-    def test_ping_alone_cannot_tell_degraded_apart(self) -> None:
-        # 正是这一点让 /health 在 Redis 挂掉时一片绿
-        self.assertTrue(_InMemoryRedis().ping())
-
     def test_real_client_is_not_degraded(self) -> None:
         qm._redis_client = object()
         self.assertFalse(is_degraded())
+
+    def _health_redis_status(self) -> str:
+        import web.web_player as web_player
+
+        with mock.patch.object(web_player, "get_redis", return_value=_InMemoryRedis()):
+            request = mock.Mock()
+            with mock.patch.object(web_player, "_is_admin_authorized", return_value=True):
+                body = json.loads(web_player.health_check(request).body)
+        return body["checks"]["redis"]["status"]
+
+    def test_health_reports_memory_fallback(self) -> None:
+        # ping() 恒返回 True，只看 ping 的话 Redis 完全挂掉时 /health 一片绿
+        qm._redis_client = _InMemoryRedis()
+        self.assertEqual(self._health_redis_status(), "degraded_memory")
+
+    def test_health_reports_ok_on_a_real_client(self) -> None:
+        qm._redis_client = object()
+        self.assertEqual(self._health_redis_status(), "ok")
 
 
 class QueueActionFallbackTest(unittest.TestCase):
@@ -120,11 +136,28 @@ class QueueActionFallbackTest(unittest.TestCase):
         self.assertEqual(execute_queue_action("top", 2, r), {"ok": True})
         self.assertEqual(r.lrange("music:queue", 0, -1), ["c", "a", "b"])
 
-    def test_bad_index_without_lua(self) -> None:
+    def test_out_of_range_index_without_lua(self) -> None:
         from web.web_player import execute_queue_action
 
         r = self._queue()
         self.assertFalse(execute_queue_action("remove", 99, r)["ok"])
+
+    def test_negative_index_without_lua(self) -> None:
+        """端点默认值就是 body.get("index", -1)，请求体缺 index 即命中。
+
+        lindex 支持负索引（-1 返回队尾），光靠它判 None 会放行负数，
+        接着 lset 的负数守卫抛 IndexError 穿出去。
+        """
+        from web.web_player import execute_queue_action
+
+        for action in ("remove", "top"):
+            for idx in (-1, -2):
+                with self.subTest(action=action, idx=idx):
+                    r = self._queue()
+                    self.assertFalse(execute_queue_action(action, idx, r)["ok"])
+                    self.assertEqual(
+                        r.lrange("music:queue", 0, -1), ["a", "b", "c"], "拒绝时不得改动队列"
+                    )
 
     def test_unknown_action(self) -> None:
         from web.web_player import execute_queue_action

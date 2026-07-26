@@ -64,6 +64,49 @@ class CommandAreaGateTest(unittest.TestCase):
         self.assertTrue(handler._web_command_applies_here("area-B"))
 
 
+class ConsumeWebCommandTest(unittest.TestCase):
+    """走监听线程真正调用的那一层，光测判定函数抓不到「校验被删掉」。"""
+
+    def _handler(self, current_area):
+        from music.music import MusicHandler
+
+        handler = MusicHandler.__new__(MusicHandler)
+        handler._voice_channel_area = current_area
+        handler._execute_web_command = mock.Mock()
+        return handler
+
+    def test_command_from_another_area_is_not_executed(self) -> None:
+        handler = self._handler("area-A")
+
+        self.assertFalse(handler._consume_web_command(encode_web_command("area-B", "next")))
+        handler._execute_web_command.assert_not_called()
+
+    def test_command_from_the_playing_area_is_executed(self) -> None:
+        handler = self._handler("area-A")
+
+        self.assertTrue(handler._consume_web_command(encode_web_command("area-A", "next")))
+        handler._execute_web_command.assert_called_once_with("next")
+
+    def test_unscoped_command_is_executed_anywhere(self) -> None:
+        # 音量作用于全局唯一的 Agora 输出，不带域
+        handler = self._handler("area-A")
+
+        self.assertTrue(handler._consume_web_command(encode_web_command("", "volume:20")))
+        handler._execute_web_command.assert_called_once_with("volume:20")
+
+    def test_bytes_payload_is_decoded(self) -> None:
+        handler = self._handler("area-A")
+
+        self.assertTrue(handler._consume_web_command(encode_web_command("area-A", "stop").encode()))
+        handler._execute_web_command.assert_called_once_with("stop")
+
+    def test_legacy_payload_still_runs(self) -> None:
+        handler = self._handler("area-A")
+
+        self.assertTrue(handler._consume_web_command("next"))
+        handler._execute_web_command.assert_called_once_with("next")
+
+
 class ProducerCarriesAreaTest(unittest.TestCase):
     """execute_control_action 早就收了 area，只是没带进命令载荷。"""
 
@@ -80,7 +123,8 @@ class ProducerCarriesAreaTest(unittest.TestCase):
         def set(self, *a, **k):
             return None
 
-    def test_control_actions_tag_the_area(self) -> None:
+    def test_track_scoped_actions_tag_the_area(self) -> None:
+        """作用在某个域正在播的那首歌上的命令必须带域。"""
         from web.web_player import execute_control_action
 
         for action, body in (
@@ -89,7 +133,6 @@ class ProducerCarriesAreaTest(unittest.TestCase):
             ("pause", {}),
             ("resume", {}),
             ("seek", {"position": 12}),
-            ("volume", {"volume": 50}),
         ):
             with self.subTest(action=action):
                 r = self._Recorder()
@@ -99,6 +142,19 @@ class ProducerCarriesAreaTest(unittest.TestCase):
                 self.assertTrue(r.pushed, f"{action} 应写入一条命令")
                 area, _cmd = decode_web_command(r.pushed[-1])
                 self.assertEqual(area, "area-A")
+
+    def test_volume_is_not_area_scoped(self) -> None:
+        """音量作用于全局唯一的 Agora 输出设备，带域会让写入生效但命令被丢弃，
+        于是 /api/status 读到的值和实际在响的音量长期背离。"""
+        from web.web_player import execute_control_action
+
+        r = self._Recorder()
+        with mock.patch("web.web_player._area_key", side_effect=lambda base, area: base):
+            execute_control_action("volume", {"value": 50}, r, area="area-A")
+
+        area, cmd = decode_web_command(r.pushed[-1])
+        self.assertEqual(area, "")
+        self.assertEqual(cmd, "volume:50")
 
 
 if __name__ == "__main__":

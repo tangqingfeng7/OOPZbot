@@ -30,6 +30,10 @@ def encode_web_command(area: str, command: str) -> str:
     命令队列是全局单键（Web 播放器是全局单令牌，拆键会让跨域命令永久无人消费），
     所以域信息只能随载荷走，由消费端校验。分隔符只切第一个，``notify:{json}``
     这种正文里带 ``|`` 的命令不受影响。
+
+    哪些命令该带域看它作用在什么上：``next`` / ``stop`` / ``pause`` / ``resume``
+    / ``seek`` / ``notify`` 作用于某个域正在播的那首歌，必须带域；``volume``
+    作用于全局唯一的 Agora 输出设备，传空域表示不限定。
     """
     return f"{(area or '').strip()}{_WEB_COMMAND_SEP}{command}"
 
