@@ -19,6 +19,7 @@ from core.logger_config import get_logger
 from music.netease import NeteaseCloud
 from core.queue_manager import (
     get_redis_client,
+    is_degraded,
     _area_key,
     KEY_QUEUE,
     KEY_CURRENT,
@@ -326,17 +327,30 @@ def execute_queue_action(action: str, index, redis_client: redis.Redis, area: st
     except (TypeError, ValueError):
         return {"ok": False, "error": "索引无效"}
     queue_key = _area_key(KEY_QUEUE, area)
-    if action == "remove":
-        ret = redis_client.eval(_QUEUE_REMOVE_LUA, 1, queue_key, idx)
-        if ret == -1:
-            return {"ok": False, "error": "索引无效"}
-        return {"ok": True}
+    if action not in ("remove", "top"):
+        return {"ok": False, "error": f"未知操作: {action}"}
+
+    # 内存降级实现跑不了 LUA，退化成非原子的分步操作。降级期本来就是单进程
+    # 单实例，竞态窗口可以接受；这里做能力探测而不是给 _InMemoryRedis 补 eval。
+    if not hasattr(redis_client, "eval"):
+        return _queue_action_without_lua(action, queue_key, idx, redis_client)
+
+    script = _QUEUE_REMOVE_LUA if action == "remove" else _QUEUE_TOP_LUA
+    if redis_client.eval(script, 1, queue_key, idx) == -1:
+        return {"ok": False, "error": "索引无效"}
+    return {"ok": True}
+
+
+def _queue_action_without_lua(action: str, queue_key: str, idx: int, redis_client) -> dict:
+    """Redis 降级到内存实现时的队列操作回退。"""
+    item = redis_client.lindex(queue_key, idx)
+    if item is None:
+        return {"ok": False, "error": "索引无效"}
+    redis_client.lset(queue_key, idx, "__REMOVED__")
+    redis_client.lrem(queue_key, 1, "__REMOVED__")
     if action == "top":
-        ret = redis_client.eval(_QUEUE_TOP_LUA, 1, queue_key, idx)
-        if ret == -1:
-            return {"ok": False, "error": "索引无效"}
-        return {"ok": True}
-    return {"ok": False, "error": f"未知操作: {action}"}
+        redis_client.lpush(queue_key, item)
+    return {"ok": True}
 
 
 def add_song_to_queue(body: dict, area: str = "") -> dict:
@@ -716,7 +730,9 @@ def health_check(request: Request):
     try:
         r = get_redis()
         r.ping()
-        checks["redis"] = {"status": "ok"}
+        # 内存降级时 ping 恒为 True，只看 ping 会把「Redis 完全挂掉」报成健康。
+        # 但降级本身是设计中的可用状态，不计入 overall —— 判 unhealthy 会误杀容器。
+        checks["redis"] = {"status": "degraded_memory" if is_degraded() else "ok"}
     except Exception as e:
         checks["redis"] = {"status": "degraded", "detail": str(e)}
         overall = False

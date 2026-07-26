@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import random
 import time
@@ -30,6 +31,13 @@ class _InMemoryRedis:
     """
     简易的内存版 Redis，用于 Redis 无法连接时的降级。
     只实现当前项目用到的最小方法集合。
+
+    补不补一个方法的判据：**能不能给出无歧义的对等语义**。
+    - 能：``pipeline``（顺序执行即可，本项目没有依赖原子性的用法）、
+      ``scan``（单趟 fnmatch）、多键 ``delete``（返回删除计数）—— 都补。
+    - 不能：``eval``（要跑 LUA）、``expire``（TTL 语义与 ``set(ex=)`` 重叠且
+      调用点已有 ``hasattr`` 探测）—— 不补，由调用点自己降级。
+    照这个判据加方法，不要看到缺什么就补什么，也别把已有的能力探测删掉。
     """
 
     def __init__(self):
@@ -145,11 +153,43 @@ class _InMemoryRedis:
                 return None
             return self._kv.get(key)
 
-    def delete(self, key: str):
+    def delete(self, *keys: str) -> int:
+        """删除若干键，返回实际删掉的个数（与 redis-py 一致）。
+
+        conversation_memory 用的是 ``delete(*keys)`` 并累加返回值，单键签名
+        且返回 None 会让它在降级期直接抛 TypeError（被 try/except 吞成静默失败）。
+        """
+        removed = 0
         with self._condition:
-            self._kv.pop(key, None)
-            self._lists.pop(key, None)
-            self._expires_at.pop(key, None)
+            for key in keys:
+                existed = key in self._kv or key in self._lists
+                self._kv.pop(key, None)
+                self._lists.pop(key, None)
+                self._expires_at.pop(key, None)
+                if existed:
+                    removed += 1
+        return removed
+
+    def keys(self, pattern: str = "*") -> list:
+        with self._condition:
+            names = set(self._kv) | set(self._lists)
+        return [k for k in names if fnmatch.fnmatchcase(k, pattern)]
+
+    def scan(self, cursor: int = 0, match: Optional[str] = None, count: Optional[int] = None):
+        """单趟返回全部匹配键，游标恒为 0（表示已遍历完）。
+
+        内存实现没有分批的必要；调用方的 ``while cursor != 0`` 循环会正常退出。
+        ``match`` 走 fnmatch，与 Redis 的 glob 语义在本项目用到的范围内一致。
+        """
+        return 0, self.keys(match or "*")
+
+    def pipeline(self, transaction: bool = False):
+        """返回顺序执行的管道。
+
+        不提供原子性 —— 本项目的 pipeline 用法都是「攒一批读/写少跑几趟网络」，
+        没有依赖 MULTI/EXEC 的地方。
+        """
+        return _InMemoryPipeline(self)
 
     def blpop(self, key: str, timeout: int = 0):
         """阻塞弹出：使用 Condition 等待，避免 CPU 空转。"""
@@ -165,6 +205,38 @@ class _InMemoryRedis:
                 if remaining <= 0:
                     return None
                 self._condition.wait(timeout=remaining)
+
+
+class _InMemoryPipeline:
+    """把调用攒起来，execute() 时按顺序在底层 _InMemoryRedis 上重放。"""
+
+    def __init__(self, client: "_InMemoryRedis"):
+        self._client = client
+        self._queued: list[tuple[str, tuple, dict]] = []
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def _record(*args, **kwargs):
+            self._queued.append((name, args, kwargs))
+            return self
+
+        return _record
+
+    def execute(self) -> list:
+        queued, self._queued = self._queued, []
+        return [getattr(self._client, name)(*args, **kwargs) for name, args, kwargs in queued]
+
+    def reset(self) -> None:
+        self._queued = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.reset()
+        return False
 
 
 class QueueManager:
@@ -362,6 +434,15 @@ def _try_connect_redis():
     except Exception as e:
         logger.debug(f"Redis 连接尝试失败: {e}")
         return None
+
+
+def is_degraded() -> bool:
+    """当前是否处于内存降级状态。
+
+    ``_InMemoryRedis.ping()`` 恒返回 True，光靠 ping 判断的话 Redis 完全挂掉时
+    /health 也是一片绿、容器还被判成健康。需要区分时问这个函数。
+    """
+    return isinstance(_redis_client, _InMemoryRedis)
 
 
 def get_redis_client(force_reset: bool = False):
