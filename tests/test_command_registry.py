@@ -143,7 +143,7 @@ class SlashRouterAliasGoldenTest(unittest.TestCase):
     def test_arg_rules_aliases(self) -> None:
         router = self._router()
         self.assertEqual(
-            self._aliases(router._arg_rules("c", "a")),
+            self._aliases(router._arg_rules("c", "a", "u")),
             {"/whois", "/role", "/roles", "/search", "/help", "/enter", "/songsearch", "/pick"},
         )
 
@@ -431,6 +431,71 @@ class MentionAdminGateGuardTest(unittest.TestCase):
 
         for call in runtime.sender.send_message.call_args_list:
             self.assertNotIn("无权限", call.args[0] if call.args else "")
+
+
+class SlashRouterIdentityIsolationTest(unittest.TestCase):
+    """守卫：slash 路由不得把调用者身份挂在实例字段上。
+
+    router 在 registry 里是单例，而 MessageDispatcher 有 4 个 worker 按
+    area:channel 分片并行，实例字段会被后到的其他频道消息覆盖 —— /whois
+    /search /pick 会以别人的身份执行，/help 更是直接架空 show_help 里
+    按 user 判定的管理员门。
+    """
+
+    def _router(self):
+        from unittest.mock import Mock
+        from app.services.routing.slash_command_router import SlashCommandRouter
+
+        runtime = Mock()
+        runtime.plugins.try_dispatch_slash.return_value = False
+        runtime.services.interaction.music.handle_slash.return_value = False
+        runtime.services.routing.access.is_admin.return_value = False
+        router = SlashCommandRouter(runtime)
+        router._actions = Mock()
+        return router
+
+    def test_router_holds_no_per_request_user_state(self) -> None:
+        router = self._router()
+        leaked = [
+            name for name, value in vars(router).items()
+            if isinstance(value, str) and "user" in name
+        ]
+        self.assertEqual(leaked, [], f"调用者身份不能存在实例字段上: {leaked}")
+
+    def test_arg_rules_bind_the_user_passed_in(self) -> None:
+        router = self._router()
+
+        rules_a = router._arg_rules("chan-A", "area-1", "user-A")
+        rules_b = router._arg_rules("chan-B", "area-1", "user-B")
+
+        # 先建好 A 的规则，再建 B 的（模拟另一个 worker 插进来），
+        # 之后才求值 A —— 闭包必须仍然绑着 user-A
+        whois_a = next(cb for aliases, cb, _ in rules_a if "/whois" in aliases)
+        whois_b = next(cb for aliases, cb, _ in rules_b if "/whois" in aliases)
+        whois_b("someone")
+        router._actions.reset_mock()
+        whois_a("zhangsan")
+
+        router._actions.community.show_whois.assert_called_once_with(
+            "zhangsan", "chan-A", "area-1", "user-A"
+        )
+
+    def test_help_topic_gate_gets_the_real_caller(self) -> None:
+        # /help <主题> 是 P0-3 主题级 fail-closed 的判定入口，喂进去的 user 必须干净
+        router = self._router()
+
+        rules_admin = router._arg_rules("chan-A", "area-1", "admin-uid")
+        rules_plain = router._arg_rules("chan-B", "area-1", "plain-uid")
+        help_admin = next(cb for aliases, cb, _ in rules_admin if "/help" in aliases)
+        help_plain = next(cb for aliases, cb, _ in rules_plain if "/help" in aliases)
+
+        help_admin("管理")
+        router._actions.reset_mock()
+        help_plain("管理")
+
+        router._actions.interaction.show_help.assert_called_once_with(
+            "chan-B", "area-1", "plain-uid", "管理"
+        )
 
 
 if __name__ == "__main__":

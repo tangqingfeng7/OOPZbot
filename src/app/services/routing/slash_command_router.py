@@ -11,7 +11,6 @@ class SlashCommandRouter:
         self._sender = sender_of(runtime)
         self._plugins = plugins_of(runtime)
         self._actions = build_builtin_command_actions(runtime)
-        self._current_user = ""
 
     def _rest(self, parts: list[str]) -> str:
         return " ".join(parts[1:]).strip()
@@ -100,16 +99,18 @@ class SlashCommandRouter:
             (slash_of("recentsongs"), lambda: self._actions.scheduler.show_recent_songs(channel, area)),
         )
 
-    def _arg_rules(self, channel: str, area: str):
+    def _arg_rules(self, channel: str, area: str, user: str):
+        # user 必须走形参：router 在 registry 里是单例，而 MessageDispatcher 有 4 个
+        # worker 并行跑不同频道，挂在实例字段上会被后到的消息覆盖（与 mention 侧一致）。
         return (
-            (slash_of("whois"), lambda target: self._actions.community.show_whois(target, channel, area, self._current_user), "用法: /whois 用户名"),
+            (slash_of("whois"), lambda target: self._actions.community.show_whois(target, channel, area, user), "用法: /whois 用户名"),
             (slash_of("role"), lambda target: self._actions.community.show_user_roles(target, channel, area), "用法: /role 用户名"),
             (slash_of("roles"), lambda target: self._actions.community.show_assignable_roles(target, channel, area), "用法: /roles 用户名"),
-            (slash_of("search"), lambda keyword: self._actions.community.search_members(keyword, channel, area, self._current_user), "用法: /search 关键词"),
-            (slash_of("help"), lambda topic: self._actions.interaction.show_help(channel, area, self._current_user, topic), "用法: /help 音乐"),
+            (slash_of("search"), lambda keyword: self._actions.community.search_members(keyword, channel, area, user), "用法: /search 关键词"),
+            (slash_of("help"), lambda topic: self._actions.interaction.show_help(channel, area, user, topic), "用法: /help 音乐"),
             (slash_of("enter"), lambda channel_id: self._actions.interaction.enter_channel(channel_id, channel, area), "用法: /enter 频道ID"),
-            (slash_of("songsearch"), lambda keyword: self._services.interaction.music.search_candidates(keyword, channel, area, self._current_user), "用法: /songsearch 关键词"),
-            (slash_of("pick"), lambda raw: self._actions.interaction.handle_pick(raw, channel, area, self._current_user, "用法: /pick <编号>"), "用法: /pick <编号>"),
+            (slash_of("songsearch"), lambda keyword: self._services.interaction.music.search_candidates(keyword, channel, area, user), "用法: /songsearch 关键词"),
+            (slash_of("pick"), lambda raw: self._actions.interaction.handle_pick(raw, channel, area, user, "用法: /pick <编号>"), "用法: /pick <编号>"),
         )
 
     def _pair_rules(self, channel: str, area: str):
@@ -127,7 +128,6 @@ class SlashCommandRouter:
         )
 
     def dispatch(self, content: str, channel: str, area: str, user: str) -> None:
-        self._current_user = user
         parts = content.split()
         if not parts:
             return
@@ -164,7 +164,7 @@ class SlashCommandRouter:
             if self._dispatch_exact(command, aliases, callback):
                 return
 
-        for aliases, callback, usage in self._arg_rules(channel, area):
+        for aliases, callback, usage in self._arg_rules(channel, area, user):
             if self._dispatch_required_arg(command, aliases, raw, callback, usage, channel, area):
                 return
 
