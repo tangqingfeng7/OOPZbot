@@ -10,7 +10,11 @@ from typing import Optional
 from oopz.oopz_sender import OopzSender
 from music.netease import NeteaseCloud
 from core.queue_manager import QueueManager
-from core.redis_keys import VOLUME as KEY_VOLUME, WEB_COMMANDS as KEY_WEB_COMMANDS
+from core.redis_keys import (
+    VOLUME as KEY_VOLUME,
+    WEB_COMMANDS as KEY_WEB_COMMANDS,
+    decode_web_command,
+)
 from core.database import ImageCache, SongCache, Statistics
 from oopz.name_resolver import NameResolver
 from music.voice_client import VoiceClient
@@ -1039,7 +1043,14 @@ class MusicHandler(PlaybackMixin):
                     result = self.queue.redis.blpop(KEY_WEB_COMMANDS, timeout=2)
                     if result:
                         _, cmd_raw = result
-                        cmd = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)
+                        raw = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)
+                        cmd_area, cmd = decode_web_command(raw)
+                        if not self._web_command_applies_here(cmd_area):
+                            logger.info(
+                                "跳过来自其他域的 Web 控制命令: area=%s cmd=%s",
+                                cmd_area[:8], cmd[:20],
+                            )
+                            continue
                         self._execute_web_command(cmd)
                 except Exception as e:
                     now = time.time()
@@ -1052,6 +1063,21 @@ class MusicHandler(PlaybackMixin):
 
         t = threading.Thread(target=_listener, daemon=True)
         t.start()
+
+    def _web_command_applies_here(self, cmd_area: str) -> bool:
+        """命令是否该由当前正在播放的域执行。
+
+        命令队列是全局单键，Web 端按自己看到的那个域下发 —— 不校验的话，B 域
+        视图上按「切歌」会把 A 域正在播的歌切掉。
+        空域表示不限定（全局默认音量、以及升级前写入的旧载荷）。
+        """
+        cmd_area = (cmd_area or "").strip()
+        if not cmd_area:
+            return True
+        current = (getattr(self, "_voice_channel_area", "") or "").strip()
+        if not current:
+            return True
+        return cmd_area == current
 
     def _execute_web_command(self, cmd: str):
         """执行单条 Web 控制命令"""

@@ -70,7 +70,12 @@ _LYRIC_CACHE_MAX = 200
 started_at: float = time.time()
 liked_ids_cache: list = []
 
-from core.redis_keys import WEB_COMMANDS as KEY_WEB_COMMANDS, VOLUME as KEY_VOLUME, WEB_TOKEN_COOKIE
+from core.redis_keys import (
+    WEB_COMMANDS as KEY_WEB_COMMANDS,
+    VOLUME as KEY_VOLUME,
+    WEB_TOKEN_COOKIE,
+    encode_web_command,
+)
 
 # 可选播放模式取值（与 src/music.py 中的 PLAY_MODE_* 常量保持一致）。
 # 注意：autoplay 不是可选模式，仅为队列播完自动续播时的来源标识。
@@ -261,28 +266,28 @@ async def _auth_web_api(request: Request, call_next):
 def execute_control_action(action: str, body: dict, redis_client: redis.Redis, area: str = "") -> dict:
     queue_key = _area_key(KEY_QUEUE, area)
     if action == "next":
-        redis_client.rpush(KEY_WEB_COMMANDS, "next")
+        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "next"))
         return {"ok": True}
     if action == "clear":
         redis_client.delete(queue_key)
         return {"ok": True}
     if action == "stop":
-        redis_client.rpush(KEY_WEB_COMMANDS, "stop")
+        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "stop"))
         return {"ok": True}
     if action == "pause":
-        redis_client.rpush(KEY_WEB_COMMANDS, "pause")
+        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "pause"))
         return {"ok": True}
     if action == "resume":
-        redis_client.rpush(KEY_WEB_COMMANDS, "resume")
+        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "resume"))
         return {"ok": True}
     if action == "seek":
         seek_time = body.get("time", 0)
-        redis_client.rpush(KEY_WEB_COMMANDS, f"seek:{seek_time}")
+        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, f"seek:{seek_time}"))
         return {"ok": True}
     if action == "volume":
         vol = _normalize_volume(body.get("value"))
         redis_client.set(KEY_VOLUME, str(vol))
-        redis_client.rpush(KEY_WEB_COMMANDS, f"volume:{vol}")
+        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, f"volume:{vol}"))
         return {"ok": True, "volume": vol}
     if action == "mode":
         mode = body.get("value") or body.get("mode")
@@ -396,7 +401,7 @@ def add_song_to_queue(body: dict, area: str = "") -> dict:
     results = pipe.execute()
     queue_len = int(results[1] or 0)
     notify = json.dumps({"name": name, "artists": artists, "position": queue_len}, ensure_ascii=False)
-    r.rpush(KEY_WEB_COMMANDS, f"notify:{notify}")
+    r.rpush(KEY_WEB_COMMANDS, encode_web_command(area, f"notify:{notify}"))
     return {"ok": True, "position": queue_len, "name": name}
 
 

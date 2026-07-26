@@ -3,6 +3,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from core.redis_keys import encode_web_command
+
 from web.admin.shared import (
     RequestsException,
     _BILIBILI_QR_GENERATE_PATH,
@@ -75,7 +77,8 @@ async def admin_update_config(request: Request):
             volume = cfg.default_music_volume()
             r = web_player.get_redis()
             r.set(web_player.KEY_VOLUME, str(volume))
-            r.rpush(web_player.KEY_WEB_COMMANDS, f"volume:{volume}")
+            # 后台改的是全局默认音量，不归属任何域：留空域即对所有域生效
+            r.rpush(web_player.KEY_WEB_COMMANDS, encode_web_command("", f"volume:{volume}"))
         except Exception as e:
             logger.debug("Apply default music volume failed: %s", e)
     cfg.refresh_runtime_dependents(set(applied))

@@ -21,6 +21,32 @@ WEB_TOKEN_COOKIE = "web_token"
 ADMIN_SESSION_COOKIE = "admin_session"
 
 
+_WEB_COMMAND_SEP = "|"
+
+
+def encode_web_command(area: str, command: str) -> str:
+    """把域 ID 编进 Web 控制命令载荷。
+
+    命令队列是全局单键（Web 播放器是全局单令牌，拆键会让跨域命令永久无人消费），
+    所以域信息只能随载荷走，由消费端校验。分隔符只切第一个，``notify:{json}``
+    这种正文里带 ``|`` 的命令不受影响。
+    """
+    return f"{(area or '').strip()}{_WEB_COMMAND_SEP}{command}"
+
+
+def decode_web_command(raw: str) -> tuple[str, str]:
+    """还原 ``(域 ID, 命令)``。
+
+    不含分隔符的旧载荷返回 ``("", 原文)`` —— 滚动升级期 Redis 里可能残留升级前
+    写入的命令，这时无从判断归属，只能放行。等确认线上没有旧载荷后可以去掉这个
+    兼容分支，否则跨域校验对残留载荷是失效的。
+    """
+    area, sep, command = (raw or "").partition(_WEB_COMMAND_SEP)
+    if not sep:
+        return "", raw or ""
+    return area, command
+
+
 def area_key(base: str, area: str) -> str:
     """生成域隔离的 Redis 键。area 为空时回退到全局键。
 
