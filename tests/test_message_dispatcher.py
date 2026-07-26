@@ -89,6 +89,45 @@ class MessageDispatcherTest(unittest.TestCase):
 
         self.assertTrue(done.wait(timeout=2), "异常任务之后工作线程应继续消费")
 
+    def test_stop_delivers_sentinel_even_when_queue_was_full(self) -> None:
+        """队列满时 sentinel 原先被 put_nowait 静默丢弃，工作线程永远收不到停止信号。
+
+        表现是 stop() 白等满 timeout 后返回，线程仍活着阻塞在 get() 上，
+        积压随进程退出一起丢掉。
+        """
+        dispatcher = MessageDispatcher(workers=1, maxsize=2)
+        done: list[int] = []
+        gate = threading.Event()
+        try:
+            dispatcher.submit("k", gate.wait, 5)  # 占住工作线程
+            time.sleep(0.05)
+            self.assertTrue(dispatcher.submit("k", done.append, 0))
+            self.assertTrue(dispatcher.submit("k", done.append, 1))
+            self.assertFalse(dispatcher.submit("k", done.append, 2), "此时队列应已满")
+
+            thread = dispatcher._threads[0]
+            gate.set()
+            dispatcher.stop(timeout=3)
+
+            self.assertFalse(thread.is_alive(), "工作线程应收到停止信号并退出")
+            self.assertEqual(done, [0, 1], "积压必须处理完再退出")
+        finally:
+            gate.set()
+
+    def test_submit_is_rejected_while_stopping(self) -> None:
+        # 关停期间还收新消息的话，队列永远排不干净，drain 没有终止性
+        dispatcher = MessageDispatcher(workers=1, maxsize=8)
+        dispatcher.submit("k", lambda: None)
+        dispatcher.stop(timeout=2)
+
+        self.assertFalse(dispatcher.submit("k", lambda: None))
+
+    def test_stop_is_idempotent(self) -> None:
+        dispatcher = MessageDispatcher(workers=2, maxsize=8)
+        dispatcher.submit("k", lambda: None)
+        dispatcher.stop(timeout=2)
+        dispatcher.stop(timeout=2)  # 不应抛异常
+
     def test_stop_terminates_workers(self) -> None:
         dispatcher = MessageDispatcher(workers=2, maxsize=8)
         dispatcher.submit("k", lambda: None)

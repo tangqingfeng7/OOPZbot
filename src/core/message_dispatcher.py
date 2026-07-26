@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any, Callable
 
 from core.logger_config import get_logger
@@ -32,6 +33,7 @@ class MessageDispatcher:
         self._threads: list[threading.Thread] = []
         self._name = name
         self._started = False
+        self._stopping = False
         self._state_lock = threading.Lock()
         self._dropped = 0
         self._dropped_lock = threading.Lock()
@@ -56,7 +58,10 @@ class MessageDispatcher:
                 self._threads.append(thread)
 
     def submit(self, key: str, fn: Callable[..., Any], *args: Any) -> bool:
-        """按 key 分片入队。返回 False 表示队列已满、消息被丢弃。"""
+        """按 key 分片入队。返回 False 表示消息未入队（队列已满或正在关停）。"""
+        if self._stopping:
+            # 关停期间不再收新消息，否则 WS 接收线程还在投递，队列永远排不干净
+            return False
         if not self._started:
             self.start()
         shard = self._queues[hash(key) % self._worker_count]
@@ -73,20 +78,43 @@ class MessageDispatcher:
             return False
 
     def stop(self, timeout: float = 5.0) -> None:
-        """尽力优雅停止；队列打满导致 sentinel 放不进去时由 daemon 线程兜底。"""
+        """停止工作线程，尽量把积压处理完再退出。
+
+        原先 sentinel 用 ``put_nowait``，队列打满时被静默丢弃（``except
+        queue.Full: pass``），工作线程收不到停止信号，积压的消息随进程退出
+        一起丢掉。现在先拒收新消息（见 :meth:`submit`），等积压排干后再投
+        sentinel —— 队列只会变短，drain 有终止性。
+
+        ``timeout`` 是整个关停过程的总预算，不再按线程数均分：均分会让分片
+        多的时候每个线程只剩几十毫秒，实际等同于不等。
+        """
         with self._state_lock:
-            if not self._started:
+            if not self._started or self._stopping:
                 return
-            self._started = False
+            self._stopping = True
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        for shard in self._queues:
+            while not shard.empty() and time.monotonic() < deadline:
+                time.sleep(0.005)
+
+        pending = sum(shard.qsize() for shard in self._queues)
+        if pending:
+            logger.warning("关停超时，仍有 %d 条消息未处理", pending)
+
         for shard in self._queues:
             try:
-                shard.put_nowait((_STOP, ()))
+                shard.put((_STOP, ()), timeout=max(0.0, deadline - time.monotonic()))
             except queue.Full:
-                pass
-        per_thread = timeout / max(1, len(self._threads))
+                logger.warning("关停信号投递失败，该分片由 daemon 线程兜底退出")
+
         for thread in self._threads:
-            thread.join(timeout=per_thread)
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._threads.clear()
+        with self._state_lock:
+            self._started = False
+            # _stopping 不复位：停过的分发器不再接收消息。否则进程退出途中
+            # 迟到的一条消息会把工作线程重新拉起来。
 
     def _worker_loop(self, shard: queue.Queue) -> None:
         while True:

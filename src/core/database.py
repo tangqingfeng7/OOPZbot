@@ -63,7 +63,10 @@ def db_connection() -> Generator[sqlite3.Connection, None, None]:
     try:
         yield conn
         conn.commit()
-    except Exception:
+    except BaseException:
+        # 必须是 BaseException：连接是 thread-local 共享的，Ctrl-C
+        # （KeyboardInterrupt）或 SystemExit 打断事务时若不回滚，脏改动会留在
+        # 连接上，被同线程下一次无关调用的 commit 搭车提交。
         conn.rollback()
         raise
 
