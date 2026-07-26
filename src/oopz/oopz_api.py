@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
 from config import OOPZ_CONFIG
+from core.http_constants import HTTP_TIMEOUT_API_SLOW, HttpTimeout
 from core.json_utils import compact_json
 from core.logger_config import get_logger
 from oopz.responses import (
@@ -82,6 +83,7 @@ class OopzApiMixin:
         params: Optional[dict] = None,
         body: Optional[dict] = None,
         retry: Optional[RetryPolicy] = None,
+        timeout: HttpTimeout = None,
     ) -> "_requests_type.Response":
         """已签名 HTTP 请求的唯一传输入口。
 
@@ -94,9 +96,9 @@ class OopzApiMixin:
         resp = None
         for attempt in range(1, attempts + 1):
             if method == "GET":
-                resp = self._get(path, params=params)
+                resp = self._get(path, params=params, timeout=timeout)
             else:
-                resp = self._request(method, path, body)
+                resp = self._request(method, path, body, timeout=timeout)
             if retry is None or attempt >= attempts or resp.status_code not in retry.statuses:
                 return resp
             wait = retry.wait_seconds(resp, attempt)
@@ -119,10 +121,11 @@ class OopzApiMixin:
         data_default: object = None,
         error_with_body: bool = False,
         retry: Optional[RetryPolicy] = None,
+        timeout: HttpTimeout = None,
     ) -> ApiResult:
         """查询类请求 → :class:`ApiResult`（含传输异常兜底）。"""
         try:
-            resp = self._send(method, path, params=params, body=body, retry=retry)
+            resp = self._send(method, path, params=params, body=body, retry=retry, timeout=timeout)
         except Exception as e:
             return ApiResult(False, error=str(e))
         return parse_api_response(
@@ -139,13 +142,14 @@ class OopzApiMixin:
         accept_code: bool = False,
         body_limit: int = 200,
         retry: Optional[RetryPolicy] = None,
+        timeout: HttpTimeout = None,
     ) -> MutationOutcome:
         """变更类请求 → :class:`MutationOutcome`（含传输异常兜底 + 统一原始响应日志）。
 
         ``action`` 仅用于日志前缀；成功/失败的业务日志与默认文案由调用方决定。
         """
         try:
-            resp = self._send(method, path, body=body, retry=retry)
+            resp = self._send(method, path, body=body, retry=retry, timeout=timeout)
         except Exception as e:
             logger.error("%s请求异常: %s", action, e)
             return MutationOutcome(False, error=str(e))
@@ -250,7 +254,11 @@ class OopzApiMixin:
 
         try:
             # 限流（429）退避重试统一交给 _send + RATE_LIMIT_RETRY，不再手写循环。
-            resp = self._send("GET", url_path, params=params, retry=RATE_LIMIT_RETRY)
+            # 一次拉一页域成员（默认 50 人），比普通 API 慢；有 stale 缓存兜底
+            resp = self._send(
+                "GET", url_path, params=params, retry=RATE_LIMIT_RETRY,
+                timeout=HTTP_TIMEOUT_API_SLOW,
+            )
 
             if resp.status_code != 200:
                 if resp.status_code == 429:
@@ -761,7 +769,10 @@ class OopzApiMixin:
         for i in range(0, len(uids), batch_size):
             batch = uids[i : i + batch_size]
             body = {"persons": batch, "commonIds": []}
-            res = self._query("POST", "/client/v1/person/v1/personInfos", body=body, data_default=[])
+            res = self._query(
+                "POST", "/client/v1/person/v1/personInfos", body=body, data_default=[],
+                timeout=HTTP_TIMEOUT_API_SLOW,  # 每批 30 个 uid，服务端本来就慢
+            )
             if not res.ok:
                 logger.debug("批量获取用户信息部分失败: %s", res.error)
                 continue
@@ -986,7 +997,10 @@ class OopzApiMixin:
         """
         area = area or OOPZ_CONFIG["default_area"]
         body = {"area": area, "name": keyword, "offset": 0, "limit": 50}
-        res = self._query("POST", "/area/v3/search/areaSettingMembers", body=body, data_default={})
+        res = self._query(
+            "POST", "/area/v3/search/areaSettingMembers", body=body, data_default={},
+            timeout=HTTP_TIMEOUT_API_SLOW,  # 一次搜全域成员
+        )
         if not res.ok:
             logger.error(f"搜索域成员失败: {res.error}")
             return []

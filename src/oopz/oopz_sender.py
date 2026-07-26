@@ -16,7 +16,7 @@ try:
 except ImportError:
     AUTO_RECALL_CONFIG = {"enabled": False}
 from core.constants import UID_PATTERN
-from core.http_constants import HTTP_TIMEOUT_DEFAULT, HTTP_TIMEOUT_LOGIN
+from core.http_constants import HTTP_TIMEOUT_API, HTTP_TIMEOUT_LOGIN, HttpTimeout
 from core.json_utils import compact_json
 from core.logger_config import get_logger
 from oopz.oopz_api import OopzApiMixin
@@ -154,8 +154,20 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
     # ---- 内部 ----
 
-    def _signed_request_once(self, method: str, url_path: str, body: dict | None = None) -> requests.Response:
-        """统一处理带签名的 HTTP 请求（POST/PUT/DELETE）。"""
+    def _signed_request_once(
+        self,
+        method: str,
+        url_path: str,
+        body: dict | None = None,
+        *,
+        timeout: HttpTimeout = None,
+    ) -> requests.Response:
+        """统一处理带签名的 HTTP 请求（POST/PUT/DELETE/PATCH）。
+
+        timeout 留空时用 HTTP_TIMEOUT_API。确实慢的接口由调用方显式传更长档位，
+        不要为了个别接口把默认档一刀切调大 —— 没有超时时服务端挂住会无限阻塞
+        调用线程，dispatcher 只有 4 个 worker，卡满即全线失联。
+        """
         self._throttle()
         if body is not None:
             body_str = compact_json(body)
@@ -169,7 +181,13 @@ class OopzSender(UploadMixin, OopzApiMixin):
             data = None
         headers = {**self.session.headers, **self.signer.oopz_headers(url_path, sign_str)}
         url = OOPZ_CONFIG["base_url"] + url_path
-        return self.session.request(method, url, headers=headers, data=data)
+        return self.session.request(
+            method,
+            url,
+            headers=headers,
+            data=data,
+            timeout=timeout if timeout is not None else HTTP_TIMEOUT_API,
+        )
 
     def _refresh_credentials_after_auth_failure(self, status_code: int) -> bool:
         with self._auth_refresh_lock:
@@ -209,24 +227,27 @@ class OopzSender(UploadMixin, OopzApiMixin):
             logger.info("OOPZ 登录态已自动刷新，正在重试刚才失败的请求")
             return True
 
-    def _request(self, method: str, url_path: str, body: dict | None = None) -> requests.Response:
-        """统一处理带签名的 HTTP 请求（POST/PUT/DELETE）。"""
-        resp = self._signed_request_once(method, url_path, body)
+    def _request(
+        self, method: str, url_path: str, body: dict | None = None,
+        *, timeout: HttpTimeout = None,
+    ) -> requests.Response:
+        """统一处理带签名的 HTTP 请求（POST/PUT/DELETE/PATCH）。"""
+        resp = self._signed_request_once(method, url_path, body, timeout=timeout)
         if resp.status_code in self._AUTH_REFRESH_STATUSES and self._refresh_credentials_after_auth_failure(resp.status_code):
-            resp = self._signed_request_once(method, url_path, body)
+            resp = self._signed_request_once(method, url_path, body, timeout=timeout)
         return resp
 
-    def _post(self, url_path: str, body: dict) -> requests.Response:
-        return self._request("POST", url_path, body)
+    def _post(self, url_path: str, body: dict, *, timeout: HttpTimeout = None) -> requests.Response:
+        return self._request("POST", url_path, body, timeout=timeout)
 
-    def _put(self, url_path: str, body: dict) -> requests.Response:
-        return self._request("PUT", url_path, body)
+    def _put(self, url_path: str, body: dict, *, timeout: HttpTimeout = None) -> requests.Response:
+        return self._request("PUT", url_path, body, timeout=timeout)
 
-    def _delete(self, url_path: str, body: Optional[dict] = None) -> requests.Response:
+    def _delete(self, url_path: str, body: Optional[dict] = None, *, timeout: HttpTimeout = None) -> requests.Response:
         """DELETE 请求，部分撤回接口可能用 DELETE 方法"""
-        return self._request("DELETE", url_path, body)
+        return self._request("DELETE", url_path, body, timeout=timeout)
 
-    def _get_once(self, url_path: str, params: Optional[dict] = None) -> requests.Response:
+    def _get_once(self, url_path: str, params: Optional[dict] = None, *, timeout: HttpTimeout = None) -> requests.Response:
         """GET 请求（签名包含查询参数）。"""
         self._throttle()
         if params:
@@ -237,13 +258,16 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
         headers = {**self.session.headers, **self.signer.oopz_headers(sign_path, "")}
         url = OOPZ_CONFIG["base_url"] + url_path
-        return self.session.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT_DEFAULT)
+        return self.session.get(
+            url, headers=headers, params=params,
+            timeout=timeout if timeout is not None else HTTP_TIMEOUT_API,
+        )
 
-    def _get(self, url_path: str, params: Optional[dict] = None) -> requests.Response:
+    def _get(self, url_path: str, params: Optional[dict] = None, *, timeout: HttpTimeout = None) -> requests.Response:
         """GET 请求（签名包含查询参数）。"""
-        resp = self._get_once(url_path, params=params)
+        resp = self._get_once(url_path, params=params, timeout=timeout)
         if resp.status_code in self._AUTH_REFRESH_STATUSES and self._refresh_credentials_after_auth_failure(resp.status_code):
-            resp = self._get_once(url_path, params=params)
+            resp = self._get_once(url_path, params=params, timeout=timeout)
         return resp
 
     # ---- 发送消息 ----
