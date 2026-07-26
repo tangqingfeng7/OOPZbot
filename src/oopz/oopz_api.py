@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -22,6 +24,15 @@ if TYPE_CHECKING:
     import requests as _requests_type
 
 logger = get_logger("OopzApi")
+
+# 身份组编辑是「读-改-写」且服务端全量覆盖，需按 (域, 用户) 串行化。
+_USER_ROLE_LOCKS: dict[tuple[str, str], threading.Lock] = defaultdict(threading.Lock)
+_USER_ROLE_LOCKS_GUARD = threading.Lock()
+
+
+def _user_role_lock(area: str, target_uid: str) -> threading.Lock:
+    with _USER_ROLE_LOCKS_GUARD:
+        return _USER_ROLE_LOCKS[(area, target_uid)]
 
 
 @dataclass(frozen=True)
@@ -939,19 +950,25 @@ class OopzApiMixin:
             {"status": True, "message": "..."} 或 {"error": "..."}
         """
         area = area or OOPZ_CONFIG["default_area"]
-        detail = self.get_user_area_detail(target_uid, area=area)
-        if "error" in detail:
-            return {"error": detail["error"]}
-        current_list = detail.get("list") or []
-        current_ids = [int(r["roleID"]) for r in current_list if r.get("roleID") is not None]
-        role_id = int(role_id)
-        if add:
-            if role_id not in current_ids:
-                current_ids.append(role_id)
-        else:
-            current_ids = [x for x in current_ids if x != role_id]
-        body = {"area": area, "target": target_uid, "targetRoleIDs": current_ids}
-        out = self._mutation(f"editUserRole(add={add})", "POST", "/area/v3/role/editUserRole", body=body, body_limit=150)
+        # 服务端是全量覆盖语义，这里的「读当前身份组 → 增删 → 写回」不是原子的：
+        # 两个 worker 同时改同一用户会互相覆盖（后写的那次基于过期的读取结果）。
+        # 按 (域, 用户) 加锁把本进程内的并发串行化。
+        with _user_role_lock(area, target_uid):
+            detail = self.get_user_area_detail(target_uid, area=area)
+            if "error" in detail:
+                return {"error": detail["error"]}
+            current_list = detail.get("list") or []
+            current_ids = [int(r["roleID"]) for r in current_list if r.get("roleID") is not None]
+            role_id = int(role_id)
+            if add:
+                if role_id not in current_ids:
+                    current_ids.append(role_id)
+            else:
+                current_ids = [x for x in current_ids if x != role_id]
+            body = {"area": area, "target": target_uid, "targetRoleIDs": current_ids}
+            out = self._mutation(
+                f"editUserRole(add={add})", "POST", "/area/v3/role/editUserRole", body=body, body_limit=150
+            )
         if not out.ok:
             return {"error": out.error}
         return {"status": True, "message": out.server_message or ("已给身份组" if add else "已取消身份组")}

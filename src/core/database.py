@@ -465,7 +465,9 @@ class Statistics:
                        cache_misses=cache_misses+?""",
                 (today,
                  1 if cache_hit else 0, 0 if cache_hit else 1,
-                 json.dumps({platform: 1}),
+                 # 空字典而非 {platform: 1}：下面会统一读回 +1 再写，
+                 # 这里先记一次会让当天首条记录变成 total_plays=1 但该平台计数为 2
+                 "{}",
                  1 if cache_hit else 0, 0 if cache_hit else 1),
             )
             row = conn.execute(

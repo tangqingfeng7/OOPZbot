@@ -70,7 +70,15 @@ class Signer:
             from private_key import get_private_key
             return get_private_key()
         except (ImportError, Exception):
-            logger.warning("private_key.py 不可用，使用临时生成的测试密钥")
+            # 临时密钥能让进程起来（测试与本地开发需要），但服务端不认它 ——
+            # 之后每一个接口都会 401/403。排查「全部接口都失败」时这条是第一现场，
+            # 所以用 error 级并写明后果，不能只 warning 一句「不可用」。
+            logger.error("=" * 50)
+            logger.error("private_key.py 不可用，已回落到临时生成的随机密钥。")
+            logger.error("该密钥服务端不认，所有 Oopz 接口都会返回 401/403。")
+            logger.error("请复制 private_key.example.py 为 private_key.py，")
+            logger.error("或用账号密码登录（OOPZ_CONFIG.login_phone/login_password）自动写入。")
+            logger.error("=" * 50)
             return rsa.generate_private_key(
                 public_exponent=65537,
                 key_size=2048,

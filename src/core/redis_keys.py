@@ -25,7 +25,10 @@ def area_key(base: str, area: str) -> str:
     """生成域隔离的 Redis 键。area 为空时回退到全局键。
 
     例：area_key("music:queue", "A1") -> "music:A1:queue"
+
+    base 不含 ``':'`` 时按整体当作后缀，不再 IndexError。
     """
     if not area:
         return base
-    return f"music:{area}:{base.split(':', 1)[1]}"
+    prefix, _, suffix = base.partition(":")
+    return f"{prefix}:{area}:{suffix}" if suffix else f"{prefix}:{area}"

@@ -102,6 +102,25 @@ class ProfanityGuardService:
         for u in warn_stale:
             self._warnings.pop(u, None)
 
+    def _active_warning_count(self, user: str, now: float) -> int:
+        """读取用户的未过期警告次数；已过期视为 0 并顺手清掉。
+
+        过期清理原本只在 ``push_user_buffer`` 里做，而该函数仅在开启
+        上下文检测或 AI 检测时才被调用 —— 两项都关时它永不执行，
+        警告计数就永久不过期。所以读取时也要惰性判一次。
+        """
+        raw = self._warnings.get(user)
+        if raw is None:
+            return 0
+        if not isinstance(raw, tuple):
+            # 早期只存计数的格式：没有时间戳就无从判断是否过期，保守当作未过期
+            return int(raw or 0)
+        count, ts = raw
+        if now - ts > self._WARN_EXPIRE_SECONDS:
+            self._warnings.pop(user, None)
+            return 0
+        return int(count)
+
     def check_context_profanity(self, user: str) -> Optional[tuple[str, list[dict]]]:
         """检测用户上下文拼接后是否命中违禁词。"""
         buffer = self._user_msg_buffer.get(user, [])
@@ -157,12 +176,7 @@ class ProfanityGuardService:
 
         if PROFANITY_CONFIG.get("warn_before_mute"):
             now = time.time()
-            raw_warning = self._warnings.get(user, (0, 0.0))
-            if isinstance(raw_warning, tuple):
-                prev_count, _ = raw_warning
-            else:
-                prev_count = int(raw_warning or 0)
-            count = prev_count + 1
+            count = self._active_warning_count(user, now) + 1
             self._warnings[user] = (count, now)
             if count < 2:
                 self._sender.send_message(
