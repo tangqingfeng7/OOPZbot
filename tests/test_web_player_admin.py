@@ -109,6 +109,11 @@ class WebPlayerAdminTest(unittest.TestCase):
             plugins=_FakePlugins(),
             plugin_host=SimpleNamespace(),
         )
+        # 限流器与登录锁定是模块级单例，TestClient 的所有请求又共用 "testclient"
+        # 这一个桶；不重置会让用例按执行顺序随机拿 429。
+        import web.web_rate_limit as web_rate_limit
+
+        web_rate_limit.reset_all()
         self.client = TestClient(self.module.app)
 
     def test_plugins_api_requires_login(self) -> None:
@@ -207,6 +212,107 @@ class WebPlayerAdminTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("web_token=token-1", response.headers["set-cookie"])
         self.assertIn("Secure", response.headers["set-cookie"])
+
+    def _admin_login(self, headers=None):
+        """走真实的 /admin/api/login，用于断言后台 Cookie 的 Secure 属性。"""
+        r = _FakeRedis()
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "_admin_enabled", return_value=True),
+            patch.object(self.module.cfg, "admin_password", return_value="pw"),
+            patch.object(self.module.cfg, "admin_cookie_secure", return_value=True),
+        ):
+            return self.client.post(
+                "/admin/api/login",
+                json={"password": "pw"},
+                headers=headers or {},
+            )
+
+    def test_admin_cookie_is_not_secure_on_plain_http(self) -> None:
+        # 回归：HTTP 部署下若照配置打 Secure，浏览器不回传 Cookie，
+        # 表现为登录接口返回 200 但下一个请求就 401（登录后被踢回登录页的死循环）
+        response = self._admin_login()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(f"{self.module.cfg.admin_cookie_name()}=", response.headers["set-cookie"])
+        self.assertNotIn("Secure", response.headers["set-cookie"])
+
+    def test_admin_cookie_stays_secure_behind_https_proxy(self) -> None:
+        response = self._admin_login(headers={"x-forwarded-proto": "https"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Secure", response.headers["set-cookie"])
+
+    def _health(self, *, as_admin: bool):
+        r = _FakeRedis()
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "_is_admin_authorized", return_value=as_admin),
+        ):
+            return self.client.get("/health")
+
+    def test_health_is_redacted_for_anonymous_callers(self) -> None:
+        body = self._health(as_admin=False).json()
+
+        # 明细里含 Redis/DB/网易云登录态与原始异常文本，不能对匿名调用者暴露
+        self.assertEqual(set(body), {"status"})
+        self.assertIn(body["status"], {"healthy", "degraded"})
+
+    def test_health_returns_detail_for_logged_in_admin(self) -> None:
+        body = self._health(as_admin=True).json()
+
+        self.assertIn("checks", body)
+        self.assertIn("uptime_seconds", body)
+
+    def test_health_status_code_is_unaffected_by_redaction(self) -> None:
+        # Docker healthcheck 用 urlopen 只看状态码，脱敏不能改变它
+        self.assertEqual(
+            self._health(as_admin=False).status_code,
+            self._health(as_admin=True).status_code,
+        )
+
+    def _admin_login_with_password(self, password: str):
+        r = _FakeRedis()
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "_admin_enabled", return_value=True),
+            patch.object(self.module.cfg, "admin_password", return_value="pw"),
+            patch.object(self.module.cfg, "admin_login_max_failures", return_value=3),
+            patch.object(self.module.cfg, "admin_login_lock_seconds", return_value=300),
+        ):
+            return self.client.post("/admin/api/login", json={"password": password})
+
+    def test_repeated_login_failures_lock_the_source_out(self) -> None:
+        for _ in range(3):
+            self.assertEqual(self._admin_login_with_password("wrong").status_code, 401)
+
+        # 锁定后即使密码正确也不放行
+        locked = self._admin_login_with_password("pw")
+        self.assertEqual(locked.status_code, 429)
+        self.assertIn("Retry-After", locked.headers)
+
+    def test_successful_login_clears_failure_counter(self) -> None:
+        self.assertEqual(self._admin_login_with_password("wrong").status_code, 401)
+        self.assertEqual(self._admin_login_with_password("pw").status_code, 200)
+
+        # 计数已清零，再错两次不应触发锁定（阈值为 3）
+        for _ in range(2):
+            self.assertEqual(self._admin_login_with_password("wrong").status_code, 401)
+        self.assertEqual(self._admin_login_with_password("pw").status_code, 200)
+
+    def test_non_ascii_password_does_not_crash(self) -> None:
+        # secrets.compare_digest 对含非 ASCII 的 str 会抛 TypeError（500）
+        r = _FakeRedis()
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "_admin_enabled", return_value=True),
+            patch.object(self.module.cfg, "admin_password", return_value="密码123"),
+        ):
+            wrong = self.client.post("/admin/api/login", json={"password": "别的"})
+            right = self.client.post("/admin/api/login", json={"password": "密码123"})
+
+        self.assertEqual(wrong.status_code, 401)
+        self.assertEqual(right.status_code, 200)
 
     def test_status_without_area_follows_active_area(self) -> None:
         r = _FakeRedis()

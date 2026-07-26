@@ -6,7 +6,6 @@ import json
 import os
 import secrets
 import time
-from collections import defaultdict
 from threading import Lock
 from typing import Optional
 
@@ -26,55 +25,14 @@ from core.queue_manager import (
     KEY_PLAY_STATE,
     KEY_PLAY_MODE,
 )
-from web.web_link_token import get_token, set_token, get_active_area
+from web.web_link_token import get_token, set_token, get_active_area, touch_access
+from web.web_rate_limit import client_ip, limiter_for
+from web.web_request_context import cookie_secure_for
 
 import web.web_player_config as cfg
 
 logger = get_logger("WebPlayer")
 
-
-# ---------------------------------------------------------------------------
-# IP 速率限制器
-# ---------------------------------------------------------------------------
-
-class _RateLimiter:
-    """基于滑动窗口的简易内存速率限制器。"""
-
-    _MAX_TRACKED_IPS = 2000
-
-    def __init__(self, max_requests: int = 60, window_seconds: int = 60):
-        self._max = max_requests
-        self._window = window_seconds
-        self._hits: dict[str, list[float]] = defaultdict(list)
-        self._lock = Lock()
-        self._last_cleanup = 0.0
-
-    def is_allowed(self, key: str) -> bool:
-        now = time.monotonic()
-        cutoff = now - self._window
-        with self._lock:
-            bucket = self._hits[key]
-            bucket[:] = [t for t in bucket if t > cutoff]
-            if len(bucket) >= self._max:
-                return False
-            bucket.append(now)
-            if now - self._last_cleanup > self._window:
-                self._evict_stale(cutoff)
-                self._last_cleanup = now
-        return True
-
-    def _evict_stale(self, cutoff: float) -> None:
-        stale = [k for k, v in self._hits.items() if not v or v[-1] <= cutoff]
-        for k in stale:
-            del self._hits[k]
-        if len(self._hits) > self._MAX_TRACKED_IPS:
-            by_recent = sorted(self._hits.items(), key=lambda x: x[1][-1] if x[1] else 0)
-            for k, _ in by_recent[: len(by_recent) - self._MAX_TRACKED_IPS]:
-                del self._hits[k]
-
-
-_api_limiter = _RateLimiter(max_requests=200, window_seconds=60)
-_search_limiter = _RateLimiter(max_requests=15, window_seconds=60)
 
 # ---------------------------------------------------------------------------
 # FastAPI 应用
@@ -267,33 +225,13 @@ cfg.bootstrap_area_overrides()
 # ---------------------------------------------------------------------------
 
 
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return (request.client.host if request.client else "unknown")
-
-
-def _request_is_https(request: Request) -> bool:
-    proto = request.headers.get("x-forwarded-proto", "")
-    if proto:
-        return proto.split(",")[0].strip().lower() == "https"
-    return request.url.scheme == "https"
-
-
-def _player_cookie_secure(request: Request) -> bool:
-    """HTTP 访问时不能设置 Secure，否则浏览器后续不会带 web_token。"""
-    return cfg.cookie_secure() and _request_is_https(request)
-
-
 @app.middleware("http")
 async def _auth_web_api(request: Request, call_next):
     path = request.url.path or ""
 
     if path.startswith(("/api/", "/admin/api/")):
-        ip = _client_ip(request)
-        limiter = _search_limiter if path == "/api/search" else _api_limiter
-        if not limiter.is_allowed(ip):
+        ip = client_ip(request, cfg.trust_proxy_header())
+        if not limiter_for(path).is_allowed(ip):
             return JSONResponse(
                 {"ok": False, "error": "请求过于频繁，请稍后再试"},
                 status_code=429,
@@ -305,6 +243,8 @@ async def _auth_web_api(request: Request, call_next):
         client_token = request.cookies.get(WEB_TOKEN_COOKIE, "")
         if not active or not secrets.compare_digest(client_token, active):
             return JSONResponse({"ok": False, "error": "未授权或链接已失效"}, status_code=403)
+        # 记一次使用，供空闲释放判定 —— 否则用户开着页面搜歌但队列恰好为空时会被误踢
+        touch_access(redis_client=get_redis())
     if path.startswith("/admin/api/") and path not in {"/admin/api/login"}:
         if not _admin_enabled():
             return JSONResponse({"ok": False, "error": "管理后台未启用"}, status_code=404)
@@ -759,8 +699,16 @@ async def api_queue_action(request: Request, area: str = Query("", description="
 
 
 @app.get("/health")
-def health_check():
-    """系统健康检查 -- 汇报各子系统状态，无需认证。"""
+def health_check(request: Request):
+    """系统健康检查。
+
+    存活探测（Docker healthcheck、外部 uptime 监控）无需认证，但只拿到
+    ``status`` 一个字段 —— 各子系统明细里含 Redis / 数据库 / 网易云登录态、
+    队列长度，以及 ``detail`` 里的原始异常文本（可能带路径或连接串），
+    这些只对已登录后台的管理员返回。
+
+    状态码在两种情况下一致（正常 200 / 异常 503），healthcheck 依赖的正是它。
+    """
     checks: dict[str, dict] = {}
     overall = True
 
@@ -811,9 +759,14 @@ def health_check():
     minutes, seconds = divmod(remainder, 60)
 
     status_code = 200 if overall else 503
+    status = "healthy" if overall else "degraded"
+
+    if not _is_admin_authorized(request):
+        return JSONResponse({"status": status}, status_code=status_code)
+
     return JSONResponse(
         {
-            "status": "healthy" if overall else "degraded",
+            "status": status,
             "uptime": f"{hours}h {minutes}m {seconds}s",
             "uptime_seconds": uptime_seconds,
             "checks": checks,
@@ -849,7 +802,7 @@ def index_with_token(token: str, request: Request):
         value=token,
         httponly=True,
         samesite="lax",
-        secure=_player_cookie_secure(request),
+        secure=cookie_secure_for(request, cfg.cookie_secure()),
         max_age=cfg.cookie_max_age_seconds(),
     )
     return resp

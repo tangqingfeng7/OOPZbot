@@ -1,5 +1,6 @@
 import secrets
 import threading
+import time
 
 from core.logger_config import get_logger
 
@@ -7,10 +8,12 @@ logger = get_logger("WebLinkToken")
 
 KEY_WEB_ACCESS_TOKEN = "music:web_access_token"
 KEY_WEB_ACTIVE_AREA = "music:web_active_area"
+KEY_WEB_LAST_ACCESS = "music:web_last_access"
 
 _lock = threading.Lock()
 _memory_token: str = ""
 _memory_area: str = ""
+_memory_last_access: float = 0.0
 
 
 def _normalize_ttl(ttl_seconds=None) -> int:
@@ -87,14 +90,56 @@ def ensure_token(redis_client=None, ttl_seconds=None) -> str:
 
 def clear_token(redis_client=None):
     """清理访问令牌。"""
-    global _memory_token
+    global _memory_token, _memory_last_access
     with _lock:
         _memory_token = ""
+        _memory_last_access = 0.0
     if redis_client is not None:
         try:
             redis_client.delete(KEY_WEB_ACCESS_TOKEN)
         except Exception as e:
             logger.debug(f"Redis 清理 Web 令牌失败: {e}")
+        try:
+            redis_client.delete(KEY_WEB_LAST_ACCESS)
+        except Exception as e:
+            logger.debug(f"Redis 清理 Web 访问时间失败: {e}")
+
+
+def touch_access(redis_client=None):
+    """记录播放器最近一次被使用的时间。
+
+    空闲释放只看播放队列是否为空，但用户可能正开着页面搜歌、翻喜欢列表 ——
+    那些请求不进队列。没有这个时间戳，活跃用户会在队列空 30 分钟后被踢下线。
+    """
+    global _memory_last_access
+    now = time.time()
+    with _lock:
+        _memory_last_access = now
+    if redis_client is not None:
+        try:
+            redis_client.set(KEY_WEB_LAST_ACCESS, str(now))
+        except Exception as e:
+            logger.debug(f"Redis 记录 Web 访问时间失败: {e}")
+
+
+def seconds_since_access(redis_client=None) -> float:
+    """距最近一次播放器访问过去了多少秒；从未访问过返回 ``float('inf')``。"""
+    last = 0.0
+    if redis_client is not None:
+        try:
+            raw = redis_client.get(KEY_WEB_LAST_ACCESS)
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="ignore")
+            if raw:
+                last = float(raw)
+        except Exception as e:
+            logger.debug(f"Redis 读取 Web 访问时间失败，使用内存回退: {e}")
+    if last <= 0:
+        with _lock:
+            last = _memory_last_access
+    if last <= 0:
+        return float("inf")
+    return max(0.0, time.time() - last)
 
 
 def get_active_area(redis_client=None) -> str:

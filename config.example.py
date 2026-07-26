@@ -238,7 +238,10 @@ WEB_PLAYER_CONFIG = {
     "admin_enabled": False,  # 是否启用管理后台
     "admin_password": "",    # 后台登录密码（强烈建议设置强密码）
     "admin_session_ttl_seconds": 43200,  # 后台登录会话有效期（秒），0=不过期（不建议）
-    "admin_cookie_secure": False,  # 后台 cookie 是否仅 HTTPS 发送；使用 Nginx + SSL 时应设为 True
+    "admin_cookie_secure": False,  # 后台 cookie 是否仅 HTTPS 发送；使用 Nginx + SSL 时应设为 True（纯 HTTP 访问时自动降级）
+    "admin_login_max_failures": 5,   # 同一 IP 连续登录失败多少次后锁定；0 关闭锁定
+    "admin_login_lock_seconds": 300, # 锁定时长（秒）；0 关闭锁定
+    "trust_proxy_header": True,      # 是否信任反代的 X-Real-IP / X-Forwarded-For 判定客户端 IP；uvicorn 直接暴露公网时设为 False
 }
 
 # OneBot v11 旁路服务配置

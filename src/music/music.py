@@ -16,7 +16,7 @@ from oopz.name_resolver import NameResolver
 from music.voice_client import VoiceClient
 from config import OOPZ_CONFIG, WEB_PLAYER_CONFIG
 from core.logger_config import get_logger
-from web.web_link_token import clear_token, get_token, set_active_area
+from web.web_link_token import clear_token, get_token, seconds_since_access, set_active_area
 from music.music_web_control import WebControlExecutor
 from music.music_platform import PlatformRegistry
 from music.music_playback import (
@@ -214,10 +214,18 @@ class MusicHandler(PlaybackMixin):
             idle_for = time.time() - self._playlist_idle_since
             if idle_for >= timeout:
                 try:
+                    # 队列空不等于没人用：用户可能正开着页面搜歌、翻喜欢列表。
+                    # 两个条件都满足才释放，否则会把活跃用户踢下线。
+                    since_access = seconds_since_access(redis_client=q.redis)
+                    if since_access < timeout:
+                        logger.debug(
+                            "播放列表空闲但播放器 %.0fs 前仍在使用，暂不释放链接", since_access
+                        )
+                        return
                     token = get_token(redis_client=q.redis)
                     if token:
                         clear_token(redis_client=q.redis)
-                        logger.info("播放列表空闲超时，已释放 Web 播放器访问链接令牌")
+                        logger.info("播放列表空闲超时且播放器无人使用，已释放 Web 访问链接令牌")
                 except Exception as e:
                     logger.debug(f"释放 Web 播放器链接令牌失败: {e}")
                 self._web_link_released_due_to_idle = True

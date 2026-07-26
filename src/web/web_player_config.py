@@ -66,6 +66,9 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
         "admin_password": {"type": "str", "max_len": 128, "sensitive": True, "default": ""},
         "admin_session_ttl_seconds": {"type": "int", "min": 0, "max": 30 * 24 * 3600, "default": 43200},
         "admin_cookie_secure": {"type": "bool", "default": False},
+        "admin_login_max_failures": {"type": "int", "min": 0, "max": 100, "default": 5},
+        "admin_login_lock_seconds": {"type": "int", "min": 0, "max": 24 * 3600, "default": 300},
+        "trust_proxy_header": {"type": "bool", "default": True},
     },
     "auto_recall": {
         "enabled": {"type": "bool", "default": False},
@@ -321,6 +324,31 @@ def admin_session_ttl_seconds() -> int:
 
 def admin_cookie_secure() -> bool:
     return bool(WEB_PLAYER_CONFIG.get("admin_cookie_secure", cookie_secure()))
+
+
+def admin_login_max_failures() -> int:
+    default = config_default("web_player", "admin_login_max_failures")
+    try:
+        return max(0, int(WEB_PLAYER_CONFIG.get("admin_login_max_failures", default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def admin_login_lock_seconds() -> int:
+    default = config_default("web_player", "admin_login_lock_seconds")
+    try:
+        return max(0, int(WEB_PLAYER_CONFIG.get("admin_login_lock_seconds", default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def trust_proxy_header() -> bool:
+    """是否信任反代透传的 X-Real-IP / X-Forwarded-For 来判定客户端 IP。
+
+    默认信任（文档推荐的部署形态就是 nginx 反代）。把 uvicorn 直接暴露到公网时
+    应设为 False，否则任何人都能伪造这两个头绕过限流与登录锁定。
+    """
+    return bool(WEB_PLAYER_CONFIG.get("trust_proxy_header", True))
 
 
 def admin_cookie_name() -> str:
