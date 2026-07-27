@@ -1063,8 +1063,12 @@ class MusicHandler(PlaybackMixin):
         埋在 while 循环 + BLPOP 里的话，把域校验整段删掉测试也照样绿。
         """
         raw = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)
-        cmd_area, cmd = decode_web_command(raw)
-        if not self._web_command_applies_here(cmd_area):
+        decoded = decode_web_command(raw)
+        if decoded is None:
+            logger.warning("丢弃无域分隔符的旧 Web 控制命令: %s", raw[:20])
+            return False
+        cmd_area, cmd = decoded
+        if not self._web_command_applies_here(cmd_area, cmd):
             logger.info(
                 "跳过来自其他域的 Web 控制命令: area=%s cmd=%s", cmd_area[:8], cmd[:20]
             )
@@ -1072,19 +1076,22 @@ class MusicHandler(PlaybackMixin):
         self._execute_web_command(cmd)
         return True
 
-    def _web_command_applies_here(self, cmd_area: str) -> bool:
+    def _web_command_applies_here(self, cmd_area: str, cmd: str) -> bool:
         """命令是否该由当前正在播放的域执行。
 
         命令队列是全局单键，Web 端按自己看到的那个域下发 —— 不校验的话，B 域
         视图上按「切歌」会把 A 域正在播的歌切掉。
-        空域表示不限定（全局默认音量、以及升级前写入的旧载荷）。
+        空域只允许全局音量命令；播放控制必须显式带域，且当前正在播放的域必须
+        与之完全一致。
         """
         cmd_area = (cmd_area or "").strip()
         if not cmd_area:
-            return True
+            return cmd.startswith("volume:")
+        if cmd.startswith("volume:"):
+            return False
         current = (getattr(self, "_voice_channel_area", "") or "").strip()
         if not current:
-            return True
+            return False
         return cmd_area == current
 
     def _execute_web_command(self, cmd: str):

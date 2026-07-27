@@ -38,16 +38,15 @@ def encode_web_command(area: str, command: str) -> str:
     return f"{(area or '').strip()}{_WEB_COMMAND_SEP}{command}"
 
 
-def decode_web_command(raw: str) -> tuple[str, str]:
+def decode_web_command(raw: str) -> tuple[str, str] | None:
     """还原 ``(域 ID, 命令)``。
 
-    不含分隔符的旧载荷返回 ``("", 原文)`` —— 滚动升级期 Redis 里可能残留升级前
-    写入的命令，这时无从判断归属，只能放行。等确认线上没有旧载荷后可以去掉这个
-    兼容分支，否则跨域校验对残留载荷是失效的。
+    不含分隔符的载荷无法证明域归属，按无效协议直接拒绝；不为升级前残留载荷
+    提供兼容执行路径。
     """
     area, sep, command = (raw or "").partition(_WEB_COMMAND_SEP)
     if not sep:
-        return "", raw or ""
+        return None
     return area, command
 
 

@@ -1,3 +1,4 @@
+import queue
 import sys
 import threading
 import time
@@ -121,6 +122,53 @@ class MessageDispatcherTest(unittest.TestCase):
         dispatcher.stop(timeout=2)
 
         self.assertFalse(dispatcher.submit("k", lambda: None))
+
+    def test_submit_cannot_land_behind_stop_sentinel(self) -> None:
+        """submit 一旦返回 True，任务就必须排在关停 sentinel 之前。"""
+
+        class _PausingQueue(queue.Queue):
+            def __init__(self):
+                super().__init__(maxsize=8)
+                self.at_put = threading.Event()
+                self.release_put = threading.Event()
+
+            def put_nowait(self, item):
+                self.at_put.set()
+                self.release_put.wait(timeout=2)
+                return super().put_nowait(item)
+
+        dispatcher = MessageDispatcher(workers=1, maxsize=8)
+        shard = _PausingQueue()
+        dispatcher._queues = [shard]
+        task_ran = threading.Event()
+        submit_result = []
+        stop_done = threading.Event()
+
+        submitter = threading.Thread(
+            target=lambda: submit_result.append(dispatcher.submit("k", task_ran.set))
+        )
+        submitter.start()
+        self.assertTrue(shard.at_put.wait(timeout=1))
+
+        def _stop() -> None:
+            dispatcher.stop(timeout=2)
+            stop_done.set()
+
+        stopper = threading.Thread(target=_stop)
+        stopper.start()
+        self.assertFalse(
+            stop_done.wait(timeout=0.05),
+            "关停应等待已通过状态检查的 submit 完成入队",
+        )
+
+        shard.release_put.set()
+        submitter.join(timeout=1)
+        stopper.join(timeout=2)
+
+        self.assertEqual(submit_result, [True])
+        self.assertTrue(task_ran.is_set())
+        self.assertTrue(stop_done.is_set())
+        self.assertEqual(shard.qsize(), 0)
 
     def test_stop_is_idempotent(self) -> None:
         dispatcher = MessageDispatcher(workers=2, maxsize=8)

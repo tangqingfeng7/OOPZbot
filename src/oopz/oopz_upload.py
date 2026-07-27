@@ -7,12 +7,16 @@ import io
 import ipaddress
 import os
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from PIL import Image
 
-from core.http_constants import HTTP_TIMEOUT_DOWNLOAD, HTTP_TIMEOUT_MEDIA
+from core.http_constants import (
+    HTTP_TIMEOUT_DOWNLOAD,
+    HTTP_TIMEOUT_MEDIA,
+    HTTP_TIMEOUT_PROBE,
+)
 from core.logger_config import get_logger
 from core.proxy_utils import is_fake_ip
 
@@ -24,6 +28,18 @@ UPLOAD_PUT_TIMEOUT = (10, 60)
 MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024      # 20 MB
 MAX_AUDIO_DOWNLOAD_BYTES = 100 * 1024 * 1024     # 100 MB
 _DOWNLOAD_CHUNK = 64 * 1024
+_MAX_DOWNLOAD_REDIRECTS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_DEFAULT_TRUSTED_DOH_URL = "https://cloudflare-dns.com/dns-query"
+
+try:
+    from config import PROXY_ALIAS_CONFIG
+
+    _TRUSTED_DOH_URL = str(
+        PROXY_ALIAS_CONFIG.get("trusted_doh_url") or _DEFAULT_TRUSTED_DOH_URL
+    ).strip()
+except (ImportError, AttributeError):
+    _TRUSTED_DOH_URL = _DEFAULT_TRUSTED_DOH_URL
 
 
 class RemoteFetchError(Exception):
@@ -42,6 +58,54 @@ def _is_public_ip(ip) -> bool:
     )
 
 
+def _resolve_via_trusted_dns(host: str) -> tuple[str, ...] | None:
+    """绕过本机 fake-ip DNS，通过独立 DoH 查询真实 A/AAAA 地址。
+
+    本函数是 fake-ip 场景下的安全判定来源，不允许自动重定向，也不在查询失败时
+    回退为放行。返回 None 表示无法得到可信且完整的解析结果。
+    """
+    endpoint = urlparse(_TRUSTED_DOH_URL)
+    if endpoint.scheme != "https" or not endpoint.hostname:
+        logger.error("trusted_doh_url 必须是有效 HTTPS 地址，已拒绝 fake-ip 目标")
+        return None
+
+    addresses: list[str] = []
+    for record_name, record_type in (("A", 1), ("AAAA", 28)):
+        response = None
+        try:
+            response = requests.get(
+                _TRUSTED_DOH_URL,
+                params={"name": host, "type": record_name},
+                headers={"Accept": "application/dns-json"},
+                timeout=HTTP_TIMEOUT_PROBE,
+                allow_redirects=False,
+            )
+            if response.status_code != 200:
+                return None
+            payload = response.json()
+            if not isinstance(payload, dict) or payload.get("Status") != 0:
+                return None
+            answers = payload.get("Answer") or []
+            if not isinstance(answers, list):
+                return None
+            for answer in answers:
+                if not isinstance(answer, dict) or answer.get("type") != record_type:
+                    continue
+                value = str(answer.get("data") or "").strip()
+                try:
+                    addresses.append(str(ipaddress.ip_address(value)))
+                except ValueError:
+                    return None
+        except (requests.RequestException, ValueError, TypeError):
+            return None
+        finally:
+            if response is not None:
+                response.close()
+
+    # 没有任何 A/AAAA 记录同样 fail-closed；去重但保留解析顺序。
+    return tuple(dict.fromkeys(addresses)) or None
+
+
 def _is_public_host(host: str) -> bool:
     """域名 / IP 解析出的每个地址都必须是公网地址，否则视为不安全。
 
@@ -49,10 +113,8 @@ def _is_public_host(host: str) -> bool:
 
     - host 本身是 IP 字面量：直接校验，不经 DNS。占位段地址同样按内网拒绝，
       因为无法反查它对应哪个域名。
-    - host 是域名：解析后逐个校验，但跳过代理的 fake-ip 占位地址
-      （见 ``core.proxy_utils.is_fake_ip``）—— 那只是 DNS 层的临时映射，
-      真实解析由代理完成，据此判断内外网是错的。若解析结果全是占位地址，
-      说明本机无从得知真实目标，交由代理决定路由。
+    - host 是域名：解析后逐个校验。若出现代理的 fake-ip 占位地址，则改用
+      独立可信 DoH 查询真实 A/AAAA 地址；可信解析失败时 fail-closed。
     """
     try:
         return _is_public_ip(ipaddress.ip_address(host))
@@ -67,20 +129,34 @@ def _is_public_host(host: str) -> bool:
         return False
 
     resolved_real_address = False
+    saw_fake_ip = False
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             return False
         if is_fake_ip(ip):
+            saw_fake_ip = True
             continue
         resolved_real_address = True
         if not _is_public_ip(ip):
             return False
 
-    if not resolved_real_address:
-        logger.debug("%s 仅解析出代理 fake-ip 占位地址，跳过公网校验，交由代理路由", host)
-    return True
+    if saw_fake_ip:
+        trusted_addresses = _resolve_via_trusted_dns(host)
+        if not trusted_addresses:
+            logger.warning("%s 的 fake-ip 目标无法完成可信 DNS 校验，已拒绝", host)
+            return False
+        for value in trusted_addresses:
+            try:
+                trusted_ip = ipaddress.ip_address(value)
+            except ValueError:
+                return False
+            if not _is_public_ip(trusted_ip):
+                return False
+        return True
+
+    return resolved_real_address
 
 
 def _validate_remote_url(url: str) -> None:
@@ -99,29 +175,52 @@ def _validate_remote_url(url: str) -> None:
 
 def _download_limited(session, url, *, max_bytes, timeout, headers=None) -> tuple[bytes, str]:
     """带 SSRF 校验与大小上限的流式下载，返回 (内容字节, Content-Type)。"""
-    _validate_remote_url(url)
-    resp = session.get(url, stream=True, timeout=timeout, headers=headers or {})
-    try:
-        resp.raise_for_status()
-        declared = resp.headers.get("Content-Length")
-        if declared is not None:
-            try:
-                if int(declared) > max_bytes:
-                    raise RemoteFetchError(f"远程文件过大: 声明 {declared} 字节 > 上限 {max_bytes}")
-            except ValueError:
-                pass
-        chunks: list[bytes] = []
-        total = 0
-        for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK):
-            if not chunk:
+    current_url = url
+    for redirect_count in range(_MAX_DOWNLOAD_REDIRECTS + 1):
+        _validate_remote_url(current_url)
+        resp = session.get(
+            current_url,
+            stream=True,
+            timeout=timeout,
+            headers=headers or {},
+            allow_redirects=False,
+        )
+        try:
+            if getattr(resp, "status_code", 200) in _REDIRECT_STATUSES:
+                location = str(resp.headers.get("Location") or "").strip()
+                if not location:
+                    raise RemoteFetchError("远程响应重定向但未提供 Location")
+                if redirect_count >= _MAX_DOWNLOAD_REDIRECTS:
+                    raise RemoteFetchError(
+                        f"远程下载重定向次数超过上限 {_MAX_DOWNLOAD_REDIRECTS}"
+                    )
+                current_url = urljoin(current_url, location)
                 continue
-            total += len(chunk)
-            if total > max_bytes:
-                raise RemoteFetchError(f"远程文件超过大小上限 {max_bytes} 字节")
-            chunks.append(chunk)
-        return b"".join(chunks), resp.headers.get("Content-Type", "")
-    finally:
-        resp.close()
+
+            resp.raise_for_status()
+            declared = resp.headers.get("Content-Length")
+            if declared is not None:
+                try:
+                    if int(declared) > max_bytes:
+                        raise RemoteFetchError(
+                            f"远程文件过大: 声明 {declared} 字节 > 上限 {max_bytes}"
+                        )
+                except ValueError:
+                    pass
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise RemoteFetchError(f"远程文件超过大小上限 {max_bytes} 字节")
+                chunks.append(chunk)
+            return b"".join(chunks), resp.headers.get("Content-Type", "")
+        finally:
+            resp.close()
+
+    raise RemoteFetchError(f"远程下载重定向次数超过上限 {_MAX_DOWNLOAD_REDIRECTS}")
 
 
 def get_image_info(file_path: str) -> tuple[int, int, int]:

@@ -44,38 +44,46 @@ class MessageDispatcher:
 
     def start(self) -> None:
         with self._state_lock:
-            if self._started:
-                return
-            self._started = True
-            for index, shard in enumerate(self._queues):
-                thread = threading.Thread(
-                    target=self._worker_loop,
-                    args=(shard,),
-                    name=f"{self._name}-{index}",
-                    daemon=True,
-                )
-                thread.start()
-                self._threads.append(thread)
+            self._start_locked()
+
+    def _start_locked(self) -> None:
+        """在持有 _state_lock 时启动 worker；停过的实例不允许重启。"""
+        if self._started or self._stopping:
+            return
+        self._started = True
+        for index, shard in enumerate(self._queues):
+            thread = threading.Thread(
+                target=self._worker_loop,
+                args=(shard,),
+                name=f"{self._name}-{index}",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
 
     def submit(self, key: str, fn: Callable[..., Any], *args: Any) -> bool:
         """按 key 分片入队。返回 False 表示消息未入队（队列已满或正在关停）。"""
-        if self._stopping:
-            # 关停期间不再收新消息，否则 WS 接收线程还在投递，队列永远排不干净
-            return False
-        if not self._started:
-            self.start()
-        shard = self._queues[hash(key) % self._worker_count]
-        try:
-            shard.put_nowait((fn, args))
-            return True
-        except queue.Full:
-            with self._dropped_lock:
-                self._dropped += 1
-                dropped = self._dropped
-            logger.warning(
-                "消息处理队列已满，丢弃一条消息 (key=%s, 累计丢弃 %d)", key, dropped
-            )
-            return False
+        # 状态检查、首次启动和实际入队必须与 stop 设置 _stopping 共用同一临界区。
+        # 否则 submit 可先通过检查，stop 随后投递 sentinel 并让 worker 退出，
+        # 最后 submit 才把任务放到已无人消费的队列里，却仍返回 True。
+        with self._state_lock:
+            if self._stopping:
+                return False
+            self._start_locked()
+            shard = self._queues[hash(key) % self._worker_count]
+            try:
+                shard.put_nowait((fn, args))
+                return True
+            except queue.Full:
+                with self._dropped_lock:
+                    self._dropped += 1
+                    dropped = self._dropped
+                logger.warning(
+                    "消息处理队列已满，丢弃一条消息 (key=%s, 累计丢弃 %d)",
+                    key,
+                    dropped,
+                )
+                return False
 
     def stop(self, timeout: float = 5.0) -> None:
         """停止工作线程，尽量把积压处理完再退出。

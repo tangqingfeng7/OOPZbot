@@ -1,5 +1,7 @@
 from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
+from core.constants import Msg
 from domain.routing.command_registry import slash_of
+from domain.routing.public_command_rules import is_public_slash_command
 
 from .builtin_command_actions import build_builtin_command_actions
 
@@ -127,6 +129,25 @@ class SlashCommandRouter:
             ),
         )
 
+    def _reject_admin_only(
+        self,
+        command: str,
+        channel: str,
+        area: str,
+        user: str,
+    ) -> bool:
+        """插件未处理后，在进入任何内置路由前再次校验管理员身份。"""
+        if is_public_slash_command(command):
+            return False
+        if self._services.routing.access.is_admin(user):
+            return False
+        self._sender.send_message(
+            f"{Msg.ERR} 无权限，仅管理员可使用该指令",
+            channel=channel,
+            area=area,
+        )
+        return True
+
     def dispatch(self, content: str, channel: str, area: str, user: str) -> None:
         parts = content.split()
         if not parts:
@@ -146,6 +167,11 @@ class SlashCommandRouter:
             user,
             self._runtime.plugin_host,
         ):
+            return
+
+        # 第一层消息闸门可能因公开插件声明与内置管理别名碰撞而放行；插件返回
+        # False 后，所有内置命令必须统一经过注册表派生的第二层权限门。
+        if self._reject_admin_only(command, channel, area, user):
             return
 
         if self._services.routing.access.is_admin(user):

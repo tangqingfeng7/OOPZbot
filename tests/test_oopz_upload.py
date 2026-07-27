@@ -10,6 +10,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+import oopz.oopz_upload as upload_module
 from core.proxy_utils import is_fake_ip
 from oopz.oopz_upload import (
     RemoteFetchError,
@@ -20,10 +21,11 @@ from oopz.oopz_upload import (
 
 
 class _FakeResponse:
-    def __init__(self, chunks, headers=None, status_ok=True):
+    def __init__(self, chunks, headers=None, status_ok=True, status_code=200):
         self._chunks = chunks
         self.headers = headers or {}
         self._status_ok = status_ok
+        self.status_code = status_code
 
     def raise_for_status(self):
         if not self._status_ok:
@@ -38,6 +40,29 @@ class _FakeResponse:
 
 def _fake_session(response):
     return SimpleNamespace(get=lambda url, **kwargs: response)
+
+
+class _SequenceSession:
+    def __init__(self, *responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self._responses.pop(0)
+
+
+class _DohResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.closed = False
+
+    def json(self):
+        return self._payload
+
+    def close(self):
+        self.closed = True
 
 
 class ValidateRemoteUrlTest(unittest.TestCase):
@@ -84,18 +109,50 @@ class FakeIpHostTest(unittest.TestCase):
     """
 
     def test_allows_host_resolving_only_to_fake_ip(self) -> None:
-        with mock.patch.object(
-            socket, "getaddrinfo", return_value=_addrinfo("198.18.0.152", "fdfe:dcba:9876::126")
+        with (
+            mock.patch.object(
+                socket,
+                "getaddrinfo",
+                return_value=_addrinfo("198.18.0.152", "fdfe:dcba:9876::126"),
+            ),
+            mock.patch.object(
+                upload_module, "_resolve_via_trusted_dns", return_value=("1.2.3.4",)
+            ),
         ):
             self.assertTrue(_is_public_host("p3.music.126.net"))
 
     def test_allows_host_mixing_fake_ip_and_public(self) -> None:
-        with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("198.18.0.7", "1.2.3.4")):
+        with (
+            mock.patch.object(
+                socket,
+                "getaddrinfo",
+                return_value=_addrinfo("198.18.0.7", "1.2.3.4"),
+            ),
+            mock.patch.object(
+                upload_module, "_resolve_via_trusted_dns", return_value=("1.2.3.4",)
+            ),
+        ):
             self.assertTrue(_is_public_host("cdn.example.com"))
 
     def test_still_rejects_host_resolving_to_real_private_address(self) -> None:
         # 占位地址不作数，但同一域名解析出的真实内网地址仍必须拒绝
         with mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("198.18.0.7", "192.168.1.5")):
+            self.assertFalse(_is_public_host("intranet.example.com"))
+
+    def test_rejects_fake_ip_when_trusted_resolution_fails(self) -> None:
+        with (
+            mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("198.18.0.7")),
+            mock.patch.object(upload_module, "_resolve_via_trusted_dns", return_value=None),
+        ):
+            self.assertFalse(_is_public_host("unresolved.example.com"))
+
+    def test_rejects_fake_ip_whose_real_address_is_private(self) -> None:
+        with (
+            mock.patch.object(socket, "getaddrinfo", return_value=_addrinfo("198.18.0.7")),
+            mock.patch.object(
+                upload_module, "_resolve_via_trusted_dns", return_value=("192.168.1.5",)
+            ),
+        ):
             self.assertFalse(_is_public_host("intranet.example.com"))
 
     def test_rejects_fake_ip_literal(self) -> None:
@@ -117,6 +174,36 @@ class FakeIpHostTest(unittest.TestCase):
             self.assertTrue(is_fake_ip(addr), addr)
         for addr in ("8.8.8.8", "192.168.1.1", "127.0.0.1", "2001:4860:4860::8888", "not-an-ip"):
             self.assertFalse(is_fake_ip(addr), addr)
+
+
+class TrustedDnsTest(unittest.TestCase):
+    def test_resolves_both_address_families_without_redirects(self) -> None:
+        responses = (
+            _DohResponse(
+                {"Status": 0, "Answer": [{"type": 1, "data": "1.2.3.4"}]}
+            ),
+            _DohResponse(
+                {"Status": 0, "Answer": [{"type": 28, "data": "2001:4860::1"}]}
+            ),
+        )
+        with mock.patch.object(
+            upload_module.requests,
+            "get",
+            side_effect=responses,
+        ) as get:
+            result = upload_module._resolve_via_trusted_dns("cdn.example.com")
+
+        self.assertEqual(result, ("1.2.3.4", "2001:4860::1"))
+        self.assertEqual(get.call_count, 2)
+        for call in get.call_args_list:
+            self.assertFalse(call.kwargs["allow_redirects"])
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_resolution_failure_is_not_permissive(self) -> None:
+        response = _DohResponse({"Status": 2})
+        with mock.patch.object(upload_module.requests, "get", return_value=response):
+            self.assertIsNone(upload_module._resolve_via_trusted_dns("bad.example.com"))
+        self.assertTrue(response.closed)
 
 
 class DownloadLimitedTest(unittest.TestCase):
@@ -148,6 +235,23 @@ class DownloadLimitedTest(unittest.TestCase):
             _download_limited(
                 _fake_session(resp), "http://127.0.0.1/x", max_bytes=1024, timeout=5
             )
+
+    def test_rejects_redirect_to_private_url_before_second_fetch(self) -> None:
+        redirect = _FakeResponse(
+            [],
+            headers={"Location": "http://127.0.0.1/private"},
+            status_code=302,
+        )
+        private = _FakeResponse([b"secret"])
+        session = _SequenceSession(redirect, private)
+
+        with self.assertRaises(RemoteFetchError):
+            _download_limited(
+                session, "http://8.8.8.8/start", max_bytes=1024, timeout=5
+            )
+
+        self.assertEqual(len(session.calls), 1, "私网重定向不应发出第二次请求")
+        self.assertFalse(session.calls[0][1]["allow_redirects"])
 
 
 if __name__ == "__main__":

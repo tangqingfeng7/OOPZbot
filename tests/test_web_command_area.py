@@ -29,9 +29,8 @@ class EncodeDecodeTest(unittest.TestCase):
         payload = 'notify:{"name":"a|b","artists":"c"}'
         self.assertEqual(decode_web_command(encode_web_command("A1", payload)), ("A1", payload))
 
-    def test_legacy_payload_without_separator_is_passed_through(self) -> None:
-        # 滚动升级期 Redis 里可能残留升级前写入的命令，无从判断归属只能放行
-        self.assertEqual(decode_web_command("next"), ("", "next"))
+    def test_legacy_payload_without_separator_is_invalid(self) -> None:
+        self.assertIsNone(decode_web_command("next"))
 
     def test_area_is_stripped(self) -> None:
         self.assertEqual(decode_web_command(encode_web_command("  A1  ", "stop")), ("A1", "stop"))
@@ -47,21 +46,20 @@ class CommandAreaGateTest(unittest.TestCase):
 
     def test_command_from_another_area_is_skipped(self) -> None:
         handler = self._handler("area-A")
-        self.assertFalse(handler._web_command_applies_here("area-B"))
+        self.assertFalse(handler._web_command_applies_here("area-B", "next"))
 
     def test_command_from_the_playing_area_runs(self) -> None:
         handler = self._handler("area-A")
-        self.assertTrue(handler._web_command_applies_here("area-A"))
+        self.assertTrue(handler._web_command_applies_here("area-A", "next"))
 
-    def test_empty_command_area_is_unrestricted(self) -> None:
-        # 后台改的全局默认音量不归属任何域
+    def test_empty_command_area_only_allows_volume(self) -> None:
         handler = self._handler("area-A")
-        self.assertTrue(handler._web_command_applies_here(""))
+        self.assertTrue(handler._web_command_applies_here("", "volume:20"))
+        self.assertFalse(handler._web_command_applies_here("", "stop"))
 
-    def test_no_current_area_accepts_everything(self) -> None:
-        # 尚未进入任何语音域时不做限制，否则命令会全部落空
+    def test_no_current_area_rejects_area_command(self) -> None:
         handler = self._handler(None)
-        self.assertTrue(handler._web_command_applies_here("area-B"))
+        self.assertFalse(handler._web_command_applies_here("area-B", "next"))
 
 
 class ConsumeWebCommandTest(unittest.TestCase):
@@ -100,11 +98,17 @@ class ConsumeWebCommandTest(unittest.TestCase):
         self.assertTrue(handler._consume_web_command(encode_web_command("area-A", "stop").encode()))
         handler._execute_web_command.assert_called_once_with("stop")
 
-    def test_legacy_payload_still_runs(self) -> None:
+    def test_legacy_payload_is_dropped(self) -> None:
         handler = self._handler("area-A")
 
-        self.assertTrue(handler._consume_web_command("next"))
-        handler._execute_web_command.assert_called_once_with("next")
+        self.assertFalse(handler._consume_web_command("next"))
+        handler._execute_web_command.assert_not_called()
+
+    def test_area_command_is_dropped_without_current_area(self) -> None:
+        handler = self._handler(None)
+
+        self.assertFalse(handler._consume_web_command(encode_web_command("area-B", "stop")))
+        handler._execute_web_command.assert_not_called()
 
 
 class ProducerCarriesAreaTest(unittest.TestCase):
@@ -155,6 +159,25 @@ class ProducerCarriesAreaTest(unittest.TestCase):
         area, cmd = decode_web_command(r.pushed[-1])
         self.assertEqual(area, "")
         self.assertEqual(cmd, "volume:50")
+
+    def test_track_control_without_area_is_rejected(self) -> None:
+        from web.web_player import execute_control_action
+
+        for action, body in (
+            ("next", {}),
+            ("clear", {}),
+            ("stop", {}),
+            ("pause", {}),
+            ("resume", {}),
+            ("seek", {"time": 12}),
+            ("mode", {"value": "loop"}),
+        ):
+            with self.subTest(action=action):
+                r = self._Recorder()
+                result = execute_control_action(action, body, r, area="")
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(r.pushed, [])
 
 
 if __name__ == "__main__":

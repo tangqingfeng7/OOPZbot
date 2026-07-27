@@ -433,6 +433,60 @@ class MentionAdminGateGuardTest(unittest.TestCase):
             self.assertNotIn("无权限", call.args[0] if call.args else "")
 
 
+class SlashAdminGateGuardTest(unittest.TestCase):
+    """插件未处理命令后，所有内置管理员 slash 都必须再次校验身份。"""
+
+    def _build_router(self, *, is_admin: bool):
+        from unittest.mock import Mock
+
+        from app.services.routing.slash_command_router import SlashCommandRouter
+
+        runtime = Mock()
+        runtime.plugins.try_dispatch_slash.return_value = False
+        runtime.services.interaction.music.handle_slash.return_value = False
+        runtime.services.routing.access.is_admin.return_value = is_admin
+        router = SlashCommandRouter(runtime)
+        router._actions = Mock()
+        return router, runtime
+
+    def test_every_admin_slash_alias_is_blocked_for_non_admin(self) -> None:
+        from domain.routing.command_registry import admin_slash_commands
+
+        aliases = admin_slash_commands()
+        self.assertTrue(aliases, "注册表里应当存在 admin slash 别名")
+
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                router, runtime = self._build_router(is_admin=False)
+
+                router.dispatch(f"{alias} 目标", "c", "a", "u")
+
+                self.assertEqual(
+                    router._actions.mock_calls,
+                    [],
+                    f"管理命令 {alias!r} 在非管理员身份下被执行",
+                )
+                runtime.sender.send_message.assert_called_once()
+                self.assertIn("无权限", runtime.sender.send_message.call_args.args[0])
+
+    def test_public_plugin_collision_cannot_fall_through_to_builtin(self) -> None:
+        router, runtime = self._build_router(is_admin=False)
+
+        router.dispatch("/ban 目标", "c", "a", "u")
+
+        runtime.plugins.try_dispatch_slash.assert_called_once()
+        router._actions.moderation.remove_from_area.assert_not_called()
+
+    def test_public_slash_is_untouched_by_the_gate(self) -> None:
+        router, runtime = self._build_router(is_admin=False)
+
+        router.dispatch("/members", "c", "a", "u")
+
+        router._actions.community.show_members.assert_called_once_with("c", "a")
+        for call in runtime.sender.send_message.call_args_list:
+            self.assertNotIn("无权限", call.args[0] if call.args else "")
+
+
 class SlashRouterIdentityIsolationTest(unittest.TestCase):
     """守卫：slash 路由不得把调用者身份挂在实例字段上。
 

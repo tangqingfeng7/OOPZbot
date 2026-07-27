@@ -2,6 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -108,6 +109,33 @@ class LoginGuardTest(unittest.TestCase):
     def test_zero_max_failures_disables_lockout(self) -> None:
         for _ in range(10):
             self.assertFalse(self.guard.record_failure("ip", max_failures=0, lock_seconds=300))
+
+    def test_failure_tracking_is_strictly_bounded(self) -> None:
+        for index in range(5000):
+            self.guard.record_failure(
+                f"198.51.100.{index}",
+                max_failures=3,
+                lock_seconds=300,
+            )
+
+        self.assertLessEqual(
+            len(self.guard._failures),
+            self.guard._MAX_TRACKED_IPS,
+        )
+
+    def test_old_failure_count_expires(self) -> None:
+        with mock.patch(
+            "web.web_rate_limit.time.monotonic",
+            side_effect=(100.0, 401.0, 402.0),
+        ):
+            self.assertFalse(
+                self.guard.record_failure("ip", max_failures=2, lock_seconds=300)
+            )
+            self.assertFalse(
+                self.guard.record_failure("ip", max_failures=2, lock_seconds=300)
+            )
+
+        self.assertEqual(self.guard.locked_seconds("ip", 300), 0)
 
 
 if __name__ == "__main__":

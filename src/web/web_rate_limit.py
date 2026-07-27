@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from threading import Lock
 from typing import TYPE_CHECKING
 
@@ -72,8 +72,10 @@ class LoginGuard:
     _MAX_TRACKED_IPS = 2000
 
     def __init__(self) -> None:
-        self._failures: dict[str, int] = defaultdict(int)
-        self._locked_until: dict[str, float] = {}
+        # OrderedDict 按最后一次失败排序，既能让计数按窗口过期，也能 O(1)
+        # 淘汰最老来源，避免攻击者用大量不同 IP 把字典无限撑大。
+        self._failures: OrderedDict[str, tuple[int, float]] = OrderedDict()
+        self._locked_until: OrderedDict[str, float] = OrderedDict()
         self._lock = Lock()
 
     def locked_seconds(self, key: str, lock_seconds: int) -> int:
@@ -92,13 +94,26 @@ class LoginGuard:
         """记一次失败；返回本次是否触发锁定。"""
         if max_failures <= 0 or lock_seconds <= 0:
             return False
+        now = time.monotonic()
         with self._lock:
-            self._failures[key] += 1
-            if self._failures[key] < max_failures:
+            self._evict_stale(now, failure_window=lock_seconds)
+            count, last_failure = self._failures.get(key, (0, 0.0))
+            if last_failure <= now - lock_seconds:
+                count = 0
+            count += 1
+            self._failures[key] = (count, now)
+            self._failures.move_to_end(key)
+
+            while len(self._failures) > self._MAX_TRACKED_IPS:
+                self._failures.popitem(last=False)
+
+            if count < max_failures:
                 return False
             self._failures.pop(key, None)
-            self._locked_until[key] = time.monotonic() + lock_seconds
-            self._evict_stale()
+            self._locked_until[key] = now + lock_seconds
+            self._locked_until.move_to_end(key)
+            while len(self._locked_until) > self._MAX_TRACKED_IPS:
+                self._locked_until.popitem(last=False)
             return True
 
     def record_success(self, key: str) -> None:
@@ -106,13 +121,17 @@ class LoginGuard:
             self._failures.pop(key, None)
             self._locked_until.pop(key, None)
 
-    def _evict_stale(self) -> None:
-        now = time.monotonic()
+    def _evict_stale(self, now: float, failure_window: int) -> None:
+        cutoff = now - failure_window
+        while self._failures:
+            oldest_key = next(iter(self._failures))
+            _count, last_failure = self._failures[oldest_key]
+            if last_failure > cutoff:
+                break
+            self._failures.popitem(last=False)
         for k, until in list(self._locked_until.items()):
             if until <= now:
                 del self._locked_until[k]
-        if len(self._failures) > self._MAX_TRACKED_IPS:
-            self._failures.clear()
 
     def reset(self) -> None:
         """清空计数。仅供测试使用。"""

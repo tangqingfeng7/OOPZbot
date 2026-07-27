@@ -264,6 +264,10 @@ async def _auth_web_api(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 def execute_control_action(action: str, body: dict, redis_client: redis.Redis, area: str = "") -> dict:
+    area = (area or "").strip()
+    if action in {"next", "clear", "stop", "pause", "resume", "seek", "mode"} and not area:
+        return {"ok": False, "error": "当前没有可控制的播放域"}
+
     queue_key = _area_key(KEY_QUEUE, area)
     if action == "next":
         redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "next"))
