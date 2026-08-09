@@ -143,46 +143,6 @@ window.agoraPlayAudio = async (url) => {
   }
 };
 
-window.agoraPlayLocal = async (base64Data, mimeType) => {
-  try {
-    await window.agoraStopAudio();
-    const binary = atob(base64Data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: mimeType || "audio/mpeg" });
-    const objectUrl = URL.createObjectURL(blob);
-    audioTrack = await AgoraRTC.createBufferSourceAudioTrack({
-      source: objectUrl,
-      cacheOnlineFile: false,
-    });
-    try { audioTrack.setVolume(_currentVolume); } catch (_) {}
-    audioTrack.on("source-state-change", (st) => {
-      _state = st === "playing" ? "playing" : st === "stopped" ? "finished" : st;
-    });
-    audioTrack.startProcessAudioBuffer({ loop: false });
-    await client.publish([audioTrack]);
-    await sendCurrentVoiceState(2);
-    URL.revokeObjectURL(objectUrl);
-    _state = "playing";
-    return { ok: true, duration: audioTrack.duration, agoraUid: currentAgoraUid };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-};
-
-window.agoraSendIdentity = async (oopzUid, agoraUid = currentAgoraUid) => {
-  return await window.agoraSetVoiceIdentity(oopzUid, agoraUid);
-};
-
-window.agoraVoiceDebug = () => ({
-  state: _state,
-  currentOopzUid,
-  currentAgoraUid,
-  currentMicMuted,
-  currentSpeakerMuted,
-  ws: _wsInstances.map(w => ({ url: w.url, readyState: w.readyState })),
-});
-
 window.agoraPause = () => {
   if (!audioTrack || _state !== "playing") return { ok: false, error: "not playing" };
   try {
@@ -217,11 +177,6 @@ window.agoraSetVolume = (vol) => {
     audioTrack.setVolume(v);
     return { ok: true, volume: v };
   } catch (e) { return { ok: false, error: e.message }; }
-};
-
-window.agoraGetCurrentTime = () => {
-  if (!audioTrack) return 0;
-  try { return audioTrack.getCurrentTime(); } catch (_) { return 0; }
 };
 
 window.agoraStopAudio = async () => {

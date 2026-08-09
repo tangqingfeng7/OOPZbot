@@ -13,8 +13,12 @@
                  └──────┬──────┘
                         │
                         ▼
+               ┌──────────────────┐
+               │message_dispatcher│  有界分片 · 同频道保序 · 背压
+               └────────┬─────────┘
+                        ▼
                 ┌───────────────┐
-                │command_handler│  指令路由 · 权限校验 · 脏话检测
+                │command_handler│  运行时组装 · 统计/安全预检 · 委托路由
                 └─┬──┬──┬──┬───┘
                   │  │  │  │
         ┌─────────┘  │  │  └──────────┐
@@ -93,12 +97,14 @@ NeteaseCloud API (:3000)
 │
 ├── src/                         # 核心源码模块
 │   ├── bot/                     # Bot 消息入口
-│   │   └── command_handler.py   # 命令路由（@bot 指令 + / 命令 + 权限校验 + 脏话自动禁言）
+│   │   └── command_handler.py   # 运行时协调入口：组装服务/插件，统计与安全预检后委托路由服务
 │   ├── core/                    # 基础设施
 │   │   ├── database.py          # SQLite 数据层
 │   │   ├── logger_config.py     # 日志配置
 │   │   ├── queue_manager.py     # Redis 播放队列管理
+│   │   ├── message_dispatcher.py # 有界分片队列（同频道保序、跨频道并行、背压）
 │   │   ├── redis_keys.py        # Redis 键名与域隔离键（单一来源）
+│   │   ├── browser_launch.py    # 语音推流与 OOPZ 登录共用的 Chromium 启动参数
 │   │   ├── constants.py         # 跨模块常量（消息前缀 Msg、@提及、UA）
 │   │   ├── json_utils.py        # 紧凑 JSON 序列化（保证签名字节一致）
 │   │   ├── paths.py             # 项目路径唯一来源
@@ -107,6 +113,7 @@ NeteaseCloud API (:3000)
 │   │   └── area_config.py       # 域配置
 │   ├── music/                   # 音乐与语音播放
 │   │   ├── music.py             # 音乐核心调度
+│   │   ├── music_platform.py    # 音乐平台统一协议与注册表
 │   │   ├── music_playback.py    # 播放执行、推流、链接生成
 │   │   ├── music_web_control.py # Web 控制命令消费与分发
 │   │   ├── netease.py           # 网易云音乐 API 封装
@@ -121,6 +128,7 @@ NeteaseCloud API (:3000)
 │   │   ├── responses.py         # API 响应归一化（ApiResult / parse_*）
 │   │   ├── signing.py           # 请求签名唯一来源（RSA + Oopz-* 头）
 │   │   ├── oopz_password_login.py # OOPZ 账号密码登录
+│   │   ├── area_events.py       # 域成员进出 WebSocket 事件的共享解析
 │   │   └── name_resolver.py     # ID → 名称解析
 │   ├── onebot_v11/              # OneBot v11 旁路适配（adapter / server / store / message / config）
 │   ├── services/                # 独立服务
@@ -168,11 +176,11 @@ NeteaseCloud API (:3000)
 │   ├── create_plugin_scaffold.py # 插件脚手架生成
 │   ├── export_plugin_config_assets.py # 导出插件配置示例与 schema
 │   ├── prepare_clash_config.py  # 规整 Clash/Mihomo 本地启动配置
-│   ├── convert_subscription.py  # 代理订阅转 Clash/Mihomo 配置
-│   └── audio_service.py         # 音频播放服务（ffplay + FastAPI）
+│   └── convert_subscription.py  # 代理订阅转 Clash/Mihomo 配置
 │
 ├── nginx/                       # Nginx 反向代理配置
-│   ├── nginx.conf               # 站点配置（HTTP + HTTPS，支持裸机 / Docker 两种 upstream）
+│   ├── nginx.conf               # 裸机站点配置（回环 upstream）
+│   ├── nginx.docker.conf        # Docker Compose 站点配置（服务名 upstream）
 │   └── ssl/                     # SSL 证书目录（.gitignore 忽略证书文件）
 │       ├── cert.pem             # 证书（含完整链）
 │       └── key.pem              # 私钥
@@ -215,25 +223,36 @@ NeteaseCloud API (:3000)
 | 模块 | 职责 |
 |------|------|
 | `src/web/web_player.py` | FastAPI 主应用实例、播放器 API 路由、共享状态（Redis/Netease 客户端） |
-| `src/web/web_player_admin.py` | Admin 后台所有路由（`APIRouter`），包括登录、概览、统计、配置、队列管理等 |
+| `src/web/web_player_admin.py` | 9 行稳定 facade（外观入口）：调用 `create_admin_router()` 并对外导出 `admin_router` |
+| `src/web/admin/` | Admin 后台的实际路由包；按登录、页面、配置、音乐、定时任务、插件、成员与共享辅助拆分 |
 | `src/web/web_player_config.py` | 配置常量（`WEB_PLAYER_CONFIG` 引用）、分组定义、基线值、config.py 写回与热更新 |
 
-`src/web/web_player.py` 通过 `app.include_router(admin_router)` 挂载 Admin 路由。
+`src/web/web_player.py` 仍从 facade 导入 `admin_router`，再通过
+`app.include_router(admin_router)` 挂载 `src/web/admin/` 组装的 Admin 路由。
 
 ## 数据库表结构
+
+下表是 `src/core/database.py::init_database()` 在应用启动时创建的 10 张核心表。
+Steam 插件和 OneBot store 还会按需创建各自的表，不计入这 10 张。
 
 | 表名 | 用途 | 关键字段 |
 |------|------|----------|
 | `image_cache` | 封面图片缓存 | source_id, oopz_url, use_count |
-| `song_cache` | 歌曲信息缓存 | song_id, song_name, artist, play_count |
-| `play_history` | 播放历史记录 | song_cache_id, channel_id, user_id, played_at |
-| `statistics` | 每日统计汇总 | date, total_plays, unique_songs, cache_hits |
+| `song_cache` | 跨平台歌曲信息与播放次数缓存 | song_id, platform, song_name, play_count |
+| `play_history` | 逐次播放历史 | song_cache_id, platform, channel_id, user_id, played_at |
+| `statistics` | 每日播放、缓存命中与平台分布汇总 | date, total_plays, cache_hits, cache_misses, platform_breakdown |
+| `delta_force_active_token` | 三角洲插件的用户活跃账号组与 framework token | user_id, account_group, framework_token, updated_at |
+| `delta_force_place_push` | 三角洲特勤处推送订阅及上次快照 | user_id, channel_id, area_id, last_snapshot, updated_at |
+| `delta_force_daily_keyword_push` | 三角洲每日密码推送订阅及去重日期 | channel_id, area_id, last_push_date, updated_at |
+| `scheduled_messages` | Admin 配置的定时频道消息 | name, cron_hour, cron_minute, weekdays, channel_id, area_id, enabled |
+| `reminders` | 用户定时提醒及执行状态 | user_id, channel_id, area_id, message_text, fire_at, fired |
+| `message_stats` | 按日期、频道、域和用户聚合的消息计数 | date, channel_id, area_id, user_id, message_count |
 
 ## Web 播放器
 
 ### 架构总览
 
-Web 播放器通过 FastAPI 提供 HTTP API，前端 `player.html` 通过轮询获取状态、歌词、队列，通过 POST 请求发送控制命令。Admin 后台路由由 `src/web/web_player_admin.py` 通过 `APIRouter` 提供，配置管理由 `src/web/web_player_config.py` 集中处理。
+Web 播放器通过 FastAPI 提供 HTTP API，前端 `player.html` 通过轮询获取状态、歌词、队列，通过 POST 请求发送控制命令。Admin 后台路由由 `src/web/admin/` 包组装，`src/web/web_player_admin.py` 只作为稳定 facade，配置管理由 `src/web/web_player_config.py` 集中处理。
 
 ```
 浏览器 (player.html / admin 页面)
@@ -242,9 +261,10 @@ Web 播放器通过 FastAPI 提供 HTTP API，前端 `player.html` 通过轮询�
 Nginx / OpenResty (:80 HTTP, :443 HTTPS)
   │  / → bot:8080,  /netease-api/ → netease-api:3000
   ▼
-src/web/web_player.py ──► src/web/web_player_admin.py (APIRouter)
-(FastAPI :8080)        └── src/web/web_player_config.py (配置管理)
-  │  读取 Redis: music:current, music:queue, music:play_state, music:volume
+src/web/web_player.py ──► src/web/web_player_admin.py (facade)
+(FastAPI :8080)        │     └── src/web/admin/ (实际 APIRouter)
+                        └── src/web/web_player_config.py (配置管理)
+  │  读取 Redis: music:<area>:current / queue / play_state, music:volume
   │  写入 Redis: music:web_commands (RPUSH)
   ▼
 music.py + music_playback.py (BLPOP 独立线程，实时消费命令)
@@ -258,27 +278,36 @@ Agora RTC (语音频道)
 
 ### Redis 键约定
 
-| 键 | 类型 | 说明 |
-|----|------|------|
-| `music:current` | String (JSON) | 当前播放歌曲信息（song_id, name, artist, cover, duration_ms 等） |
-| `music:queue` | List (JSON[]) | 播放队列，每个元素为歌曲 JSON |
-| `music:play_state` | String (JSON) | 播放状态（start_time, duration, paused, pause_elapsed） |
-| `music:volume` | String | 当前音量 0-100 |
-| `music:web_commands` | List | Web 控制命令队列，由 BLPOP 实时消费 |
+`QueueManager(area)` 会把播放状态统一写入
+`music:<area>:<suffix>`；因此不同域的队列、当前曲目、默认频道、
+播放状态和播放模式互不影响。音量、Web 命令通道及 Web/Admin 会话状态为全局键。
+
+| 键或键族 | 类型 | 作用域 | 说明 |
+|------------|------|--------|------|
+| `music:<area>:queue` | List (JSON[]) | 域隔离 | 指定域的播放队列 |
+| `music:<area>:current` | String (JSON) | 域隔离 | 指定域当前播放歌曲 |
+| `music:<area>:default_channel` | String | 域隔离 | 指定域的默认播放频道 |
+| `music:<area>:play_state` | String (JSON) | 域隔离 | 指定域的进度、时长与暂停状态 |
+| `music:<area>:play_mode` | String | 域隔离 | 指定域的 `list` / `single` / `shuffle` 播放模式 |
+| `music:volume` | String | 全局 | 当前音量（0–100） |
+| `music:web_commands` | List (JSON) | 全局 | 严格 JSON v1 Web 控制命令队列，由 `BLPOP` 实时消费；域命令在载荷中携带 `area` |
+| `music:web_access_token` | String | 全局 | `/w/{token}` 播放器访问令牌，可配置 TTL |
+| `music:web_active_area` | String | 全局 | 当前 Web 播放器关联的活跃域 |
+| `music:web_last_access` | String (timestamp) | 全局 | 播放器最近访问时间，用于空闲释放 |
+| `music:admin_session:<token>` | String | 全局键族 | Admin 登录会话存活标记，可配置 TTL |
+
+历史全局播放键会保留在 Redis 中，但运行时不再读取、写入、迁移或删除它们。
 
 ### Web 控制命令
 
-命令通过 `RPUSH` 写入 `music:web_commands`，`music.py` 的独立监听线程通过 `BLPOP` 实时取出执行（延迟 < 100ms）。
+命令通过 `RPUSH` 写入 `music:web_commands`，`music.py` 的独立监听线程通过
+`BLPOP` 实时取出执行。消费者只接受字段精确匹配的 JSON v1；旧分隔符载荷、
+未知版本、未知字段和无域播放命令会被丢弃。
 
-| 命令 | 说明 |
-|------|------|
-| `next` | 切下一首 |
-| `stop` | 停止播放并清空队列 |
-| `pause` | 暂停 |
-| `resume` | 恢复播放 |
-| `seek:<秒数>` | 跳转到指定位置 |
-| `volume:<0-100>` | 设置音量 |
-| `notify:<json>` | Web 点歌后在频道发送通知消息 |
+| 作用域 | 必需字段 | 允许操作 |
+|--------|----------|----------|
+| `area` | `version=1`, `scope=area`, 非空 `area`, `action`, `payload` | next / stop / pause / resume / seek / notify |
+| `global` | `version=1`, `scope=global`, `action`, `payload` | 仅 volume（整数 0..100） |
 
 ### Web API 端点
 
