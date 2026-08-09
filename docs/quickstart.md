@@ -87,14 +87,51 @@ CLASH_SUBSCRIPTION_URL="https://example.com/clash.yaml" CLASH_AUTO_START=1 ./sta
 
 ## 5. Docker 部署
 
-项目提供 `docker-compose.yml`，一键启动全部服务，无需手动安装依赖：
+项目提供 `docker-compose.yml` 统一启动全部服务。首次启动前需准备运行时
+配置目录和 TLS 证书：
 
 ```shell
-cp config.example.py config.py
-cp private_key.example.py private_key.py
-# 编辑 config.py 填写必要配置
-docker-compose up -d
+cp docker.env.example .env
+mkdir -p config data logs
+cp config.example.py config/runtime.py
+cp private_key.example.py config/private_key.py
+mkdir -p nginx/ssl
+# 生产环境请把正式完整证书链和私钥分别放到以下两个路径。
+# 若文件尚不存在，下面会生成仅供本机测试的自签名证书；浏览器会提示不受信任。
+if [ ! -s nginx/ssl/cert.pem ] || [ ! -s nginx/ssl/key.pem ]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+    -subj "/CN=localhost" \
+    -keyout nginx/ssl/key.pem -out nginx/ssl/cert.pem
+fi
+chmod 600 nginx/ssl/key.pem
+chmod u+rw config/runtime.py config/private_key.py
+chmod u+rwx config data logs
+# 编辑 config/runtime.py 填写必要配置
+docker compose up -d --build
 ```
+
+Docker 镜像默认以 `1000:1000` 的非 root 用户运行 Bot，与大多数 Linux
+桌面用户的 UID/GID 一致，以便写入 `config/`、`data/` 和 `logs/`
+bind mount（绑定挂载）。如果 `id -u` 或 `id -g` 不是 `1000`，请把
+`.env` 中的 `BOT_UID` / `BOT_GID` 改为负责这些文件的**非 root**账号
+实际输出，再执行
+`docker compose build bot && docker compose up -d`。
+如果当前 shell 是 root，不要把这两个值设为 `0`；保留 `1000:1000`
+（或选择另一个非 root 身份），并把上述挂载路径 `chown` 给该数字身份。
+
+上述 `mkdir` / `chmod` 必须在首次启动 Compose 前执行，否则 Docker 可能以
+root 身份创建不可写的 `logs/` 绑定目录。如果这些目录已被旧部署创建为
+root 所有，请执行 `sudo chown -R 1000:1000 config data logs`；如果 `.env`
+选择了其他非 root `BOT_UID` / `BOT_GID`，相应替换两个数字。
+Docker 部署把 `config/runtime.py` 与 `config/private_key.py` 分别链接为容器内
+的 `/app/config.py`、`/app/private_key.py`。账号密码刷新和管理后台会安全
+写回它们，因此 Compose 有意以可写目录方式挂载；请继续按敏感文件管理，
+不要提交到 Git。已有 Docker 部署可先把根目录的 `config.py` 和
+`private_key.py` 复制到这两个新路径再升级。
+
+镜像已在共享的 `PLAYWRIGHT_BROWSERS_PATH` 中安装 Chromium 和 Chromium
+Headless Shell，容器内的非 root Bot 可直接使用语音频道推流，无需再手工
+执行 `playwright install`。
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
@@ -103,7 +140,12 @@ docker-compose up -d
 | netease-api | 3000（内部） | 网易云音乐 API |
 | redis | -- | 内部通信，不暴露 |
 
-容器环境自动设置 `BOT_REDIS_HOST=redis` 和 `BOT_NETEASE_BASE_URL=http://netease-api:3000`。更多环境变量覆盖见 [配置说明](configuration.md#环境变量覆盖)。
+容器环境默认设置 `BOT_REDIS_HOST=redis` 和
+`BOT_NETEASE_BASE_URL=http://netease-api:3000`，可在 `.env` 中覆盖 Redis、
+网易云、Oopz 代理、功能开关和日志级别。Compose 内部 Web 监听固定为
+`0.0.0.0:8080`，以匹配健康检查与 Nginx 上游。更多环境变量见
+[配置说明](configuration.md#环境变量覆盖)。Bot 的停止宽限期为 30 秒，
+足以覆盖应用的 20 秒关停预算并为容器调度和退出留出余量。
 
 ## 6. 配置 Nginx 反向代理（可选）
 
@@ -139,6 +181,8 @@ nginx -t && systemctl reload nginx
 
 ### 方式三：Docker Compose
 
-`docker-compose up` 时 Nginx 服务会自动启动，需在 `nginx/nginx.conf` 中将 upstream 切换为 Docker 服务名（`bot:8080` / `netease-api:3000`）。
+`docker compose up` 时 Nginx 会自动挂载 `nginx/nginx.docker.conf`，无需手工
+切换 upstream。默认固定网络和容器 IP 可通过 `docker.env.example` 中的
+`BOT_*_SUBNET` / `BOT_*_IP` 覆盖；Nginx 的可信代理 CIDR 会同步注入 Bot。
 
 详见 [Web 播放器 - Nginx 反向代理](web-player.md#nginx-反向代理)。

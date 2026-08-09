@@ -50,6 +50,9 @@ copy private_key.example.py private_key.py
 | `port` | Redis 端口（默认 `6379`） |
 | `password` | Redis 密码（默认为空） |
 | `db` | 数据库编号（默认 `0`） |
+| `socket_connect_timeout` | 建连超时秒数（默认 `3.0`） |
+| `socket_timeout` | 网络读写超时秒数（默认 `5.0`） |
+| `health_check_interval` | 连接健康检查间隔秒数（默认 `30`） |
 
 ### 网易云音乐 (`NETEASE_CLOUD`)
 
@@ -197,8 +200,10 @@ copy private_key.example.py private_key.py
 | `cookie_secure` | 是否仅在 HTTPS 下发送 cookie（使用 Nginx + SSL 时设为 `True`） |
 | `send_link_enabled` | 是否在点歌通知中发送 Web 播放器链接（默认 `True`） |
 | `link_idle_release_seconds` | 播放列表空闲超时后释放随机链接（秒，`0` 表示不释放） |
+| `trusted_proxy_cidrs` | 允许提供 `X-Forwarded-For` / `X-Real-IP` 的 TCP 对端网段；默认仅回环 |
 
 > **注意**：长期配置只认 `config.py`。管理后台 `/admin` -> 配置页面保存时会写回 `config.py`，并同步更新当前进程，不需要重启。
+> `trust_proxy_header` 不再兼容；检测到该旧项时启动会失败，并提示迁移到 `trusted_proxy_cidrs`。
 
 ### OneBot v11 旁路服务 (`ONEBOT_V11_CONFIG`)
 
@@ -336,18 +341,38 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 
 ## 环境变量覆盖
 
-Docker 环境下可通过环境变量覆盖部分配置，无需修改 `config.py`：
+Docker 环境下可通过环境变量覆盖部分配置，无需修改 `config.py`。
+Compose 默认只把 `docker-compose.yml` 中明确声明的变量传给 Bot；下表标为
+“否”的变量用于直接运行进程或自行启动容器，若需在现有 Compose 中使用，
+还需将它显式加入 `services.bot.environment`。Compose 内部 Web 监听固定为
+`0.0.0.0:8080`，以匹配健康检查与 Nginx 上游；直接运行时仍可使用
+`BOT_WEB_HOST` / `BOT_WEB_PORT`。
 
-| 环境变量 | 对应配置 |
-|----------|----------|
-| `BOT_REDIS_HOST` / `BOT_REDIS_PORT` / `BOT_REDIS_PASSWORD` / `BOT_REDIS_DB` | Redis 连接 |
-| `BOT_NETEASE_BASE_URL` | 网易云 API 地址 |
-| `BOT_WEB_HOST` / `BOT_WEB_PORT` | Web 播放器监听 |
-| `BOT_OOPZ_PROXY` | Oopz 代理地址 |
-| `BOT_DISABLE_VOICE` | 禁用语音推流 |
-| `BOT_DISABLE_AUTO_START_NETEASE` | 禁用自动启动网易云 API |
-| `BOT_LOG_FILE_LEVEL` / `BOT_LOG_CONSOLE_LEVEL` | 日志文件 / 控制台级别（默认 `DEBUG` / `INFO`） |
-| `ONEBOT_V11_ENABLED` | 覆盖 OneBot v11 旁路服务开关 |
+Compose 的宿主配置文件位于 `config/runtime.py` 与
+`config/private_key.py`；镜像内通过符号链接仍以 `/app/config.py` 和
+`/app/private_key.py` 导入。目录级绑定挂载让管理后台能够在同一文件系统内
+原子保存配置，也避免把敏感文件打进镜像。
+
+| 环境变量 | 作用与优先级 | Compose 默认传入 |
+|----------|----------|:----------------:|
+| `BOT_REDIS_HOST` / `BOT_REDIS_PORT` / `BOT_REDIS_PASSWORD` / `BOT_REDIS_DB` | Redis 连接 | 是 |
+| `BOT_REDIS_CONNECT_TIMEOUT` / `BOT_REDIS_SOCKET_TIMEOUT` / `BOT_REDIS_HEALTH_CHECK_INTERVAL` | Redis 网络超时与健康检查 | 是 |
+| `BOT_NETEASE_BASE_URL` | 网易云 API 地址 | 是 |
+| `BOT_WEB_HOST` / `BOT_WEB_PORT` | Web 播放器监听；Compose 中固定为 `0.0.0.0:8080` | 固定注入 |
+| `BOT_WEB_TRUSTED_PROXY_CIDRS` | 逗号分隔的可信反向代理 CIDR；Compose 根据两个 Nginx IP 生成 | 固定注入 |
+| `BOT_OOPZ_PROXY` | Oopz 代理地址 | 是 |
+| `OOPZ_PHONE` / `OOPZ_PASSWORD` | 启动及 HTTP/WS 认证失效时自动刷新 Oopz 凭据；两项分别优先于 `OOPZ_CONFIG.login_phone` / `login_password`，其次才是兼容字段 `phone` / `password` | 否 |
+| `BOT_CHROMIUM_EXECUTABLE_PATH` / `CHROME_BIN` | 指定 Oopz Playwright 登录流程使用的 Chromium；前者优先，路径不存在时警告并回退到 Playwright 默认浏览器 | 否 |
+| `CHROME_PATH` | 仅用于 Windows 语音推流的 Selenium Chrome 回退；在 webdriver-manager 和 Selenium Manager 的默认 Chrome 尝试均失败后才使用 | 否 |
+| `OOPZ_DEBUG_WS_EVENTS` | `1` / `true` / `yes` / `on`（不区分大小写）时记录收到的原始 WebSocket 事件 body；在模块导入时读取，修改后需重启 | 否 |
+| `BOT_DISABLE_VOICE` | 禁用语音推流 | 是 |
+| `BOT_DISABLE_AUTO_START_NETEASE` | 禁用自动启动网易云 API | 是 |
+| `BOT_LOG_FILE_LEVEL` / `BOT_LOG_CONSOLE_LEVEL` | 日志文件 / 控制台级别（默认 `DEBUG` / `INFO`） | 是 |
+| `ONEBOT_V11_ENABLED` | 覆盖 OneBot v11 旁路服务开关 | 否 |
+
+`OOPZ_PASSWORD` 是账号凭据，`OOPZ_PHONE` 也属于账号身份信息；不要把它们写入
+版本控制或输出到日志。`OOPZ_DEBUG_WS_EVENTS` 的原始事件可能含消息、成员等
+敏感内容，只应在定位问题时短暂开启，关闭并重启后再共享经脱敏的日志。
 
 ## 插件配置
 

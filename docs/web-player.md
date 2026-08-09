@@ -57,14 +57,19 @@ Web 播放器是一个独立的歌词与播放控制页面，与 Bot 播放状�
 | `admin_password` | 管理后台登录密码 |
 | `admin_session_ttl_seconds` | 后台会话有效期（秒） |
 | `admin_cookie_secure` | 后台 cookie 是否仅 HTTPS 发送（使用 Nginx + SSL 时设为 `True`） |
+| `trusted_proxy_cidrs` | 允许提供转发头的 TCP 代理网段；默认仅信任 IPv4/IPv6 回环 |
 
 > **注意**：长期配置只认 `config.py`。管理后台(`/admin` -> 配置)保存时会写回 `config.py`，并同步更新当前进程，不需要重启。
+> 旧项 `trust_proxy_header` 已移除；配置中仍存在时程序会拒绝启动并给出迁移提示。
 
 ---
 
 ## Nginx 反向代理
 
-项目自带 `nginx/nginx.conf`，通过 Nginx 反向代理统一对外提供 HTTPS (443) 访问，HTTP (80) 自动 301 重定向到 HTTPS。
+项目分别提供裸机配置 `nginx/nginx.conf` 和 Compose 配置
+`nginx/nginx.docker.conf`。两者都通过 Nginx 统一提供 HTTPS (443)，并将
+HTTP (80) 自动 301 重定向到 HTTPS。Compose 会固定 Nginx 网络地址并自动
+把对应 CIDR 注入 Bot。
 
 ### 路由规则
 

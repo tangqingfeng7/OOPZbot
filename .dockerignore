@@ -6,6 +6,16 @@
 # Sensitive config (mounted at runtime)
 config.py
 private_key.py
+config/runtime.py
+config/private_key.py
+.config.py.*.tmp
+.config.py.*.bak
+.private_key.py.*.tmp
+.private_key.py.*.bak
+config/.runtime.py.*.tmp
+config/.runtime.py.*.bak
+config/.private_key.py.*.tmp
+config/.private_key.py.*.bak
 .env
 .env.local
 

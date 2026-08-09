@@ -194,27 +194,15 @@ http://localhost:8080/health
 
 ## Docker 部署
 
-Docker 会一起启动 Bot、Redis、网易云音乐 API 和 Nginx。
+Docker 会一起启动 Bot、Redis、网易云音乐 API 和 Nginx。首次启动不能直接
+执行 `docker compose up`：需要先准备 `.env`、`config/runtime.py`、
+`config/private_key.py`、可写的数据/日志目录，以及
+`nginx/ssl/cert.pem` / `nginx/ssl/key.pem`。正式证书和仅供本机测试的
+自签名证书命令见 [快速开始](docs/quickstart.md#5-docker-部署)；准备完成后执行：
 
-Windows PowerShell：
-
-```powershell
-docker compose up -d
+```shell
+docker compose up -d --build
 ```
-
-Linux / macOS：
-
-```bash
-docker compose up -d
-```
-
-如果本机 Docker 版本较旧，也可以用：
-
-```bash
-docker-compose up -d
-```
-
-更完整的部署说明见 [快速开始](docs/quickstart.md)。
 
 ## 常用命令
 
@@ -247,7 +235,12 @@ docker-compose up -d
 python tools/create_plugin_scaffold.py demo_plugin
 ```
 
-插件开发说明见 [插件开发工作流](docs/plugin-development.md) 和 [plugins/README.md](plugins/README.md)。
+贡献者文档：
+
+- [插件目录说明](plugins/README.md)：开发新插件的最短路径
+- [插件开发工作流](docs/plugin-development.md)：完整契约、脚手架和提交前检查
+- [插件配置目录](config/plugins/README.md)：运行配置与 `example.json` / `schema.json` 资产规则
+- [源码目录说明](src/README.md)：`src/` 各子目录的职责边界
 
 ## 注意事项
 
