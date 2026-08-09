@@ -4,21 +4,14 @@ import os
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from web.admin.shared import (
-    cfg,
-)
 from domain.plugins.plugin_name import normalize_plugin_name
+from web.admin.shared import _get_plugin_runtime, cfg
 
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
 # 插件管理 API
 # ---------------------------------------------------------------------------
-
-def _get_plugin_runtime():
-    from web.web_player import get_plugin_runtime
-    return get_plugin_runtime()
-
 
 def _get_plugin_host():
     from web.web_player import get_plugin_host
@@ -57,23 +50,26 @@ def admin_plugins_list():
     })
 
 
-def _validate_plugin_name(name: str):
+def _validate_plugin_name(name: str) -> str | JSONResponse:
     normalized = normalize_plugin_name(name)
     if not normalized:
-        return None, JSONResponse({"ok": False, "error": "插件名不合法，仅支持字母/数字/下划线"}, status_code=400)
-    return normalized, None
+        return JSONResponse(
+            {"ok": False, "error": "插件名不合法，仅支持字母/数字/下划线"},
+            status_code=400,
+        )
+    return normalized
 
 
 @router.post("/admin/api/plugins/{name}/load")
 def admin_plugin_load(name: str):
-    name, invalid = _validate_plugin_name(name)
-    if invalid:
-        return invalid
+    plugin_name = _validate_plugin_name(name)
+    if isinstance(plugin_name, JSONResponse):
+        return plugin_name
     runtime = _get_plugin_runtime()
     host = _get_plugin_host()
     if not runtime:
         return JSONResponse({"ok": False, "error": "插件运行时未初始化"}, status_code=503)
-    result = runtime.load(name, handler=host)
+    result = runtime.load(plugin_name, handler=host)
     if not result.ok:
         return JSONResponse({"ok": False, "error": result.message, "code": result.code.value})
     return JSONResponse({"ok": True, "message": result.message})
@@ -81,14 +77,14 @@ def admin_plugin_load(name: str):
 
 @router.post("/admin/api/plugins/{name}/unload")
 def admin_plugin_unload(name: str):
-    name, invalid = _validate_plugin_name(name)
-    if invalid:
-        return invalid
+    plugin_name = _validate_plugin_name(name)
+    if isinstance(plugin_name, JSONResponse):
+        return plugin_name
     runtime = _get_plugin_runtime()
     host = _get_plugin_host()
     if not runtime:
         return JSONResponse({"ok": False, "error": "插件运行时未初始化"}, status_code=503)
-    result = runtime.unload(name, handler=host)
+    result = runtime.unload(plugin_name, handler=host)
     if not result.ok:
         return JSONResponse({"ok": False, "error": result.message, "code": result.code.value})
     return JSONResponse({"ok": True, "message": result.message})
@@ -96,14 +92,14 @@ def admin_plugin_unload(name: str):
 
 @router.post("/admin/api/plugins/{name}/reload-config")
 def admin_plugin_reload_config(name: str):
-    name, invalid = _validate_plugin_name(name)
-    if invalid:
-        return invalid
+    plugin_name = _validate_plugin_name(name)
+    if isinstance(plugin_name, JSONResponse):
+        return plugin_name
     runtime = _get_plugin_runtime()
     host = _get_plugin_host()
     if not runtime:
         return JSONResponse({"ok": False, "error": "插件运行时未初始化"}, status_code=503)
-    result = runtime.reload_config(name, handler=host)
+    result = runtime.reload_config(plugin_name, handler=host)
     if not result.ok:
         return JSONResponse({"ok": False, "error": result.message, "code": result.code.value})
     return JSONResponse({"ok": True, "message": result.message})
@@ -111,16 +107,16 @@ def admin_plugin_reload_config(name: str):
 
 @router.get("/admin/api/plugins/{name}/config")
 def admin_plugin_config_get(name: str):
-    name, invalid = _validate_plugin_name(name)
-    if invalid:
-        return invalid
+    plugin_name = _validate_plugin_name(name)
+    if isinstance(plugin_name, JSONResponse):
+        return plugin_name
     from app.infrastructure.plugin_runtime.loader import (
         DEFAULT_PLUGIN_CONFIG_DIR,
         plugin_config_path,
         plugin_config_schema_path,
     )
     config_dir = os.path.join(cfg.PROJECT_ROOT, DEFAULT_PLUGIN_CONFIG_DIR)
-    config_path = plugin_config_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
+    config_path = plugin_config_path(plugin_name, DEFAULT_PLUGIN_CONFIG_DIR)
     config_data = {}
     if os.path.isfile(config_path):
         try:
@@ -129,7 +125,7 @@ def admin_plugin_config_get(name: str):
         except Exception as exc:
             return JSONResponse({"ok": False, "error": f"读取配置失败: {exc}"})
 
-    schema_path = plugin_config_schema_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
+    schema_path = plugin_config_schema_path(plugin_name, DEFAULT_PLUGIN_CONFIG_DIR)
     schema_data = None
     if os.path.isfile(schema_path):
         try:
@@ -140,7 +136,7 @@ def admin_plugin_config_get(name: str):
 
     return JSONResponse({
         "ok": True,
-        "name": name,
+        "name": plugin_name,
         "config": config_data,
         "config_exists": os.path.isfile(config_path),
         "config_path": os.path.relpath(config_path, config_dir),
@@ -150,11 +146,14 @@ def admin_plugin_config_get(name: str):
 
 @router.post("/admin/api/plugins/{name}/config")
 async def admin_plugin_config_save(name: str, request: Request):
-    name, invalid = _validate_plugin_name(name)
-    if invalid:
-        return invalid
-    from app.infrastructure.plugin_runtime.loader import DEFAULT_PLUGIN_CONFIG_DIR, plugin_config_path
-    config_path = plugin_config_path(name, DEFAULT_PLUGIN_CONFIG_DIR)
+    plugin_name = _validate_plugin_name(name)
+    if isinstance(plugin_name, JSONResponse):
+        return plugin_name
+    from app.infrastructure.plugin_runtime.loader import (
+        DEFAULT_PLUGIN_CONFIG_DIR,
+        plugin_config_path,
+    )
+    config_path = plugin_config_path(plugin_name, DEFAULT_PLUGIN_CONFIG_DIR)
 
     try:
         body = await request.json()
@@ -172,10 +171,10 @@ async def admin_plugin_config_save(name: str, request: Request):
     runtime = _get_plugin_runtime()
     host = _get_plugin_host()
     reload_msg = ""
-    if runtime and runtime.registry.get(name):
-        result = runtime.reload_config(name, handler=host)
+    if runtime and runtime.registry.get(plugin_name):
+        result = runtime.reload_config(plugin_name, handler=host)
         reload_msg = result.message
 
     return JSONResponse({"ok": True, "message": "配置已保存", "reload": reload_msg})
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["router"]

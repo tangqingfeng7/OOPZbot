@@ -7,9 +7,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, cast
 
 from core.logger_config import get_logger
+from domain.plugins.base import PluginCommandCapabilities
+
+
+class _CommandCapabilitiesProvider(Protocol):
+    @property
+    def command_capabilities(self) -> PluginCommandCapabilities:
+        ...
 
 
 class PluginCommandMixin:
@@ -29,6 +36,13 @@ class PluginCommandMixin:
     command_error_prefix: str = "命令出错"
     # 异常日志通道名。
     command_log_name: str = "Plugin"
+
+    @property
+    def command_capabilities(self) -> PluginCommandCapabilities:
+        """委托给 MRO 中的插件基类，声明 mixin 所需的宿主能力。"""
+
+        parent = cast(_CommandCapabilitiesProvider, super())
+        return parent.command_capabilities
 
     def handle_mention(self, text: str, channel: str, area: str, user: str, handler: Any) -> bool:
         for prefix in self.command_capabilities.mention_prefixes:

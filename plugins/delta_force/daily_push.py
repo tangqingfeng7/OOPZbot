@@ -37,8 +37,8 @@ class DeltaForceDailyKeywordPushManager(IntervalWorker):
         self._handler = handler
         self._start_thread()
 
-    def stop(self) -> None:
-        super().stop(join_timeout=2)
+    def stop(self, join_timeout: float = 2.0) -> None:
+        super().stop(join_timeout=join_timeout)
 
     def subscribe(self, channel_id: str, area_id: str) -> None:
         self._store.upsert_daily_keyword_push_subscription(channel_id, area_id)
@@ -65,11 +65,16 @@ class DeltaForceDailyKeywordPushManager(IntervalWorker):
             self._push_to_subscription(sub, today)
 
     def _push_to_subscription(self, sub: dict, today: str) -> None:
+        handler = self._handler
+        if handler is None:
+            return
         payload = self._api.get_daily_keyword()
         if not isinstance(payload, dict):
             return
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        items = data.get("list") if isinstance(data.get("list"), list) else []
+        raw_data = payload.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        raw_items = data.get("list")
+        items = raw_items if isinstance(raw_items, list) else []
         if not items:
             return
         lines = ["【每日密码】"]
@@ -83,7 +88,7 @@ class DeltaForceDailyKeywordPushManager(IntervalWorker):
         if not channel_id or not area_id:
             return
         try:
-            self._handler.sender.send_message(text, channel=channel_id, area=area_id)
+            handler.sender.send_message(text, channel=channel_id, area=area_id)
             self._store.mark_daily_keyword_pushed(channel_id, area_id, today)
         except Exception as exc:
             logger.warning("DeltaForceDailyPush: send failed: %s", exc)

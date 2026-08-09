@@ -8,7 +8,7 @@ from typing import Any
 class PluginConfig(Mapping[str, Any]):
     """插件配置的只读视图。"""
 
-    __slots__ = ("plugin_name", "values", "path", "exists")
+    __slots__ = ("_values", "exists", "path", "plugin_name")
 
     def __init__(
         self,
@@ -18,21 +18,21 @@ class PluginConfig(Mapping[str, Any]):
         exists: bool,
     ) -> None:
         self.plugin_name = plugin_name
-        self.values = dict(values) if values else {}
+        self._values = dict(values) if values else {}
         self.path = path
         self.exists = exists
 
     def __getitem__(self, key: str) -> Any:
-        return self.values[key]
+        return self._values[key]
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self.values)
+        return iter(self._values)
 
     def __len__(self) -> int:
-        return len(self.values)
+        return len(self._values)
 
     def __bool__(self) -> bool:
-        return bool(self.values)
+        return bool(self._values)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, PluginConfig):
@@ -40,27 +40,27 @@ class PluginConfig(Mapping[str, Any]):
                 self.plugin_name == other.plugin_name
                 and self.path == other.path
                 and self.exists == other.exists
-                and self.values == other.values
+                and self._values == other._values
             )
         if isinstance(other, Mapping):
-            return self.values == dict(other)
+            return self._values == dict(other)
         return False
 
     def __repr__(self) -> str:
         return (
             "PluginConfig("
             f"plugin_name={self.plugin_name!r}, "
-            f"values={self.values!r}, "
+            f"values={self._values!r}, "
             f"path={self.path!r}, "
             f"exists={self.exists!r})"
         )
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self.values.get(key, default)
+        return self._values.get(key, default)
 
     def copy(self) -> dict[str, Any]:
         """返回一个可变字典副本。"""
-        return dict(self.values)
+        return dict(self._values)
 
     def to_dict(self) -> dict[str, Any]:
         """显式导出原始配置字典。"""

@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from domain.plugins.base import PluginDescriptor
 
@@ -9,6 +9,16 @@ def _read_value(item: Mapping[str, object] | PluginDescriptor, key: str, default
     return item.get(key, default)
 
 
+def _read_string_items(
+    item: Mapping[str, object] | PluginDescriptor,
+    key: str,
+) -> list[str]:
+    value = _read_value(item, key, ())
+    if isinstance(value, str) or not isinstance(value, Iterable):
+        return []
+    return [entry for entry in value if isinstance(entry, str) and entry]
+
+
 def format_plugin_command_summary(
     item: Mapping[str, object] | PluginDescriptor,
     *,
@@ -17,16 +27,8 @@ def format_plugin_command_summary(
     empty_text: str = "（无命令声明）",
 ) -> str:
     """把插件能力字段格式化成统一展示文本。"""
-    mentions = [
-        prefix
-        for prefix in (_read_value(item, "mention_prefixes", ()) or ())
-        if isinstance(prefix, str) and prefix
-    ]
-    slashes = [
-        command
-        for command in (_read_value(item, "slash_commands", ()) or ())
-        if isinstance(command, str) and command
-    ]
+    mentions = _read_string_items(item, "mention_prefixes")
+    slashes = _read_string_items(item, "slash_commands")
 
     parts: list[str] = []
     if mentions:

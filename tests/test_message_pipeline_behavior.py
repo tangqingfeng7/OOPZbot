@@ -2,14 +2,23 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock, patch
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+
+
+from app.services.runtime import CommandRuntimeView  # noqa: E402
+
+
+def _runtime(**components: object) -> CommandRuntimeView:
+    """把用例所需的最小运行时切片标记为服务协议测试桩。"""
+
+    return cast(CommandRuntimeView, SimpleNamespace(**components))
 
 
 def _build_recent_store():
@@ -67,7 +76,7 @@ class CommandMessageServiceTest(unittest.TestCase):
         self.access = Mock()
         self.profanity = Mock()
         self.command = Mock()
-        self.runtime = SimpleNamespace(
+        self.runtime = _runtime(
             sender=self.sender,
             chat=self.chat,
             bot_uid="bot-uid",
@@ -106,8 +115,8 @@ class CommandMessageServiceTest(unittest.TestCase):
         self.assertEqual(recent_messages[-1]["messageId"], "id-54")
 
     def test_handle_profanity_short_circuits_on_direct_keyword_match(self) -> None:
-        from app.services.routing.command_message_service import MessageContext
         import app.services.routing.command_message_service as module
+        from app.services.routing.command_message_service import MessageContext
 
         service = self._build_service()
         ctx = MessageContext(
@@ -134,8 +143,8 @@ class CommandMessageServiceTest(unittest.TestCase):
         )
 
     def test_handle_profanity_can_use_ai_context_detection(self) -> None:
-        from app.services.routing.command_message_service import MessageContext
         import app.services.routing.command_message_service as module
+        from app.services.routing.command_message_service import MessageContext
 
         service = self._build_service()
         ctx = MessageContext(
@@ -212,7 +221,7 @@ class CommandRouterTest(unittest.TestCase):
         self.slash = Mock()
         self.chat = Mock()
         self.recall_scheduler = Mock()
-        self.runtime = SimpleNamespace(
+        self.runtime = _runtime(
             bot_mention="(met)bot(met)",
             services=SimpleNamespace(
                 routing=SimpleNamespace(mention=self.mention, slash=self.slash),
@@ -307,7 +316,7 @@ class MentionCommandRouterTest(unittest.TestCase):
         help_service = Mock()
         help_service.suggest_commands.return_value = ["@bot 播放<歌名>"]
 
-        runtime = SimpleNamespace(
+        runtime = _runtime(
             sender=sender,
             infrastructure=SimpleNamespace(sender=sender, plugins=plugins),
             plugins=plugins,

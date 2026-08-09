@@ -7,6 +7,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from requests.adapters import HTTPAdapter
+
 from core.constants import USER_AGENT, Msg
 from core.logger_config import get_logger
 
@@ -141,7 +143,7 @@ class FA8Client:
         self._user = (username or "").strip()
         self._pwd = (password or "").strip()
         self._session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
+        adapter = HTTPAdapter(
             pool_connections=10, pool_maxsize=10,
         )
         self._session.mount("https://", adapter)

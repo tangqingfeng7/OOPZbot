@@ -7,14 +7,32 @@ from typing import Iterable, Optional
 from .assets import mode_name, pick_avatar_url, pick_nickname, qq_avatar_url
 
 
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _as_dict_list(value: object) -> list[dict]:
+    return [item for item in _as_list(value) if isinstance(item, dict)]
+
+
+def _as_float(value: object) -> float:
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    raise TypeError(f"不支持的数值类型: {type(value).__name__}")
+
+
 def _num(value: object, default: str = "-") -> str:
     if value is None or value == "":
         return default
     try:
-        return f"{int(float(value)):,}"
+        return f"{int(_as_float(value)):,}"
     except (TypeError, ValueError):
         try:
-            return f"{float(value):,.2f}"
+            return f"{_as_float(value):,.2f}"
         except (TypeError, ValueError):
             return str(value)
 
@@ -137,7 +155,7 @@ def _collection_categories(collection_payload: dict, collection_map_payload: dic
     if not all_items:
         return {}
 
-    map_data = collection_map_payload.get("data") if isinstance(collection_map_payload.get("data"), list) else []
+    map_data = _as_list(collection_map_payload.get("data"))
     collection_map = {}
     for item in map_data:
         if isinstance(item, dict):
@@ -259,7 +277,7 @@ def money_fallback_text(money_payload: dict) -> str:
 
 def _format_ban_ts(value: object) -> str:
     try:
-        ts = int(float(value))
+        ts = int(_as_float(value))
         if ts <= 0:
             return "N/A"
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
@@ -269,7 +287,7 @@ def _format_ban_ts(value: object) -> str:
 
 def _format_ban_duration(value: object) -> str:
     try:
-        seconds = int(float(value))
+        seconds = int(_as_float(value))
         days = seconds // (3600 * 24)
         hours = (seconds % (3600 * 24)) // 3600
         return "永久" if days > 365 * 9 else f"{days}天{hours}小时"
@@ -553,7 +571,7 @@ def record_fallback_text(records: list[dict], mode: str, page: int) -> str:
 
 def _short_num(value: object) -> str:
     try:
-        num = float(value)
+        num = _as_float(value)
     except (TypeError, ValueError):
         return str(value or "0")
     if num >= 1_000_000_000:
@@ -566,9 +584,9 @@ def _short_num(value: object) -> str:
 
 
 def build_place_status_context(user_id: str, personal_info: dict, place_payload: dict) -> dict:
-    data = place_payload.get("data") if isinstance(place_payload.get("data"), dict) else {}
-    stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
-    places = data.get("places") if isinstance(data.get("places"), list) else []
+    data = _as_dict(place_payload.get("data"))
+    stats = _as_dict(data.get("stats"))
+    places = _as_list(data.get("places"))
     sections = [
         _section(
             "总体状态",
@@ -586,7 +604,7 @@ def build_place_status_context(user_id: str, personal_info: dict, place_payload:
             continue
         place_name = str(place.get("placeName") or place.get("placeType") or "未知设施")
         level = _num(place.get("level"), default="0")
-        detail = place.get("objectDetail") if isinstance(place.get("objectDetail"), dict) else {}
+        detail = _as_dict(place.get("objectDetail"))
         if detail:
             object_name = str(detail.get("objectName") or detail.get("name") or "未知物品")
             left_time = place.get("leftTime")
@@ -617,9 +635,9 @@ def build_place_status_context(user_id: str, personal_info: dict, place_payload:
 
 
 def place_status_fallback_text(place_payload: dict) -> str:
-    data = place_payload.get("data") if isinstance(place_payload.get("data"), dict) else {}
-    stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
-    places = data.get("places") if isinstance(data.get("places"), list) else []
+    data = _as_dict(place_payload.get("data"))
+    stats = _as_dict(data.get("stats"))
+    places = _as_list(data.get("places"))
     if not places and not stats:
         return "未能查询到任何特勤处设施信息。"
     lines = [
@@ -631,7 +649,7 @@ def place_status_fallback_text(place_payload: dict) -> str:
             continue
         name = str(place.get("placeName") or place.get("placeType") or "未知设施")
         level = _num(place.get("level"), default="0")
-        detail = place.get("objectDetail") if isinstance(place.get("objectDetail"), dict) else {}
+        detail = _as_dict(place.get("objectDetail"))
         if detail:
             item = str(detail.get("objectName") or detail.get("name") or "未知物品")
             lines.append(f"{name} Lv.{level}: 生产中 · {item}")
@@ -641,20 +659,16 @@ def place_status_fallback_text(place_payload: dict) -> str:
 
 
 def _extract_sol_detail(personal_data_payload: dict) -> dict:
-    data = personal_data_payload.get("data") if isinstance(personal_data_payload, dict) else {}
-    if not isinstance(data, dict):
-        return {}
-    sol = data.get("sol") if isinstance(data.get("sol"), dict) else {}
-    sol_data = sol.get("data") if isinstance(sol.get("data"), dict) else {}
-    inner = sol_data.get("data") if isinstance(sol_data.get("data"), dict) else {}
-    detail = inner.get("solDetail") if isinstance(inner.get("solDetail"), dict) else {}
-    return detail
+    data = _as_dict(personal_data_payload.get("data"))
+    sol = _as_dict(data.get("sol"))
+    sol_data = _as_dict(sol.get("data"))
+    inner = _as_dict(sol_data.get("data"))
+    return _as_dict(inner.get("solDetail"))
 
 
 def _keywords_list(payload: dict) -> list[dict]:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    keywords = data.get("keywords") if isinstance(data.get("keywords"), list) else []
-    return [item for item in keywords if isinstance(item, dict)]
+    data = _as_dict(payload.get("data"))
+    return _as_dict_list(data.get("keywords"))
 
 
 def _object_meta_map(search_payload: dict) -> dict[str, dict]:
@@ -674,8 +688,8 @@ def build_red_collection_context(
     season_display: str,
 ) -> dict:
     sol_detail = _extract_sol_detail(personal_data_payload)
-    title_data = title_payload.get("data") if isinstance(title_payload.get("data"), dict) else {}
-    red_detail = sol_detail.get("redCollectionDetail") if isinstance(sol_detail.get("redCollectionDetail"), list) else []
+    title_data = _as_dict(title_payload.get("data"))
+    red_detail = _as_dict_list(sol_detail.get("redCollectionDetail"))
     object_meta = _object_meta_map(search_payload)
     all_red_objects = [item for item in _keywords_list(object_list_payload) if int(item.get("grade") or 0) == 6]
     collected_ids = {str(item.get("objectID") or "") for item in red_detail if isinstance(item, dict)}
@@ -730,7 +744,7 @@ def red_collection_fallback_text(
     season_display: str,
 ) -> str:
     sol_detail = _extract_sol_detail(personal_data_payload)
-    red_detail = sol_detail.get("redCollectionDetail") if isinstance(sol_detail.get("redCollectionDetail"), list) else []
+    red_detail = _as_dict_list(sol_detail.get("redCollectionDetail"))
     if not red_detail:
         return "您还没有任何大红收藏品。"
     object_meta = _object_meta_map(search_payload)
@@ -759,9 +773,9 @@ def build_red_record_context(
     red_list_payload: dict,
     search_payload: dict,
 ) -> dict:
-    data = red_list_payload.get("data") if isinstance(red_list_payload.get("data"), dict) else {}
-    records = data.get("records") if isinstance(data.get("records"), dict) else {}
-    entries = records.get("list") if isinstance(records.get("list"), list) else []
+    data = _as_dict(red_list_payload.get("data"))
+    records = _as_dict(data.get("records"))
+    entries = _as_list(records.get("list"))
     object_meta = _object_meta_map(search_payload)
     aggregated: dict[str, dict] = {}
     total_count = 0
@@ -811,9 +825,9 @@ def build_red_record_context(
 
 
 def red_record_fallback_text(red_list_payload: dict, search_payload: dict) -> str:
-    data = red_list_payload.get("data") if isinstance(red_list_payload.get("data"), dict) else {}
-    records = data.get("records") if isinstance(data.get("records"), dict) else {}
-    entries = records.get("list") if isinstance(records.get("list"), list) else []
+    data = _as_dict(red_list_payload.get("data"))
+    records = _as_dict(data.get("records"))
+    entries = _as_list(records.get("list"))
     if not entries:
         return "您还没有任何藏品解锁记录。"
     object_meta = _object_meta_map(search_payload)
@@ -842,8 +856,8 @@ def red_record_fallback_text(red_list_payload: dict, search_payload: dict) -> st
 
 
 def format_daily_keyword_text(payload: dict) -> str:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    entries = data.get("list") if isinstance(data.get("list"), list) else []
+    data = _as_dict(payload.get("data"))
+    entries = _as_list(data.get("list"))
     if not entries:
         return "今日暂无每日密码数据。"
     lines = ["【每日密码】"]
@@ -859,10 +873,12 @@ def _solution_items(payload: dict) -> list[dict]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
-        if isinstance(data.get("list"), list):
-            return [item for item in data.get("list") if isinstance(item, dict)]
-        if isinstance(data.get("keywords"), list):
-            return [item for item in data.get("keywords") if isinstance(item, dict)]
+        items = data.get("list")
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+        keywords = data.get("keywords")
+        if isinstance(keywords, list):
+            return [item for item in keywords if isinstance(item, dict)]
     return []
 
 
@@ -895,14 +911,14 @@ def format_solution_list_text(payload: dict, weapon_name: str = "", price_range:
 
 
 def format_solution_detail_text(payload: dict) -> str:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    data = _as_dict(payload.get("data"))
     if not data:
         return "未找到该改枪码详情。"
-    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-    stats = data.get("statistics") if isinstance(data.get("statistics"), dict) else {}
-    weapon = data.get("weapon") if isinstance(data.get("weapon"), dict) else {}
-    author = data.get("author") if isinstance(data.get("author"), dict) else {}
-    attachments = data.get("attachments") if isinstance(data.get("attachments"), list) else []
+    meta = _as_dict(data.get("metadata"))
+    stats = _as_dict(data.get("statistics"))
+    weapon = _as_dict(data.get("weapon"))
+    author = _as_dict(data.get("author"))
+    attachments = _as_list(data.get("attachments"))
     lines = [
         "社区改枪码详情",
         f"方案ID: {data.get('id') or data.get('solutionId') or '-'}",
@@ -955,17 +971,18 @@ def format_price_history_text(search_payload: dict, history_payload: dict, query
     object_name = str((item or {}).get("gameName") or (item or {}).get("objectName") or query or "未知物品")
     object_id = str((item or {}).get("objectID") or (item or {}).get("id") or "").strip()
 
-    data = history_payload.get("data") if isinstance(history_payload.get("data"), dict) else {}
-    history = data.get("history") if isinstance(data.get("history"), list) else []
-    stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
+    raw_data = history_payload.get("data")
+    data = _as_dict(raw_data)
+    history = _as_list(data.get("history"))
+    stats = _as_dict(data.get("stats"))
 
     if not history:
         # V1 / 兼容结构
-        alt_history = data.get("list") if isinstance(data.get("list"), list) else []
+        alt_history = _as_list(data.get("list"))
         if alt_history:
             history = alt_history
-        elif isinstance(data, list):
-            history = data
+        elif isinstance(raw_data, list):
+            history = raw_data
     if not history and not stats:
         return f"{object_name} 暂无价格历史数据。"
 

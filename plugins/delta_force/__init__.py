@@ -63,13 +63,23 @@ from .store import DeltaForceStore
 logger = get_logger("DeltaForcePlugin")
 
 
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_dict_list(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 class DeltaForcePlugin(PluginCommandMixin, BotModule):
     command_error_prefix = "三角洲命令执行失败"
     command_log_name = "DeltaForcePlugin"
 
     def __init__(self) -> None:
         self._config: dict = {}
-        self._api: Optional[DeltaForceApiClient] = None
+        self._api = DeltaForceApiClient(self._config)
         self._store = DeltaForceStore()
         self._renderer: Optional[DeltaForceRenderer] = None
         self._login: Optional[DeltaForceLoginManager] = None
@@ -406,7 +416,7 @@ class DeltaForcePlugin(PluginCommandMixin, BotModule):
         if err:
             self._send_text(handler, err, channel, area)
             return None
-        accounts = payload.get("data") if isinstance(payload.get("data"), list) else []
+        accounts = _as_dict_list(payload.get("data"))
         token = self._store.choose_active_token(user, accounts)
         if not token:
             self._send_text(handler, "当前没有有效账号，请先登录（执行三角洲登录）。", channel, area)
@@ -421,7 +431,7 @@ class DeltaForcePlugin(PluginCommandMixin, BotModule):
         if err:
             self._send_text(handler, err, channel, area)
             return
-        accounts = payload.get("data") if isinstance(payload.get("data"), list) else []
+        accounts = _as_dict_list(payload.get("data"))
         active = self._store.choose_active_token(user, accounts)
         self._send_text(handler, format_accounts(accounts, active), channel, area)
 
@@ -438,7 +448,7 @@ class DeltaForcePlugin(PluginCommandMixin, BotModule):
         if err:
             self._send_text(handler, err, channel, area)
             return
-        accounts = payload.get("data") if isinstance(payload.get("data"), list) else []
+        accounts = _as_dict_list(payload.get("data"))
         if index < 1 or index > len(accounts):
             self._send_text(handler, "账号序号超出范围。", channel, area)
             return
@@ -910,12 +920,12 @@ class DeltaForcePlugin(PluginCommandMixin, BotModule):
 
     @staticmethod
     def _extract_red_object_ids(personal_data: dict) -> list[str]:
-        data = personal_data.get("data") if isinstance(personal_data.get("data"), dict) else {}
-        sol = data.get("sol") if isinstance(data.get("sol"), dict) else {}
-        sol_data = sol.get("data") if isinstance(sol.get("data"), dict) else {}
-        inner = sol_data.get("data") if isinstance(sol_data.get("data"), dict) else {}
-        detail = inner.get("solDetail") if isinstance(inner.get("solDetail"), dict) else {}
-        red_items = detail.get("redCollectionDetail") if isinstance(detail.get("redCollectionDetail"), list) else []
+        data = _as_dict(personal_data.get("data"))
+        sol = _as_dict(data.get("sol"))
+        sol_data = _as_dict(sol.get("data"))
+        inner = _as_dict(sol_data.get("data"))
+        detail = _as_dict(inner.get("solDetail"))
+        red_items = _as_dict_list(detail.get("redCollectionDetail"))
         ids: list[str] = []
         for item in red_items:
             if not isinstance(item, dict):
@@ -927,9 +937,9 @@ class DeltaForcePlugin(PluginCommandMixin, BotModule):
 
     @staticmethod
     def _extract_red_record_object_ids(red_list: dict) -> list[str]:
-        data = red_list.get("data") if isinstance(red_list.get("data"), dict) else {}
-        records = data.get("records") if isinstance(data.get("records"), dict) else {}
-        entries = records.get("list") if isinstance(records.get("list"), list) else []
+        data = _as_dict(red_list.get("data"))
+        records = _as_dict(data.get("records"))
+        entries = _as_dict_list(records.get("list"))
         ids: list[str] = []
         for item in entries:
             if not isinstance(item, dict):

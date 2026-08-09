@@ -174,4 +174,4 @@ def admin_message_stats_overview():
 def admin_reminders_list():
     return JSONResponse({"ok": True, "items": ReminderDB.get_all_pending()})
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["router"]

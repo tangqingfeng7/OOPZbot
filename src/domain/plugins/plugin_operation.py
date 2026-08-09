@@ -1,14 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
-try:
-    from enum import StrEnum
-except ImportError:
-    class StrEnum(str, Enum):
-        pass
 
-
-class PluginOperationCode(StrEnum):
+class PluginOperationCode(str, Enum):
     """插件运维操作结果码。"""
 
     SUCCESS = "success"
@@ -23,6 +17,11 @@ class PluginOperationCode(StrEnum):
     BUILTIN_FORBIDDEN = "builtin_forbidden"
     NOT_LOADED = "not_loaded"
     LOAD_FAILED = "load_failed"
+
+    def __str__(self) -> str:
+        """保持 Python 3.10 下与字符串枚举一致的序列化语义。"""
+
+        return self.value
 
 
 @dataclass(frozen=True)

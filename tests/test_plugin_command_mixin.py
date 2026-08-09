@@ -28,7 +28,7 @@ class _FakePlugin(PluginCommandMixin, BotModule):
 
     def __init__(self) -> None:
         self.calls: list[str] = []
-        self.raise_on = None
+        self.raise_on: str | None = None
 
     @property
     def metadata(self) -> PluginMetadata:

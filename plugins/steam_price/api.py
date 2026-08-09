@@ -524,8 +524,10 @@ class SteamPriceApiClient(JsonHttpClient):
 
     @staticmethod
     def _parse_overview_entry(entry: dict) -> dict:
-        current = entry.get("current") if isinstance(entry.get("current"), dict) else {}
-        lowest = entry.get("lowest") if isinstance(entry.get("lowest"), dict) else {}
+        raw_current = entry.get("current")
+        current = raw_current if isinstance(raw_current, dict) else {}
+        raw_lowest = entry.get("lowest")
+        lowest = raw_lowest if isinstance(raw_lowest, dict) else {}
 
         def _extract(block: dict) -> tuple[Optional[float], int, str, str, Optional[float], str]:
             if not block:

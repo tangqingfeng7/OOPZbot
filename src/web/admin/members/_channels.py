@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
     _get_sender,
+    _require_sender,
     _resolve_area,
     get_resolver,
     logger,
@@ -58,7 +59,7 @@ def admin_channels_list(area: str = Query("")):
 @router.post("/admin/api/channels/create")
 @require_sender
 async def admin_channel_create(request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     name = (body.get("name") or "").strip()
@@ -79,7 +80,7 @@ async def admin_channel_create(request: Request):
 @router.delete("/admin/api/channels/{channel_id}")
 @require_sender
 async def admin_channel_delete(channel_id: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     if not area:
@@ -97,7 +98,7 @@ async def admin_channel_delete(channel_id: str, request: Request):
 @router.put("/admin/api/channels/{channel_id}")
 @require_sender
 async def admin_channel_update(channel_id: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     name = (body.get("name") or "").strip()
@@ -117,7 +118,7 @@ async def admin_channel_update(channel_id: str, request: Request):
 @require_sender
 def admin_channel_settings(channel_id: str, area: str = Query("")):
     """获取频道的详细设置信息。"""
-    sender = _get_sender()
+    sender = _require_sender()
     data = sender.get_channel_setting_info(channel_id)
     if isinstance(data, dict) and "error" in data:
         return JSONResponse({"ok": False, "error": data["error"]})
@@ -128,7 +129,7 @@ def admin_channel_settings(channel_id: str, area: str = Query("")):
 @require_sender
 async def admin_channel_settings_edit(channel_id: str, request: Request):
     """编辑频道设置（名称、人数上限、慢速模式等）。"""
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = (body.pop("area", "") or "").strip() or _resolve_area()
     if not area:
@@ -147,7 +148,7 @@ async def admin_channel_settings_edit(channel_id: str, request: Request):
 @require_sender
 def admin_channel_accessible_members(channel_id: str):
     """返回频道当前的可访问成员列表（含名称）。"""
-    sender = _get_sender()
+    sender = _require_sender()
     setting = sender.get_channel_setting_info(channel_id)
     if isinstance(setting, dict) and "error" in setting:
         return JSONResponse({"ok": False, "error": setting["error"]})
@@ -170,7 +171,7 @@ def admin_channel_accessible_members(channel_id: str):
 @require_sender
 def admin_online_members(area: str = Query("")):
     """返回域内当前在线成员（用于私密频道成员选择）。"""
-    sender = _get_sender()
+    sender = _require_sender()
     resolved_area = area.strip() or _resolve_area()
     if not resolved_area:
         return JSONResponse({"ok": False, "error": "未找到可用域 ID"})
@@ -270,7 +271,7 @@ def admin_voice_channels(area: str = Query("")):
 @require_sender
 async def admin_voice_dispatch(request: Request):
     """将用户从当前语音频道调度到指定语音频道。"""
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     target = (body.get("target") or "").strip()

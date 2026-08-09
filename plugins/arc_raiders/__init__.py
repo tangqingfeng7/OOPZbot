@@ -64,6 +64,18 @@ MAP_ZH = {
 }
 
 
+def _rgb_pixel(value: object) -> tuple[int, int, int] | None:
+    """把 Pillow 的宽泛像素联合类型收窄为 RGB 三元组。"""
+
+    if (
+        isinstance(value, tuple)
+        and len(value) >= 3
+        and all(isinstance(channel, int) for channel in value[:3])
+    ):
+        return value[0], value[1], value[2]
+    return None
+
+
 class ArcRaidersPlugin(PluginCommandMixin, BotModule):
     command_error_prefix = "Arc 查询出错"
     command_log_name = "ArcRaidersPlugin"
@@ -340,7 +352,9 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
                 return
 
             # 取页面背景色基准（左下角），向上扫描找“非背景行”作为裁剪终点。
-            bg = img.getpixel((10, h - 10))
+            bg = _rgb_pixel(img.getpixel((10, h - 10)))
+            if bg is None:
+                return
             threshold = 18
             crop_y = h
             min_keep = min(h, 900)  # 至少保留顶部内容，避免误裁
@@ -348,7 +362,10 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
             for y in range(h - 1, min_keep - 1, -1):
                 non_bg = 0
                 for x in range(0, w, max(1, w // 40)):
-                    r, g, b = img.getpixel((x, y))
+                    pixel = _rgb_pixel(img.getpixel((x, y)))
+                    if pixel is None:
+                        continue
+                    r, g, b = pixel
                     if (
                         abs(r - bg[0]) > threshold
                         or abs(g - bg[1]) > threshold
@@ -419,7 +436,8 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
                 f"场景: {'、'.join(locations) if locations else '暂无'}",
             ]
             if stats and isinstance(stats, dict):
-                overall = stats.get("overall") if isinstance(stats.get("overall"), dict) else {}
+                raw_overall = stats.get("overall")
+                overall = raw_overall if isinstance(raw_overall, dict) else {}
                 rate = overall.get("averageDropRate")
                 sample = overall.get("totalSampleSize")
                 conf = overall.get("confidence")
@@ -557,7 +575,8 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
             lines.append("使用/产出场景: " + "、".join(locations))
 
         if stats and isinstance(stats, dict):
-            overall = stats.get("overall") if isinstance(stats.get("overall"), dict) else {}
+            raw_overall = stats.get("overall")
+            overall = raw_overall if isinstance(raw_overall, dict) else {}
             rate = overall.get("averageDropRate")
             sample = overall.get("totalSampleSize")
             conf = overall.get("confidence")

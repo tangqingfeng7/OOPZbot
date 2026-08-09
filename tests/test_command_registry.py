@@ -7,7 +7,7 @@
 import sys
 import unittest
 from pathlib import Path
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -107,6 +107,7 @@ class SlashRouterAliasGoldenTest(unittest.TestCase):
 
     def _router(self):
         from unittest.mock import Mock
+
         from app.services.routing.slash_command_router import SlashCommandRouter
 
         return SlashCommandRouter(Mock())
@@ -168,6 +169,7 @@ class MentionRouterAliasGoldenTest(unittest.TestCase):
 
     def _router(self):
         from unittest.mock import Mock
+
         from app.services.routing.mention_command_router import MentionCommandRouter
 
         return MentionCommandRouter(Mock())
@@ -314,6 +316,19 @@ class HelpCatalogDerivationTest(unittest.TestCase):
             self.assertNotIn(f"帮助 {label}", public, f"非管理员总览泄漏了受限主题 {key}")
             self.assertIn(f"帮助 {label}", admin)
 
+    def test_public_query_help_contains_role_queries_only(self) -> None:
+        from app.services.interaction.help_catalog import HELP_TOPICS
+
+        query = "\n".join(HELP_TOPICS["query"].lines)
+        admin = "\n".join(HELP_TOPICS["admin"].lines)
+        self.assertIn("/role <用户>", query)
+        self.assertIn("/roles <用户>", query)
+        self.assertIn("@bot 角色 <用户>", query)
+        self.assertNotIn("/role <用户>", admin)
+        self.assertNotIn("可分配角色 <用户>", admin)
+        self.assertIn("/addrole", admin)
+        self.assertIn("/removerole", admin)
+
 
 class OverviewMenuDerivationTest(unittest.TestCase):
     """锁定 overview 总览菜单的派生，确保派生输出与迁移前逐字一致且不与主题表背离。"""
@@ -322,9 +337,9 @@ class OverviewMenuDerivationTest(unittest.TestCase):
     _LEGACY_OVERVIEW_LINES = (
         "帮助主题:",
         "  帮助 音乐  点歌、队列、喜欢列表",
-        "  帮助 查询  成员、资料、语音、每日一句",
+        "  帮助 查询  成员、资料、语音、身份组",
         "  帮助 提醒  提醒、排行、统计",
-        "  帮助 管理  禁言、撤回、清理、身份组",
+        "  帮助 管理  禁言、撤回、清理、身份组变更",
         "  帮助 定时  定时消息与提醒管理",
         "  帮助 插件  插件命令与管理",
         "  帮助 AI    AI 聊天与画图",
@@ -380,8 +395,9 @@ class MentionAdminGateGuardTest(unittest.TestCase):
     全靠第一层闸门的前缀匹配 —— 插件用公开前缀盖过内置管理命令时就会漏。
     """
 
-    def _build_router(self, *, is_admin: bool):
+    def _build_router(self, *, is_admin: bool) -> tuple[Any, Any]:
         from unittest.mock import Mock
+
         from app.services.routing.mention_command_router import MentionCommandRouter
 
         runtime = Mock()
@@ -436,7 +452,7 @@ class MentionAdminGateGuardTest(unittest.TestCase):
 class SlashAdminGateGuardTest(unittest.TestCase):
     """插件未处理命令后，所有内置管理员 slash 都必须再次校验身份。"""
 
-    def _build_router(self, *, is_admin: bool):
+    def _build_router(self, *, is_admin: bool) -> tuple[Any, Any]:
         from unittest.mock import Mock
 
         from app.services.routing.slash_command_router import SlashCommandRouter
@@ -498,6 +514,7 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
 
     def _router(self):
         from unittest.mock import Mock
+
         from app.services.routing.slash_command_router import SlashCommandRouter
 
         runtime = Mock()
@@ -505,8 +522,9 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         runtime.services.interaction.music.handle_slash.return_value = False
         runtime.services.routing.access.is_admin.return_value = False
         router = SlashCommandRouter(runtime)
-        router._actions = Mock()
-        return router
+        actions = Mock()
+        router._actions = actions
+        return router, actions
 
     def test_dispatch_hands_the_caller_identity_to_the_action(self) -> None:
         """端到端：走真实 dispatch，断言动作收到的是这次调用的 user。
@@ -515,11 +533,11 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         dispatch 里的实参换成空串、换成 channel、或者改回实例字段中转，
         闭包用例全都照过。
         """
-        router = self._router()
+        router, actions = self._router()
 
         router.dispatch("/whois 张三", "chan-A", "area-1", "user-A")
 
-        router._actions.community.show_whois.assert_called_once_with(
+        actions.community.show_whois.assert_called_once_with(
             "张三", "chan-A", "area-1", "user-A"
         )
 
@@ -532,7 +550,7 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
 
         顺序调用两次是抓不到的：实例字段中转在不交错时表现完全正常。
         """
-        router = self._router()
+        router, actions = self._router()
         reentered = []
 
         def _interleave(*_args, **_kwargs):
@@ -548,22 +566,22 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         self.assertTrue(reentered, "夹层调用没被触发，用例失去意义")
         self.assertIn(
             ("甲", "chan-A", "area-1", "user-A"),
-            [c.args for c in router._actions.community.show_whois.call_args_list],
+            [c.args for c in actions.community.show_whois.call_args_list],
             "本次分发被另一次调用的身份污染了",
         )
 
     def test_help_topic_gate_receives_the_dispatching_user(self) -> None:
         """/help <主题> 是主题级 fail-closed 的判定入口，喂进去的 user 必须干净。"""
-        router = self._router()
+        router, actions = self._router()
 
         router.dispatch("/help 管理", "chan-B", "area-1", "plain-uid")
 
-        router._actions.interaction.show_help.assert_called_once_with(
+        actions.interaction.show_help.assert_called_once_with(
             "chan-B", "area-1", "plain-uid", "管理"
         )
 
     def test_arg_rules_bind_the_user_passed_in(self) -> None:
-        router = self._router()
+        router, actions = self._router()
 
         rules_a = router._arg_rules("chan-A", "area-1", "user-A")
         rules_b = router._arg_rules("chan-B", "area-1", "user-B")
@@ -573,16 +591,16 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         whois_a = next(cb for aliases, cb, _ in rules_a if "/whois" in aliases)
         whois_b = next(cb for aliases, cb, _ in rules_b if "/whois" in aliases)
         whois_b("someone")
-        router._actions.reset_mock()
+        actions.reset_mock()
         whois_a("zhangsan")
 
-        router._actions.community.show_whois.assert_called_once_with(
+        actions.community.show_whois.assert_called_once_with(
             "zhangsan", "chan-A", "area-1", "user-A"
         )
 
     def test_help_topic_gate_gets_the_real_caller(self) -> None:
         # /help <主题> 是 P0-3 主题级 fail-closed 的判定入口，喂进去的 user 必须干净
-        router = self._router()
+        router, actions = self._router()
 
         rules_admin = router._arg_rules("chan-A", "area-1", "admin-uid")
         rules_plain = router._arg_rules("chan-B", "area-1", "plain-uid")
@@ -590,10 +608,10 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         help_plain = next(cb for aliases, cb, _ in rules_plain if "/help" in aliases)
 
         help_admin("管理")
-        router._actions.reset_mock()
+        actions.reset_mock()
         help_plain("管理")
 
-        router._actions.interaction.show_help.assert_called_once_with(
+        actions.interaction.show_help.assert_called_once_with(
             "chan-B", "area-1", "plain-uid", "管理"
         )
 

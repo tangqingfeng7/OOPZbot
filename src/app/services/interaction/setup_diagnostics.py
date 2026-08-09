@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar, cast
 
 import requests
 
@@ -11,12 +11,13 @@ import web.web_player_config as web_cfg
 from core.database import DB_PATH
 from core.http_constants import HTTP_TIMEOUT_PROBE
 from core.queue_manager import get_redis_client
+from core.redis_protocol import RedisAdminClient
 
 
 class SetupDiagnostics:
     """汇总系统体检与首启向导所需的诊断信息。"""
 
-    _WEAK_PASSWORDS = {
+    _WEAK_PASSWORDS: ClassVar[set[str]] = {
         "123456",
         "12345678",
         "admin",
@@ -221,7 +222,8 @@ class SetupDiagnostics:
         try:
             client = get_redis_client()
             client.ping()
-            dbsize = int(client.dbsize() or 0)
+            admin_client = cast(RedisAdminClient, client)
+            dbsize = admin_client.dbsize()
             return self._make_check(
                 check_id="redis",
                 group="runtime",

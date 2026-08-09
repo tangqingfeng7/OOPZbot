@@ -6,12 +6,13 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from web.admin.shared import (
-    MessageStatsDB,
     _MEMBERS_RESP_TTL,
+    MessageStatsDB,
     _get_sender,
     _invalidate_members_cache,
     _members_resp_cache,
     _render_admin_page,
+    _require_sender,
     _resolve_area,
     get_resolver,
     logger,
@@ -204,7 +205,7 @@ def admin_members_list(
 @router.get("/admin/api/members/blocks")
 @require_sender
 def admin_members_blocks(area: str = Query("")):
-    sender = _get_sender()
+    sender = _require_sender()
     area = area.strip() or _resolve_area()
     data = sender.get_area_blocks(area=area) if area else {"error": "未找到可用域 ID"}
     if "error" in data:
@@ -212,10 +213,13 @@ def admin_members_blocks(area: str = Query("")):
     resolver = get_resolver()
     blocks = []
     for item in data.get("blocks") or []:
-        uid = item.get("uid") or item.get("person") or item.get("target") or ""
-        if isinstance(uid, dict):
-            uid = uid.get("uid") or uid.get("person") or ""
-        name = resolver.user(uid) if isinstance(uid, str) and uid else ""
+        if not isinstance(item, dict):
+            continue
+        raw_uid = item.get("uid") or item.get("person") or item.get("target") or ""
+        if isinstance(raw_uid, dict):
+            raw_uid = raw_uid.get("uid") or raw_uid.get("person") or ""
+        uid = raw_uid if isinstance(raw_uid, str) else ""
+        name = resolver.user(uid) if uid else ""
         blocks.append({"uid": uid, "name": name or uid[:12]})
     return JSONResponse({"ok": True, "blocks": blocks})
 
@@ -223,7 +227,7 @@ def admin_members_blocks(area: str = Query("")):
 @router.get("/admin/api/members/{uid}")
 @require_sender
 def admin_member_detail(uid: str, area: str = Query("")):
-    sender = _get_sender()
+    sender = _require_sender()
     area = area.strip() or _resolve_area()
     detail = sender.get_user_area_detail(uid, area=area) if area else {"error": "未找到域 ID"}
     if "error" in detail:
@@ -255,6 +259,8 @@ def admin_member_detail(uid: str, area: str = Query("")):
     role_list = detail.get("list") or []
     roles_out = []
     for r in role_list:
+        if not isinstance(r, dict):
+            continue
         roles_out.append({
             "roleID": r.get("roleID"),
             "name": r.get("name", ""),
@@ -291,7 +297,7 @@ def _extract_area(body: dict) -> str:
 @router.post("/admin/api/members/{uid}/mute")
 @require_sender
 async def admin_member_mute(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     try:
@@ -308,7 +314,7 @@ async def admin_member_mute(uid: str, request: Request):
 @router.post("/admin/api/members/{uid}/unmute")
 @require_sender
 async def admin_member_unmute(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.unmute_user(uid, area=area)
@@ -321,7 +327,7 @@ async def admin_member_unmute(uid: str, request: Request):
 @router.post("/admin/api/members/{uid}/mute-mic")
 @require_sender
 async def admin_member_mute_mic(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     try:
@@ -338,7 +344,7 @@ async def admin_member_mute_mic(uid: str, request: Request):
 @router.post("/admin/api/members/{uid}/unmute-mic")
 @require_sender
 async def admin_member_unmute_mic(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.unmute_mic(uid, area=area)
@@ -351,7 +357,7 @@ async def admin_member_unmute_mic(uid: str, request: Request):
 @router.post("/admin/api/members/{uid}/kick")
 @require_sender
 async def admin_member_kick(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.remove_from_area(uid, area=area)
@@ -364,7 +370,7 @@ async def admin_member_kick(uid: str, request: Request):
 @router.post("/admin/api/members/{uid}/block")
 @require_sender
 async def admin_member_block(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.block_user_in_area(uid, area=area)
@@ -377,7 +383,7 @@ async def admin_member_block(uid: str, request: Request):
 @router.post("/admin/api/members/{uid}/unblock")
 @require_sender
 async def admin_member_unblock(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     result = sender.unblock_user_in_area(uid, area=area)
@@ -390,7 +396,7 @@ async def admin_member_unblock(uid: str, request: Request):
 @router.post("/admin/api/members/{uid}/role")
 @require_sender
 async def admin_member_role(uid: str, request: Request):
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = _extract_area(body)
     try:

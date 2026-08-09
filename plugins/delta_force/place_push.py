@@ -26,8 +26,8 @@ class DeltaForcePlacePushManager(IntervalWorker):
         self._handler = handler
         self._start_thread()
 
-    def stop(self) -> None:
-        super().stop(join_timeout=2)
+    def stop(self, join_timeout: float = 2.0) -> None:
+        super().stop(join_timeout=join_timeout)
 
     def subscribe(self, user_id: str, channel_id: str, area_id: str, initial_snapshot: Optional[list[dict]] = None) -> None:
         self._store.upsert_place_push_subscription(user_id, channel_id, area_id, initial_snapshot or [])
@@ -50,6 +50,9 @@ class DeltaForcePlacePushManager(IntervalWorker):
                 logger.exception("DeltaForcePlacePush: process subscription failed: %s", sub)
 
     def _process_subscription(self, sub: dict) -> None:
+        handler = self._handler
+        if handler is None:
+            return
         user_id = str(sub.get("user_id") or "")
         channel_id = str(sub.get("channel_id") or "")
         area_id = str(sub.get("area_id") or "")
@@ -63,10 +66,15 @@ class DeltaForcePlacePushManager(IntervalWorker):
         if describe_common_failure(payload):
             return
         current_tasks = self.extract_active_tasks(payload)
-        previous_tasks = sub.get("last_snapshot") if isinstance(sub.get("last_snapshot"), list) else []
+        raw_previous_tasks = sub.get("last_snapshot")
+        previous_tasks = (
+            [item for item in raw_previous_tasks if isinstance(item, dict)]
+            if isinstance(raw_previous_tasks, list)
+            else []
+        )
         for text in self.find_completed_messages(previous_tasks, current_tasks):
             try:
-                self._handler.sender.send_message(text, channel=channel_id, area=area_id)
+                handler.sender.send_message(text, channel=channel_id, area=area_id)
             except Exception as exc:
                 logger.warning("DeltaForcePlacePush: send completion failed: %s", exc)
         self._store.update_place_push_snapshot(user_id, channel_id, area_id, current_tasks)
@@ -75,7 +83,8 @@ class DeltaForcePlacePushManager(IntervalWorker):
     def extract_active_tasks(payload: dict) -> list[dict]:
         data = payload.get("data") if isinstance(payload, dict) else {}
         data = data if isinstance(data, dict) else {}
-        places = data.get("places") if isinstance(data.get("places"), list) else []
+        raw_places = data.get("places")
+        places = raw_places if isinstance(raw_places, list) else []
         tasks: list[dict] = []
         for place in places:
             if not isinstance(place, dict):

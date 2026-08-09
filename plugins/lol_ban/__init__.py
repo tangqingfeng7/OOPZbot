@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from core.constants import Msg
 from domain.plugins.base import (
     BotModule,
@@ -7,6 +11,9 @@ from domain.plugins.base import (
     PluginMetadata,
 )
 from plugins._shared.command_mixin import PluginCommandMixin
+
+if TYPE_CHECKING:
+    from .query_service import LolQueryHandler
 
 
 _HELP_TEXT = (
@@ -21,7 +28,7 @@ class LolBanPlugin(PluginCommandMixin, BotModule):
     command_log_name = "LolBanPlugin"
 
     def __init__(self):
-        self._handler = None
+        self._handler: LolQueryHandler | None = None
         self._config: dict = {}
 
     @property
@@ -70,6 +77,10 @@ class LolBanPlugin(PluginCommandMixin, BotModule):
         if not keyword:
             self._send(handler, _HELP_TEXT, channel, area)
             return
+        query_handler = self._handler
+        if query_handler is None:
+            self._send(handler, f"{Msg.ERR} 封号查询插件尚未初始化", channel, area)
+            return
         self._send(handler, f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...", channel, area)
-        reply = self._handler.query_and_format(keyword)
+        reply = query_handler.query_and_format(keyword)
         self._send(handler, reply, channel, area)

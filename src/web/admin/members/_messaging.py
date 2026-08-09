@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
-    _get_sender,
+    _require_sender,
     _resolve_area,
     read_json_body,
     require_sender,
@@ -17,7 +17,7 @@ router = APIRouter()
 @require_sender
 async def admin_send_message(request: Request):
     """发送普通消息到指定频道。"""
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     channel = (body.get("channel") or "").strip()
@@ -44,7 +44,7 @@ async def admin_send_message(request: Request):
 @require_sender
 async def admin_send_announcement(request: Request):
     """发送公告样式消息到指定频道。"""
-    sender = _get_sender()
+    sender = _require_sender()
     body = await read_json_body(request)
     area = (body.get("area") or "").strip() or _resolve_area()
     channel = (body.get("channel") or "").strip()

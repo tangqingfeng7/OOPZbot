@@ -33,8 +33,8 @@ class SteamPriceMonitor(IntervalWorker):
         if self._start_thread():
             logger.info("SteamPriceMonitor: 后台监控已启动 (间隔 %ds)", self._interval)
 
-    def stop(self) -> None:
-        super().stop(join_timeout=3)
+    def stop(self, join_timeout: float = 3.0) -> None:
+        super().stop(join_timeout=join_timeout)
         logger.info("SteamPriceMonitor: 已停止")
 
     # ------------------------------------------------------------------

@@ -1,10 +1,9 @@
 import re
 
+from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
 from core.constants import Msg
 from domain.routing.command_registry import mention_of
 from domain.routing.public_command_rules import is_public_mention_text
-
-from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
 
 from .builtin_command_actions import build_builtin_command_actions
 

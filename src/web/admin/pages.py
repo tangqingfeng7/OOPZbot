@@ -60,4 +60,4 @@ def admin_plugins_page():
 def admin_setup_page():
     return _render_admin_page("setup")
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["router"]
