@@ -6,8 +6,9 @@ import copy
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Optional, Protocol, cast
 
 from config import OOPZ_CONFIG
 from core.http_constants import HTTP_TIMEOUT_API_SLOW, HttpTimeout
@@ -67,6 +68,42 @@ class RetryPolicy:
 RATE_LIMIT_RETRY = RetryPolicy(attempts=3, backoff=lambda attempt: float(min(attempt, 3)))
 
 
+class _TimestampSigner(Protocol):
+    def timestamp_us(self) -> str:
+        ...
+
+
+class _OopzApiHost(Protocol):
+    """``OopzApiMixin`` 依赖宿主提供的最小传输与会话契约。"""
+
+    signer: _TimestampSigner
+
+    def _get(
+        self,
+        url_path: str,
+        params: dict | None = None,
+        *,
+        timeout: HttpTimeout = None,
+    ) -> _requests_type.Response:
+        ...
+
+    def _request(
+        self,
+        method: str,
+        url_path: str,
+        body: dict | None = None,
+        *,
+        timeout: HttpTimeout = None,
+    ) -> _requests_type.Response:
+        ...
+
+    def _extract_channel_id(self, payload: object) -> str | None:
+        ...
+
+    def open_private_session(self, target: str) -> dict:
+        ...
+
+
 class OopzApiMixin:
 
     # ---- 统一请求层 ----
@@ -75,16 +112,20 @@ class OopzApiMixin:
     # self._get / self._request 由 OopzSender 提供（带签名、限流、401/403/428 鉴权重试）。
     # 所有业务方法都经由这三者发请求，不再各自手写 try/except、429 循环或 JSON 判定。
 
+    def _api_host(self) -> _OopzApiHost:
+        """把 Mixin 的隐式宿主要求收口为一个可静态检查的协议边界。"""
+        return cast(_OopzApiHost, self)
+
     def _send(
         self,
         method: str,
         path: str,
         *,
-        params: Optional[dict] = None,
+        params: dict | None = None,
         body: Optional[dict] = None,
         retry: Optional[RetryPolicy] = None,
         timeout: HttpTimeout = None,
-    ) -> "_requests_type.Response":
+    ) -> _requests_type.Response:
         """已签名 HTTP 请求的唯一传输入口。
 
         GET 走 ``self._get``（签名含查询参数），其余方法（POST/PUT/DELETE/PATCH）走
@@ -92,13 +133,13 @@ class OopzApiMixin:
         由 :meth:`_query` / :meth:`_mutation` 统一兜底（异常处理只存在于这两处）。
         """
         method = method.upper()
-        attempts = retry.attempts if retry else 1
-        resp = None
+        attempts = max(1, retry.attempts if retry else 1)
+        host = self._api_host()
         for attempt in range(1, attempts + 1):
             if method == "GET":
-                resp = self._get(path, params=params, timeout=timeout)
+                resp = host._get(path, params=params, timeout=timeout)
             else:
-                resp = self._request(method, path, body, timeout=timeout)
+                resp = host._request(method, path, body, timeout=timeout)
             if retry is None or attempt >= attempts or resp.status_code not in retry.statuses:
                 return resp
             wait = retry.wait_seconds(resp, attempt)
@@ -108,7 +149,7 @@ class OopzApiMixin:
             )
             if wait > 0:
                 time.sleep(wait)
-        return resp
+        raise RuntimeError("请求重试循环未产生响应")
 
     def _query(
         self,
@@ -448,13 +489,15 @@ class OopzApiMixin:
             # res.raw 非空表示是业务 status=false（区别于 HTTP/JSON 传输失败），保留权限提示。
             if res.raw is not None:
                 code = res.raw.get("code") or res.raw.get("errorCode") or ""
-                logger.warning("创建频道被拒: %s (code=%s), body=%s", res.error, code, body)
-                hint = "（可能需要域主/管理员权限）" if "服务" in res.error or "权限" in res.error else ""
-                return {"error": f"{res.error}{hint}"}
+                error = res.error or "创建频道失败"
+                logger.warning("创建频道被拒: %s (code=%s), body=%s", error, code, body)
+                hint = "（可能需要域主/管理员权限）" if "服务" in error or "权限" in error else ""
+                return {"error": f"{error}{hint}"}
             return {"error": res.error}
 
         data = res.data or {}
-        channel_id = self._extract_channel_id(data) or self._extract_channel_id(res.raw)
+        host = self._api_host()
+        channel_id = host._extract_channel_id(data) or host._extract_channel_id(res.raw)
         return {
             "status": True,
             "channel": channel_id or "",
@@ -593,7 +636,8 @@ class OopzApiMixin:
             return {"error": res.error}
 
         data = res.data or {}
-        channel_id = self._extract_channel_id(data) or self._extract_channel_id(res.raw)
+        host = self._api_host()
+        channel_id = host._extract_channel_id(data) or host._extract_channel_id(res.raw)
         if not channel_id:
             return {"error": "创建频道成功，但未能提取频道 ID"}
 
@@ -1453,7 +1497,7 @@ class OopzApiMixin:
         """
         area = area or OOPZ_CONFIG["default_area"]
         channel = channel or OOPZ_CONFIG["default_channel"]
-        timestamp = timestamp or self.signer.timestamp_us()
+        timestamp = timestamp or self._api_host().signer.timestamp_us()
         message_id = str(message_id).strip() if message_id is not None else ""
 
         full_path = (
@@ -1496,14 +1540,14 @@ class OopzApiMixin:
         if not target:
             return {"error": "缺少 target"}
         if not channel:
-            opened = self.open_private_session(target)
+            opened = self._api_host().open_private_session(target)
             if "error" in opened:
                 return opened
             channel = str(opened.get("channel") or "")
         if not channel:
             return {"error": "私信 channel 不可用"}
 
-        timestamp = timestamp or self.signer.timestamp_us()
+        timestamp = timestamp or self._api_host().signer.timestamp_us()
         body = {
             "area": area,
             "channel": channel,

@@ -41,6 +41,8 @@ class FetchMemberSnapshotTest(unittest.TestCase):
     def test_small_area_returns_complete_snapshot(self) -> None:
         uids, rate_limited, truncated = fetch_member_uid_snapshot(FakeSender(150), "area-1")
 
+        self.assertIsNotNone(uids)
+        assert uids is not None
         self.assertEqual(len(uids), 150)
         self.assertFalse(rate_limited)
         self.assertFalse(truncated)
@@ -51,6 +53,8 @@ class FetchMemberSnapshotTest(unittest.TestCase):
 
         uids, _, truncated = fetch_member_uid_snapshot(sender, "area-1", member_fetch_max=5000)
 
+        self.assertIsNotNone(uids)
+        assert uids is not None
         self.assertEqual(len(uids), 300)
         self.assertFalse(truncated)
         # 300 人 = 3 页，userCount 命中后不应继续翻第 4 页。
@@ -62,6 +66,8 @@ class FetchMemberSnapshotTest(unittest.TestCase):
         )
 
         self.assertTrue(truncated, "超过翻页上限必须标记快照不完整")
+        self.assertIsNotNone(uids)
+        assert uids is not None
         self.assertEqual(len(uids), 1000)
         self.assertFalse(rate_limited)
 
@@ -138,6 +144,8 @@ class AreaOperateLogChangeTest(unittest.TestCase):
 
         self.assertFalse(rate_limited)
         self.assertEqual(error, "")
+        self.assertIsNotNone(changes)
+        assert changes is not None
         self.assertEqual(len(changes), 1)
         sender.get_area_operate_logs.assert_called_once_with(
             area="area-1",

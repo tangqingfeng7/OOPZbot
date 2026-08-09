@@ -7,9 +7,12 @@ import threading
 import time
 import types
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
+import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -18,10 +21,19 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-import oopz.oopz_password_login as password_login
-
+import core.config_file_store as config_file_store  # noqa: E402
+import oopz.oopz_password_login as password_login  # noqa: E402
+import web.web_player_config as web_config  # noqa: E402
 
 PRIVATE_KEY_PEM = "-----BEGIN PRIVATE KEY-----\nunit-test-key\n-----END PRIVATE KEY-----"
+
+
+def _module(name: str, **attributes: object) -> types.ModuleType:
+    """构造仅暴露测试所需符号的临时模块。"""
+
+    module = types.ModuleType(name)
+    module.__dict__.update(attributes)
+    return module
 
 
 class _Response:
@@ -87,7 +99,9 @@ class OopzPasswordLoginHelpersTest(unittest.TestCase):
             root = Path(tmp)
             config_path = root / "config.py"
             private_key_path = root / "private_key.py"
-            config_path.write_text(
+            config_target = root / "runtime.py"
+            private_key_target = root / "private-key-runtime.py"
+            config_target.write_text(
                 (
                     'OOPZ_CONFIG = {\n'
                     '    "app_version": "old",\n'
@@ -98,6 +112,9 @@ class OopzPasswordLoginHelpersTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            private_key_target.write_text("old-private-key", encoding="utf-8")
+            config_path.symlink_to(config_target)
+            private_key_path.symlink_to(private_key_target)
 
             with (
                 patch.object(password_login, "CONFIG_PATH", str(config_path)),
@@ -107,12 +124,145 @@ class OopzPasswordLoginHelpersTest(unittest.TestCase):
                 saved = password_login.save_credentials(credentials)
 
             self.assertEqual(saved, ["config.py", "private_key.py"])
+            self.assertTrue(config_path.is_symlink())
+            self.assertTrue(private_key_path.is_symlink())
             config_text = config_path.read_text(encoding="utf-8")
             self.assertIn('"app_version": "70000"', config_text)
             self.assertIn('"device_id": "device-new"', config_text)
             self.assertIn('"person_uid": "person-new"', config_text)
             self.assertIn('"jwt_token": "jwt-new"', config_text)
             self.assertIn("PRIVATE_KEY_PEM", private_key_path.read_text(encoding="utf-8"))
+
+    def test_second_replace_failure_rolls_back_both_credential_files(self) -> None:
+        credentials = {
+            "app_version": "70000",
+            "device_id": "device-new",
+            "person_uid": "person-new",
+            "jwt_token": "jwt-new",
+            "private_key_pem": PRIVATE_KEY_PEM,
+        }
+        original_config = (
+            'OOPZ_CONFIG = {\n'
+            '    "app_version": "old-app",\n'
+            '    "device_id": "old-device",\n'
+            '    "person_uid": "old-person",\n'
+            '    "jwt_token": "old-token",\n'
+            '}\n'
+        )
+        original_private_key = "old-private-key\n"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.py"
+            private_key_path = root / "private_key.py"
+            config_path.write_text(original_config, encoding="utf-8")
+            private_key_path.write_text(original_private_key, encoding="utf-8")
+            real_replace = config_file_store.os.replace
+            failed = False
+
+            def fail_second_commit(source, destination):
+                nonlocal failed
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    not failed
+                    and source_path.suffix == ".tmp"
+                    and destination_path == private_key_path
+                ):
+                    failed = True
+                    raise OSError("injected private-key replace failure")
+                return real_replace(source, destination)
+
+            with (
+                patch.object(password_login, "CONFIG_PATH", str(config_path)),
+                patch.object(password_login, "PRIVATE_KEY_PATH", str(private_key_path)),
+                patch.object(password_login, "_apply_config_to_runtime") as apply_runtime,
+                patch.object(config_file_store.os, "replace", side_effect=fail_second_commit),
+                self.assertRaisesRegex(OSError, "injected private-key"),
+            ):
+                password_login.save_credentials(credentials)
+
+            self.assertTrue(failed)
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original_config)
+            self.assertEqual(
+                private_key_path.read_text(encoding="utf-8"),
+                original_private_key,
+            )
+            self.assertEqual(list(root.glob(".*.tmp")), [])
+            self.assertEqual(list(root.glob(".*.bak")), [])
+            apply_runtime.assert_not_called()
+
+    def test_web_and_oopz_writers_share_one_transaction_lock(self) -> None:
+        credentials = {
+            "app_version": "70000",
+            "device_id": "device-new",
+            "person_uid": "person-new",
+            "jwt_token": "jwt-new",
+            "private_key_pem": PRIVATE_KEY_PEM,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.py"
+            private_key_path = root / "private_key.py"
+            config_path.write_text(
+                (
+                    'ADMIN_UIDS = []\n'
+                    'OOPZ_CONFIG = {\n'
+                    '    "app_version": "old",\n'
+                    '    "device_id": "old",\n'
+                    '    "person_uid": "old",\n'
+                    '    "jwt_token": "old",\n'
+                    '}\n'
+                ),
+                encoding="utf-8",
+            )
+            private_key_path.write_text("old-private-key", encoding="utf-8")
+            barrier = threading.Barrier(2)
+            errors: list[BaseException] = []
+            real_lock = config_file_store.config_file_write_lock
+
+            @contextmanager
+            def synchronized_lock():
+                barrier.wait(timeout=2)
+                with real_lock():
+                    yield
+
+            def save_oopz() -> None:
+                try:
+                    password_login.save_credentials(credentials)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            def save_admins() -> None:
+                try:
+                    web_config.persist_admin_uids(
+                        ["shared-lock-admin"],
+                        path=str(config_path),
+                    )
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with (
+                patch.object(password_login, "CONFIG_PATH", str(config_path)),
+                patch.object(password_login, "PRIVATE_KEY_PATH", str(private_key_path)),
+                patch.object(password_login, "_apply_config_to_runtime"),
+                patch.object(password_login, "config_file_write_lock", synchronized_lock),
+                patch.object(web_config, "config_file_write_lock", synchronized_lock),
+            ):
+                threads = [
+                    threading.Thread(target=save_oopz),
+                    threading.Thread(target=save_admins),
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=3)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            updated = config_path.read_text(encoding="utf-8")
+            self.assertIn("shared-lock-admin", updated)
+            self.assertIn('"jwt_token": "jwt-new"', updated)
 
     def test_builtin_login_bundle_restores_expected_material_shapes(self) -> None:
         signing_key = password_login.get_client_signing_key()
@@ -223,11 +373,13 @@ class OopzApiPasswordLoginTest(unittest.TestCase):
         self.assertIn("密码错误", str(ctx.exception))
 
     def test_refresh_credentials_from_config_password_uses_config_login(self) -> None:
-        config = types.ModuleType("config")
-        config.OOPZ_CONFIG = {
-            "login_phone": "13800138000",
-            "login_password": "plain-password",
-        }
+        config = _module(
+            "config",
+            OOPZ_CONFIG={
+                "login_phone": "13800138000",
+                "login_password": "plain-password",
+            },
+        )
         credentials = {
             "person_uid": "person-1",
             "device_id": "device-1",
@@ -248,8 +400,7 @@ class OopzApiPasswordLoginTest(unittest.TestCase):
         save_credentials.assert_called_once_with(credentials)
 
     def test_refresh_credentials_from_config_password_skips_when_missing_config_login(self) -> None:
-        config = types.ModuleType("config")
-        config.OOPZ_CONFIG = {}
+        config = _module("config", OOPZ_CONFIG={})
 
         with (
             patch.dict(sys.modules, {"config": config}),
@@ -310,34 +461,24 @@ class OopzPasswordLoginFlowTest(unittest.IsolatedAsyncioTestCase):
 
 class OopzClientCredentialsTest(unittest.TestCase):
     def test_update_credentials_refreshes_identity_and_closes_socket(self) -> None:
-        config = types.ModuleType("config")
-        config.OOPZ_CONFIG = {
-            "person_uid": "old-person",
-            "device_id": "old-device",
-            "jwt_token": "old-token",
-        }
-        config.DEFAULT_HEADERS = {
-            "User-Agent": "ua",
-            "Origin": "https://web.oopz.cn",
-            "Cache-Control": "no-cache",
-            "Accept-Language": "zh-CN",
-            "Accept-Encoding": "gzip",
-        }
-        name_resolver = types.ModuleType("oopz.name_resolver")
-        name_resolver.get_resolver = lambda: None
-        proxy_utils = types.ModuleType("core.proxy_utils")
-        proxy_utils.get_websocket_proxy_kwargs = lambda proxy: {}
-        websocket = types.ModuleType("websocket")
-
+        config = _module(
+            "config",
+            OOPZ_CONFIG={
+                "person_uid": "old-person",
+                "device_id": "old-device",
+                "jwt_token": "old-token",
+            },
+            DEFAULT_HEADERS={
+                "User-Agent": "ua",
+                "Origin": "https://web.oopz.cn",
+                "Cache-Control": "no-cache",
+                "Accept-Language": "zh-CN",
+                "Accept-Encoding": "gzip",
+            },
+        )
         sys.modules.pop("oopz.oopz_client", None)
-        fake_modules = {
-            "config": config,
-            "oopz.name_resolver": name_resolver,
-            "core.proxy_utils": proxy_utils,
-            "websocket": websocket,
-        }
 
-        with patch.dict(sys.modules, fake_modules):
+        with patch.dict(sys.modules, {"config": config}):
             import oopz.oopz_client as oopz_client
 
             class _Socket:
@@ -351,7 +492,8 @@ class OopzClientCredentialsTest(unittest.TestCase):
             client._device_id = "old-device"
             client._jwt_token = "old-token"
             client._hb_body = json.dumps({"person": "old-person"})
-            client._ws = _Socket()
+            socket = _Socket()
+            client.__dict__["_ws"] = socket
 
             client.update_credentials("new-person", "new-device", "new-token")
 
@@ -359,9 +501,9 @@ class OopzClientCredentialsTest(unittest.TestCase):
             self.assertEqual(client._device_id, "new-device")
             self.assertEqual(client._jwt_token, "new-token")
             self.assertEqual(json.loads(client._hb_body), {"person": "new-person"})
-            self.assertTrue(client._ws.closed)
+            self.assertTrue(socket.closed)
 
-        sys.modules.pop("oopz_client", None)
+        sys.modules.pop("oopz.oopz_client", None)
 
 
 class _SenderResponse:
@@ -402,12 +544,14 @@ class _SenderSigner:
 
 class OopzSenderAuthRefreshTest(unittest.TestCase):
     def test_get_refreshes_credentials_once_after_428_and_retries(self) -> None:
-        from oopz.oopz_sender import OopzSender
+        from oopz.oopz_sender import OopzSender, Signer
 
         sender = OopzSender.__new__(OopzSender)
-        sender.signer = _SenderSigner()
-        sender.session = _SenderSession([_SenderResponse(428), _SenderResponse(200)])
-        sender._area_members_cache = {"stale": {"data": {}}}
+        signer = _SenderSigner()
+        session = _SenderSession([_SenderResponse(428), _SenderResponse(200)])
+        sender.signer = cast(Signer, signer)
+        sender.session = cast(requests.Session, session)
+        sender._area_members_cache = {("area-1", 0, 99): {"data": {}}}
         sender._rate_lock = threading.Lock()
         sender._auth_refresh_lock = threading.Lock()
         sender._last_request_time = 0.0
@@ -435,9 +579,9 @@ class OopzSenderAuthRefreshTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         refresh.assert_called_once_with(timeout=20, save=True)
-        self.assertEqual(len(sender.session.calls), 2)
-        self.assertEqual(sender.session.calls[0]["headers"]["X-Signer-Key"], "old-private-key")
-        self.assertEqual(sender.session.calls[1]["headers"]["X-Signer-Key"], "new-private-key")
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(session.calls[0]["headers"]["X-Signer-Key"], "old-private-key")
+        self.assertEqual(session.calls[1]["headers"]["X-Signer-Key"], "new-private-key")
         self.assertEqual(sender._area_members_cache, {})
 
 

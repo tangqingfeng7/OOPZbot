@@ -4,13 +4,14 @@ import random
 import re
 import threading
 import time
-from typing import Dict, Optional
+from typing import Optional, Protocol, TypeGuard
 
 import requests
-from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-from config import OOPZ_CONFIG, DEFAULT_HEADERS
+from config import DEFAULT_HEADERS, OOPZ_CONFIG
+
 try:
     from config import AUTO_RECALL_CONFIG
 except ImportError:
@@ -19,16 +20,31 @@ from core.constants import UID_PATTERN
 from core.http_constants import HTTP_TIMEOUT_API, HTTP_TIMEOUT_LOGIN, HttpTimeout
 from core.json_utils import compact_json
 from core.logger_config import get_logger
+from core.proxy_utils import configure_requests_session
 from oopz.oopz_api import OopzApiMixin
+from oopz.oopz_upload import UploadMixin, get_image_info  # noqa: F401 — re-export
 from oopz.responses import http_error
 from oopz.signing import oopz_auth_headers, rsa_sign
-from core.proxy_utils import configure_requests_session
-from oopz.oopz_upload import UploadMixin, get_image_info  # noqa: F401 — re-export
 
 logger = get_logger("OopzSender")
 
 # 平台内容审核拒绝时的关键词（命中即视为风控拦截，区别于普通发送失败）
 _SENSITIVE_REJECTION_KEYWORDS = ("敏感", "违规", "涉政", "涉黄")
+
+
+class AutoRecallScheduler(Protocol):
+    """发送器依赖的最小自动撤回调度契约。"""
+
+    def schedule_recall(
+        self,
+        message_id: str,
+        channel: str,
+        area: str,
+        timestamp: str = "",
+        *,
+        delay: float,
+    ) -> bool:
+        ...
 
 
 class SensitiveContentError(RuntimeError):
@@ -100,7 +116,7 @@ class Signer:
         """RSA PKCS1v15 + SHA256 签名，返回 Base64"""
         return rsa_sign(self.private_key, data)
 
-    def oopz_headers(self, url_path: str, body_str: str) -> Dict[str, str]:
+    def oopz_headers(self, url_path: str, body_str: str) -> dict[str, str]:
         """
         构造 Oopz 专用签名请求头。
         签名流程: MD5(url_path + body_json) + timestamp → RSA 签名
@@ -123,6 +139,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
         self.signer = Signer()
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
+        self._proxy_value = OOPZ_CONFIG.get("proxy")
         self._area_members_cache: dict[tuple[str, int, int], dict] = {}
         self._area_members_cache_ttl = 15.0
         self._area_members_stale_ttl = 300.0
@@ -130,8 +147,10 @@ class OopzSender(UploadMixin, OopzApiMixin):
         self._rate_lock = threading.Lock()
         self._auth_refresh_lock = threading.Lock()
         self._last_request_time = 0.0
+        self._auto_recall_scheduler: AutoRecallScheduler | None = None
+        self._auto_recall_unbound_warned = False
         # 代理：留空/不设=使用系统代理(HTTP_PROXY/HTTPS_PROXY)；False 或 "direct"=直连；或 "http://ip:port"
-        proxy_settings = configure_requests_session(self.session, OOPZ_CONFIG.get("proxy"))
+        proxy_settings = configure_requests_session(self.session, self._proxy_value)
         proxy_cfg = proxy_settings.server or ""
         if proxy_settings.mode == "direct":
             logger.info("OopzSender: 已禁用代理（直连）")
@@ -142,6 +161,10 @@ class OopzSender(UploadMixin, OopzApiMixin):
         logger.info("OopzSender 已初始化")
         logger.info(f"  用户: {OOPZ_CONFIG['person_uid']}")
         logger.info(f"  设备: {OOPZ_CONFIG['device_id']}")
+
+    def bind_auto_recall_scheduler(self, scheduler: AutoRecallScheduler) -> None:
+        """绑定应用级共享撤回调度器，避免为每条消息创建独立 Timer。"""
+        self._auto_recall_scheduler = scheduler
 
     def _throttle(self) -> None:
         """阻塞直到距上次请求满足最小间隔,线程安全。"""
@@ -191,13 +214,13 @@ class OopzSender(UploadMixin, OopzApiMixin):
 
     def _refresh_credentials_after_auth_failure(self, status_code: int) -> bool:
         with self._auth_refresh_lock:
-            try:
-                from oopz.oopz_password_login import (
-                    OopzPasswordLoginError,
-                    load_private_key_from_pem,
-                    refresh_credentials_from_config_password,
-                )
+            from oopz.oopz_password_login import (
+                OopzPasswordLoginError,
+                load_private_key_from_pem,
+                refresh_credentials_from_config_password,
+            )
 
+            try:
                 credentials = refresh_credentials_from_config_password(timeout=HTTP_TIMEOUT_LOGIN, save=True)
             except OopzPasswordLoginError as exc:
                 logger.warning("OOPZ 登录态失效，自动刷新失败，继续使用现有凭据: HTTP %s, %s", status_code, exc)
@@ -360,7 +383,7 @@ class OopzSender(UploadMixin, OopzApiMixin):
     # ---- 私信 ----
 
     @staticmethod
-    def _looks_like_private_channel(value: object) -> bool:
+    def _looks_like_private_channel(value: object) -> TypeGuard[str]:
         """
         判断字符串是否像 Oopz 私信 channel。
 
@@ -642,25 +665,21 @@ class OopzSender(UploadMixin, OopzApiMixin):
                 return
             msg_id = str(msg_id)
 
-            timer = threading.Timer(
-                delay, self._do_auto_recall, args=[msg_id, area, channel],
-            )
-            timer.daemon = True
-            timer.start()
-            logger.debug(f"已安排 {delay}s 后自动撤回: {msg_id[:16]}...")
+            scheduler = self._auto_recall_scheduler
+            if scheduler is None:
+                if not self._auto_recall_unbound_warned:
+                    logger.warning("自动撤回调度器尚未绑定，已跳过自动撤回任务")
+                    self._auto_recall_unbound_warned = True
+                return
+            if scheduler.schedule_recall(
+                message_id=msg_id,
+                channel=channel,
+                area=area,
+                delay=float(delay),
+            ):
+                logger.debug(f"已安排 {delay}s 后自动撤回: {msg_id[:16]}...")
         except Exception as e:
             logger.debug(f"安排自动撤回失败: {e}")
-
-    def _do_auto_recall(self, message_id: str, area: str, channel: str):
-        """定时器回调：执行自动撤回。"""
-        try:
-            result = self.recall_message(message_id, area=area, channel=channel)
-            if "error" in result:
-                logger.warning(f"自动撤回失败: {result['error']} (msgId={message_id[:16]}...)")
-            else:
-                logger.info(f"自动撤回成功: {message_id[:16]}...")
-        except Exception as e:
-            logger.error(f"自动撤回异常: {e}")
 
     # ---- 批量 ----
 

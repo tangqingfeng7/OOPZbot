@@ -304,7 +304,10 @@ def resolve_requests_proxies(proxy_value: str | None) -> dict[str, str] | None:
     except ValueError:
         _log.warning("Invalid plugin proxy value %r, ignoring", proxy_value)
         return None
-    return {"http": settings.server, "https": settings.server}
+    server = settings.server
+    if server is None:
+        return None
+    return {"http": server, "https": server}
 
 
 def configure_requests_session(session, proxy_value=None) -> ProxySettings:

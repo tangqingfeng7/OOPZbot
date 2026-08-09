@@ -11,7 +11,7 @@ import base64
 import hashlib
 import time
 import uuid
-from typing import Dict, Mapping
+from collections.abc import Mapping
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -35,7 +35,7 @@ def build_oopz_sign(private_key, path: str, body: str, oopz_time: str) -> str:
 
 def oopz_auth_headers(
     private_key, config: Mapping[str, object], path: str, body: str
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """构造 Oopz 鉴权请求头（10 个 Oopz-* 字段）的唯一来源。
 
     时间戳同时用于签名与 Oopz-Time 头，二者必须一致，故在此一次性生成。
@@ -46,11 +46,11 @@ def oopz_auth_headers(
         "Oopz-Sign": build_oopz_sign(private_key, path, body, ts),
         "Oopz-Request-Id": str(uuid.uuid4()),
         "Oopz-Time": ts,
-        "Oopz-App-Version-Number": config["app_version"],
-        "Oopz-Channel": config["channel"],
-        "Oopz-Device-Id": config["device_id"],
-        "Oopz-Platform": config["platform"],
+        "Oopz-App-Version-Number": str(config["app_version"]),
+        "Oopz-Channel": str(config["channel"]),
+        "Oopz-Device-Id": str(config["device_id"]),
+        "Oopz-Platform": str(config["platform"]),
         "Oopz-Web": str(config["web"]).lower(),
-        "Oopz-Person": config["person_uid"],
-        "Oopz-Signature": config["jwt_token"],
+        "Oopz-Person": str(config["person_uid"]),
+        "Oopz-Signature": str(config["jwt_token"]),
     }

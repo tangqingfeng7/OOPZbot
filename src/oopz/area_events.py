@@ -95,10 +95,10 @@ def parse_member_event(event: int, data: dict) -> Optional[Tuple[str, str, str]]
 
     event_str = str(event).lower() if event is not None else ""
     # Oopz has no reliable WS event code for area membership changes, so we never
-    # *guess* membership from numeric event codes. Joins are detected by member-
-    # list polling (see area_join_notifier); the WS path only classifies when the
-    # payload carries an explicit action string. Leaves are not covered by
-    # polling, so the WS path remains their only source.
+    # *guess* membership from numeric event codes. Both joins and leaves are
+    # covered by area_join_notifier polling (operate logs by default, member-list
+    # snapshots when configured). Explicit WS actions remain useful as low-latency
+    # supplemental signals.
     is_join = (
         event_str in ("enter", "join", "area_member_enter", "member_enter")
         or action_raw in _JOIN_KEYS

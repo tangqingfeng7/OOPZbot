@@ -1,13 +1,14 @@
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional, Tuple, Callable, Set
+from typing import Protocol
 
 from config import OOPZ_CONFIG
-from oopz.oopz_sender import OopzSender
 from core.constants import build_mention
 from core.logger_config import get_logger
+from oopz.oopz_sender import OopzSender
 
 logger = get_logger("AreaJoinNotifier")
 
@@ -26,6 +27,19 @@ OPERATE_LOG_PERMISSION_DENIED_KEYWORDS = (
 )
 _JOIN_CONTENT = "\u52a0\u5165\u57df"
 _LEAVE_CONTENT = "\u9000\u51fa\u57df"
+
+
+class AreaMemberSnapshotSource(Protocol):
+    """成员快照拉取只依赖发送器的这一项能力。"""
+
+    def get_area_members(
+        self,
+        area: str,
+        offset_start: int,
+        offset_end: int,
+        quiet: bool = True,
+    ) -> dict:
+        ...
 
 
 @dataclass(frozen=True)
@@ -96,7 +110,7 @@ def _looks_like_uid(name: str) -> bool:
     return bool(_UID_LIKE.match(s))
 
 
-def _resolve_display_name(sender: OopzSender, uid: str, cached: Optional[str] = None) -> str:
+def _resolve_display_name(sender: OopzSender, uid: str, cached: str | None = None) -> str:
     if cached and not _looks_like_uid(cached):
         return cached
     try:
@@ -119,14 +133,13 @@ def _resolve_display_name(sender: OopzSender, uid: str, cached: Optional[str] = 
 
 from oopz.area_events import parse_member_event as _parse_member_event
 
-
 _area_channel_cache: dict = {"area": "", "channel": "", "ts": 0.0}
 _AREA_CHANNEL_CACHE_TTL = 300.0  # 5 分钟
 # 轮询线程与 WS 事件回调线程会并发读写该缓存，统一用锁保护读改写。
 _area_channel_cache_lock = threading.Lock()
 
 
-def _read_area_channel_cache(now: float) -> Optional[Tuple[str, str]]:
+def _read_area_channel_cache(now: float) -> tuple[str, str] | None:
     with _area_channel_cache_lock:
         if _area_channel_cache["area"] and _area_channel_cache["channel"] \
                 and now - _area_channel_cache["ts"] < _AREA_CHANNEL_CACHE_TTL:
@@ -139,7 +152,7 @@ def _store_area_channel_cache(area: str, channel: str, ts: float) -> None:
         _area_channel_cache.update(area=area, channel=channel, ts=ts)
 
 
-def _get_default_area_channel(sender: OopzSender, quiet: bool = False) -> Tuple[str, str]:
+def _get_default_area_channel(sender: OopzSender, quiet: bool = False) -> tuple[str, str]:
     """获取默认域 ID 和文字频道 ID（与 WS 通知逻辑一致）。quiet=True 时不打域/频道列表日志。"""
     default_area = (OOPZ_CONFIG.get("default_area") or "").strip()
     default_channel = (OOPZ_CONFIG.get("default_channel") or "").strip()
@@ -184,10 +197,10 @@ def _next_poll_interval(base_interval: int, current_interval: int, rate_limited:
 
 
 def fetch_member_uid_snapshot(
-    sender: OopzSender,
+    sender: AreaMemberSnapshotSource,
     area: str,
     member_fetch_max: int = 5000,
-) -> Tuple[Optional[Set[str]], bool, bool]:
+) -> tuple[set[str] | None, bool, bool]:
     """分页拉取域成员快照。
 
     返回 ``(uids, rate_limited, truncated)``：
@@ -196,7 +209,7 @@ def fetch_member_uid_snapshot(
       调用方必须跳过本轮对比，否则窗口外成员会被误判为加入/退出。
     """
     page_size = 100
-    uids: Set[str] = set()
+    uids: set[str] = set()
     start = 0
     while start < member_fetch_max:
         result = sender.get_area_members(
@@ -271,7 +284,10 @@ def is_operate_log_permission_denied(error: str) -> bool:
     return any(keyword in text or keyword in lower_text for keyword in OPERATE_LOG_PERMISSION_DENIED_KEYWORDS)
 
 
-def fetch_operate_log_changes(sender: OopzSender, area: str) -> Tuple[Optional[list[AreaMemberChange]], bool, str]:
+def fetch_operate_log_changes(
+    sender: OopzSender,
+    area: str,
+) -> tuple[list[AreaMemberChange] | None, bool, str]:
     """拉取一页域管理日志并解析成员变更。"""
     result = sender.get_area_operate_logs(
         area=area,
@@ -285,7 +301,7 @@ def fetch_operate_log_changes(sender: OopzSender, area: str) -> Tuple[Optional[l
     return parse_area_operate_log_changes(area, result), False, ""
 
 
-def _build_member_mention(uid: str) -> Tuple[str, list]:
+def _build_member_mention(uid: str) -> tuple[str, list]:
     """构造 Oopz 的 @ 用户正文片段和 mentionList。"""
     uid = (uid or "").strip()
     if not uid:
@@ -307,7 +323,7 @@ def _resolve_role_id(
     area: str,
     auto_role_id: str,
     auto_role_name: str,
-) -> Optional[int]:
+) -> int | None:
     """将配置中的 role_id / role_name 解析为数字 role_id。"""
     if auto_role_id:
         try:
@@ -359,9 +375,10 @@ def _run_join_poll_loop(
     auto_role_id: str = "",
     auto_role_name: str = "",
     message_template_leave: str = "",
-    on_member_change: Optional[Callable[[str, str, str], None]] = None,
+    on_member_change: Callable[[str, str, str], None] | None = None,
     member_fetch_max: int = 5000,
     event_source: str = EVENT_SOURCE_OPERATE_LOGS,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """
     后台轮询域成员事件。
@@ -371,12 +388,13 @@ def _run_join_poll_loop(
     """
     from core.area_config import get_area_registry
 
-    last_uids_map: dict[str, Set[str]] = {}
-    first_run_set: Set[str] = set()
-    truncated_warned: Set[str] = set()
+    last_uids_map: dict[str, set[str]] = {}
+    first_run_set: set[str] = set()
+    truncated_warned: set[str] = set()
     operate_log_cursor = AreaOperateLogCursor()
-    operate_log_disabled_areas: Set[str] = set()
+    operate_log_disabled_areas: set[str] = set()
     source = event_source if event_source in EVENT_SOURCE_CHOICES else EVENT_SOURCE_OPERATE_LOGS
+    stop_event = stop_event or threading.Event()
 
     min_interval = 5 if source == EVENT_SOURCE_MEMBER_SNAPSHOT else 2
     base_interval = max(min_interval, int(interval_seconds))
@@ -425,7 +443,7 @@ def _run_join_poll_loop(
             logger.warning("域成员退出通知发送失败 area=%s uid=%s: %s", area_id[:8], uid[:8], e)
         _notify_member_change("leave", area_id, uid)
 
-    def _fetch_member_uids(area: str) -> Tuple[Optional[Set[str]], bool, bool]:
+    def _fetch_member_uids(area: str) -> tuple[set[str] | None, bool, bool]:
         return fetch_member_uid_snapshot(sender, area, member_fetch_max)
 
     def _handle_operate_log_area(area_id: str, channel: str, area_cfg) -> bool:
@@ -489,7 +507,7 @@ def _run_join_poll_loop(
             _handle_leave(area_id, channel, uid, area_cfg)
         return False
 
-    def _resolve_area_channel(area_id: str) -> Tuple[str, str]:
+    def _resolve_area_channel(area_id: str) -> tuple[str, str]:
         registry = get_area_registry()
         ch = registry.get_default_channel(area_id)
         if ch:
@@ -504,19 +522,21 @@ def _run_join_poll_loop(
         a, _ = _get_default_area_channel(sender, quiet=True)
         return [a] if a else []
 
-    while True:
+    while not stop_event.is_set():
         try:
             poll_areas = _get_poll_areas()
             if not poll_areas:
                 if not last_uids_map:
                     logger.warning("域成员加入轮询: 未获取到任何域，请配置 AREA_CONFIGS 或 default_area")
-                time.sleep(current_interval)
+                stop_event.wait(current_interval)
                 continue
 
             registry = get_area_registry()
             any_rate_limited = False
 
             for area in poll_areas:
+                if stop_event.is_set():
+                    return
                 if source == EVENT_SOURCE_OPERATE_LOGS and area in operate_log_disabled_areas:
                     continue
                 area_channel = _resolve_area_channel(area)
@@ -542,10 +562,40 @@ def _run_join_poll_loop(
                 current_interval = base_interval
                 logger.info("域成员加入轮询: 成员接口已恢复，轮询间隔恢复为 %ss", current_interval)
 
-            time.sleep(current_interval)
+            stop_event.wait(current_interval)
         except Exception as e:
             logger.warning("域成员加入轮询异常: %s", e)
-            time.sleep(current_interval)
+            stop_event.wait(current_interval)
+
+
+class AreaJoinNotifier:
+    """同时承载 WebSocket 回调和可停止的成员轮询线程。"""
+
+    def __init__(self, callback: Callable[[int, dict], None], thread_args: tuple, thread_kwargs: dict):
+        self._callback = callback
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=_run_join_poll_loop,
+            args=thread_args,
+            kwargs={**thread_kwargs, "stop_event": self._stop_event},
+            daemon=True,
+            name="AreaJoinPoll",
+        )
+
+    def __call__(self, event: int, data: dict) -> None:
+        self._callback(event, data)
+
+    def start(self) -> None:
+        if self._thread.is_alive():
+            return
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop_event.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=max(0.0, timeout))
+        if self._thread.is_alive():
+            logger.warning("服务停止超时: AreaJoinPoll，线程仍未退出")
 
 
 def make_ws_handler(
@@ -622,11 +672,11 @@ def make_ws_handler(
 
 
 def start_area_join_notifier(
-    sender: Optional[OopzSender] = None,
+    sender: OopzSender | None = None,
     message_template_join: str = "欢迎 {name} 加入域～",
     message_template_leave: str = "{name} 已退出域",
-    on_member_change: Optional[Callable[[str, str, str], None]] = None,
-) -> Optional[Callable[[int, dict], None]]:
+    on_member_change: Callable[[str, str, str], None] | None = None,
+) -> Callable[[int, dict], None] | None:
     try:
         import config as _config
         config = getattr(_config, "AREA_JOIN_NOTIFY", None)
@@ -664,12 +714,19 @@ def start_area_join_notifier(
         event_source = EVENT_SOURCE_OPERATE_LOGS
     if auto_role_id or auto_role_name:
         logger.info("新人自动身份组已启用: id=%s, name=%s", auto_role_id or "(无)", auto_role_name or "(无)")
-    poll_thread = threading.Thread(
-        target=_run_join_poll_loop,
-        args=(s, msg_join, poll_interval, bot_uid, auto_role_id, auto_role_name, msg_leave, on_member_change),
-        kwargs={"member_fetch_max": member_fetch_max, "event_source": event_source},
-        daemon=True,
-        name="AreaJoinPoll",
+    notifier = AreaJoinNotifier(
+        make_ws_handler(s, msg_join, msg_leave),
+        (
+            s,
+            msg_join,
+            poll_interval,
+            bot_uid,
+            auto_role_id,
+            auto_role_name,
+            msg_leave,
+            on_member_change,
+        ),
+        {"member_fetch_max": member_fetch_max, "event_source": event_source},
     )
-    poll_thread.start()
-    return make_ws_handler(s, msg_join, msg_leave)
+    notifier.start()
+    return notifier

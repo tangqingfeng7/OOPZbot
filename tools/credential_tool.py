@@ -322,11 +322,11 @@ def jwk_to_pem(jwk_data):
 # 核心：浏览器捕获
 # ---------------------------------------------------------------------------
 
-async def capture_credentials():
+async def capture_credentials() -> dict[str, str | None]:
     """启动浏览器，捕获 Oopz 凭据"""
     from playwright.async_api import async_playwright
 
-    credentials = {
+    credentials: dict[str, str | None] = {
         "person_uid": None,
         "device_id": None,
         "jwt_token": None,
@@ -359,7 +359,10 @@ async def capture_credentials():
         await page.add_init_script(JS_CRYPTO_HOOK)
 
         # ---------- HTTP 请求拦截 ----------
+        request_warned_expired = False
+
         def on_request(request):
+            nonlocal request_warned_expired
             h = request.headers
             if h.get("oopz-person") and not credentials["person_uid"]:
                 credentials["person_uid"] = h["oopz-person"]
@@ -370,8 +373,8 @@ async def capture_credentials():
             sig = h.get("oopz-signature")
             if sig and not credentials["jwt_token"]:
                 if _is_jwt_expired(sig):
-                    if not getattr(on_request, "_warned_expired", False):
-                        on_request._warned_expired = True
+                    if not request_warned_expired:
+                        request_warned_expired = True
                         print(f"  [!] 检测到过期 JWT，已跳过。请在浏览器中重新登录以获取新 Token")
                 else:
                     credentials["jwt_token"] = sig
@@ -385,7 +388,10 @@ async def capture_credentials():
 
         # ---------- WebSocket 帧拦截（备用） ----------
         def on_websocket(ws):
+            frame_warned_expired = False
+
             def on_frame(payload):
+                nonlocal frame_warned_expired
                 try:
                     data = json.loads(payload)
                     if data.get("event") != WS_EVENT_AUTH:
@@ -400,8 +406,8 @@ async def capture_credentials():
                     ws_sig = body.get("signature")
                     if ws_sig and not credentials["jwt_token"]:
                         if _is_jwt_expired(ws_sig):
-                            if not getattr(on_frame, "_warned_expired", False):
-                                on_frame._warned_expired = True
+                            if not frame_warned_expired:
+                                frame_warned_expired = True
                                 print(f"  [!] 检测到过期 JWT (ws)，已跳过。请在浏览器中重新登录以获取新 Token")
                         else:
                             credentials["jwt_token"] = ws_sig

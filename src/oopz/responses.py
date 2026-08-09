@@ -34,6 +34,13 @@ class ApiResult:
     raw: dict | None = None
 
 
+def _response_status_code(resp: Any) -> int | None:
+    value = getattr(resp, "status_code", None)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def parse_api_response(
     resp: Any,
     *,
@@ -61,8 +68,10 @@ def parse_api_response(
     if resp is None:
         return ApiResult(False, error="未获得响应")
 
-    status_code = getattr(resp, "status_code", None)
+    status_code = _response_status_code(resp)
     raw = (getattr(resp, "text", "") or "") if error_with_body else ""
+    if status_code is None:
+        return ApiResult(False, error="响应缺少有效 HTTP 状态码")
     if status_code != 200:
         err = http_error(status_code, raw, body_limit) if error_with_body else http_error(status_code)
         return ApiResult(False, error=err, status_code=status_code)
@@ -118,8 +127,11 @@ def parse_mutation_response(
     4. 否则 → 失败，error 取 ``message``/``error``/``str(result)``。
     """
     raw = getattr(resp, "text", "") or ""
-    if getattr(resp, "status_code", None) != 200:
-        return MutationOutcome(False, error=http_error(resp.status_code, raw, body_limit))
+    status_code = _response_status_code(resp)
+    if status_code is None:
+        return MutationOutcome(False, error="响应缺少有效 HTTP 状态码")
+    if status_code != 200:
+        return MutationOutcome(False, error=http_error(status_code, raw, body_limit))
     try:
         result = resp.json()
     except Exception:

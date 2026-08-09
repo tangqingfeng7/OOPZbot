@@ -20,6 +20,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from core.browser_launch import login_browser_args
+from core.config_file_store import (
+    config_file_write_lock,
+    replace_text_files_atomically,
+)
 from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_LOGIN
 from core.json_utils import compact_json
@@ -392,7 +396,8 @@ def _extract_error_code(payload: Any) -> int | str | None:
 def _safe_response_error(payload: Any) -> str:
     if not isinstance(payload, dict):
         return "登录接口返回异常"
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    raw_data = payload.get("data")
+    data = raw_data if isinstance(raw_data, dict) else {}
     for source in (payload, data):
         for key in ("message", "msg", "error", "errorMessage", "reason"):
             value = source.get(key)
@@ -968,7 +973,7 @@ def _private_key_module_content(pem: str) -> str:
     )
 
 
-def _save_config(credentials: dict[str, Any]) -> str:
+def _updated_config_content(credentials: dict[str, Any]) -> str:
     content = _read_config_template()
     replaced_any = False
     for key in OOPZ_CONFIG_CREDENTIAL_FIELDS:
@@ -976,24 +981,40 @@ def _save_config(credentials: dict[str, Any]) -> str:
         replaced_any = replaced_any or replaced
     if not replaced_any:
         raise OopzPasswordLoginError("未能在 config.py 中定位 OOPZ_CONFIG 凭据字段")
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        f.write(content)
+    return content
+
+
+def _save_config(credentials: dict[str, Any]) -> str:
+    with config_file_write_lock():
+        content = _updated_config_content(credentials)
+        replace_text_files_atomically(((CONFIG_PATH, content),))
     return "config.py"
 
 
 def _save_private_key(pem: str) -> str:
-    with open(PRIVATE_KEY_PATH, "w", encoding="utf-8") as f:
-        f.write(_private_key_module_content(pem))
+    with config_file_write_lock():
+        replace_text_files_atomically(
+            ((PRIVATE_KEY_PATH, _private_key_module_content(pem)),)
+        )
     return "private_key.py"
 
 
 def save_credentials(credentials: dict[str, Any]) -> list[str]:
-    """写入 config.py 与 private_key.py，不额外生成明文凭据备份。"""
+    """分阶段写入 config.py 与 private_key.py，失败时尽力回滚。"""
     pem = str(credentials.get("private_key_pem") or "").strip()
     if not pem:
         raise OopzPasswordLoginError("缺少 RSA 私钥，无法写入 private_key.py")
 
-    saved = [_save_config(credentials), _save_private_key(pem)]
+    with config_file_write_lock():
+        config_content = _updated_config_content(credentials)
+        private_key_content = _private_key_module_content(pem)
+        replace_text_files_atomically(
+            (
+                (CONFIG_PATH, config_content),
+                (PRIVATE_KEY_PATH, private_key_content),
+            )
+        )
+    saved = ["config.py", "private_key.py"]
     _apply_config_to_runtime(credentials)
     return saved
 
