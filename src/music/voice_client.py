@@ -1,4 +1,5 @@
 import asyncio as _asyncio
+import math
 import os
 import queue
 import tempfile
@@ -37,7 +38,12 @@ def _ensure_agora_sdk() -> None:
     try:
         from core.proxy_utils import resolve_proxy_settings_with_env
         ps = resolve_proxy_settings_with_env()
-        proxies = {"http": ps.server, "https": ps.server} if ps.enabled else None
+        proxy_server = ps.server if ps.enabled else None
+        proxies: dict[str, str] | None = (
+            {"http": proxy_server, "https": proxy_server}
+            if proxy_server
+            else None
+        )
     except Exception:
         proxies = None
     try:
@@ -71,6 +77,7 @@ class VoiceClient:
         self._available = False
         self._playing = False
         self._play_thread: Optional[threading.Thread] = None
+        self._preload_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._preload_stop = threading.Event()
         self._identity_stop = threading.Event()
@@ -88,9 +95,14 @@ class VoiceClient:
         self._init_done = threading.Event()
         self._init_error: Optional[str] = None
         self._backend: Optional[str] = None  # "playwright" | "selenium"
+        self._destroyed = False
 
-        bw_thread = threading.Thread(target=self._browser_thread_loop, daemon=True)
-        bw_thread.start()
+        self._browser_thread = threading.Thread(
+            target=self._browser_thread_loop,
+            name="AgoraBrowser",
+            daemon=True,
+        )
+        self._browser_thread.start()
 
         if not self._init_done.wait(timeout=init_timeout):
             logger.error("浏览器线程启动超时")
@@ -310,17 +322,71 @@ class VoiceClient:
         except Exception:
             pass
 
-    def _run_on_browser(self, method: str, *args, timeout=60):
+    def _run_on_browser(
+        self,
+        method: str,
+        *args,
+        timeout: float = 60,
+        wait_timeout: float | None = None,
+    ) -> object | None:
         """在浏览器线程上执行 window[method](*args)，阻塞等待结果。"""
+        if self._shutdown.is_set():
+            raise RuntimeError("浏览器播放器正在关闭")
+        operation_timeout = max(0.05, float(timeout))
+        wait_budget = (
+            operation_timeout + 5.0
+            if wait_timeout is None
+            else max(0.0, float(wait_timeout))
+        )
+        if wait_budget <= 0:
+            raise TimeoutError("浏览器操作预算已用尽")
+        task_timeout = min(operation_timeout, wait_budget)
         result_holder = []
         error_holder = []
         done = threading.Event()
-        self._task_queue.put((method, list(args), result_holder, error_holder, done, timeout))
-        if not done.wait(timeout=timeout + 5):
+        self._task_queue.put(
+            (method, list(args), result_holder, error_holder, done, task_timeout)
+        )
+        if not done.wait(timeout=wait_budget):
             raise TimeoutError("浏览器操作超时")
         if error_holder:
             raise error_holder[0]
         return result_holder[0] if result_holder else None
+
+    def _run_browser_mapping(
+        self,
+        method: str,
+        *args: object,
+        timeout: float = 60,
+        wait_timeout: float | None = None,
+    ) -> dict[str, object] | None:
+        """执行应返回 JSON 对象的浏览器命令，并校验 JS/Python 边界。"""
+
+        if wait_timeout is None:
+            result = self._run_on_browser(method, *args, timeout=timeout)
+        else:
+            result = self._run_on_browser(
+                method,
+                *args,
+                timeout=timeout,
+                wait_timeout=wait_timeout,
+            )
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise RuntimeError(f"{method} 返回了非对象结果")
+        return result
+
+    @staticmethod
+    def _browser_duration(result: dict[str, object]) -> float:
+        raw = result.get("duration", 0)
+        if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            return 0.0
+        try:
+            duration = float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+        return duration if duration >= 0 and math.isfinite(duration) else 0.0
 
     # ------------------------------------------------------------------
     # 公共接口
@@ -343,22 +409,21 @@ class VoiceClient:
         """加入 Agora 语音房间。uid 默认使用 self._agora_uid。"""
         if not self._available:
             return False
-        if uid is None:
-            uid = self._agora_uid
+        raw_uid: int | str = self._agora_uid if uid is None else uid
         try:
-            uid = int(uid)
+            parsed_uid = int(raw_uid)
         except (TypeError, ValueError):
-            logger.warning(f"加入 Agora 房间失败: uid 非数字 ({uid!r})")
+            logger.warning(f"加入 Agora 房间失败: uid 非数字 ({raw_uid!r})")
             return False
         try:
-            logger.info(f"正在加入 Agora 房间: room={room_id}, uid={uid}")
-            result = self._run_on_browser(
-                "agoraJoin", self._app_id, token, room_id, uid,
+            logger.info(f"正在加入 Agora 房间: room={room_id}, uid={parsed_uid}")
+            result = self._run_browser_mapping(
+                "agoraJoin", self._app_id, token, room_id, parsed_uid,
             )
             if result and result.get("ok"):
                 logger.info(f"已加入 Agora 房间: {room_id} (uid={result.get('uid')})")
-                self._current_agora_uid = int(uid)
-                self._agora_uid = str(uid)
+                self._current_agora_uid = parsed_uid
+                self._agora_uid = str(parsed_uid)
                 if not self._send_identity():
                     logger.warning("首次 Agora 身份标识发送失败，退出当前语音房间")
                     self.leave()
@@ -386,11 +451,15 @@ class VoiceClient:
             audio_data, content_type = cached
             self._play_thread = threading.Thread(
                 target=self._do_play, args=(None,), kwargs={"audio_data": audio_data, "content_type": content_type},
+                name="AgoraPlayback",
                 daemon=True,
             )
         else:
             self._play_thread = threading.Thread(
-                target=self._do_play, args=(url,), daemon=True
+                target=self._do_play,
+                args=(url,),
+                name="AgoraPlayback",
+                daemon=True,
             )
         self._play_thread.start()
 
@@ -412,16 +481,31 @@ class VoiceClient:
                     logger.debug(f"预加载完成: {len(data)} bytes")
             except Exception as e:
                 logger.debug(f"预加载失败（忽略）: {e}")
-        threading.Thread(target=_task, daemon=True).start()
+        self._preload_thread = threading.Thread(
+            target=_task,
+            name="AgoraPreload",
+            daemon=True,
+        )
+        self._preload_thread.start()
 
-    def stop_audio(self):
+    def stop_audio(self, timeout: float = 10.0):
         """停止当前音频推流。"""
+        deadline = time.monotonic() + max(0.0, timeout)
         self._stop_event.set()
         if self._play_thread and self._play_thread.is_alive():
-            self._play_thread.join(timeout=10)
+            self._play_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if self._play_thread and self._play_thread.is_alive():
+            logger.warning("服务停止超时: AgoraPlayback，线程仍未退出")
+        else:
+            self._play_thread = None
         if self._available:
             try:
-                self._run_on_browser("agoraStopAudio")
+                remaining = max(0.0, deadline - time.monotonic())
+                self._run_on_browser(
+                    "agoraStopAudio",
+                    timeout=min(5.0, remaining),
+                    wait_timeout=remaining,
+                )
             except Exception:
                 pass
         self._playing = False
@@ -430,7 +514,7 @@ class VoiceClient:
         if not self._available:
             return False
         try:
-            result = self._run_on_browser("agoraPause")
+            result = self._run_browser_mapping("agoraPause")
             return bool(result and result.get("ok"))
         except Exception as e:
             logger.warning(f"暂停失败: {e}")
@@ -440,7 +524,7 @@ class VoiceClient:
         if not self._available:
             return False
         try:
-            result = self._run_on_browser("agoraResume")
+            result = self._run_browser_mapping("agoraResume")
             return bool(result and result.get("ok"))
         except Exception as e:
             logger.warning(f"恢复播放失败: {e}")
@@ -450,7 +534,7 @@ class VoiceClient:
         if not self._available:
             return False
         try:
-            result = self._run_on_browser("agoraSeek", time_sec)
+            result = self._run_browser_mapping("agoraSeek", time_sec)
             return bool(result and result.get("ok"))
         except Exception as e:
             logger.warning(f"跳转失败: {e}")
@@ -460,39 +544,87 @@ class VoiceClient:
         if not self._available:
             return False
         try:
-            result = self._run_on_browser("agoraSetVolume", vol)
+            result = self._run_browser_mapping("agoraSetVolume", vol)
             return bool(result and result.get("ok"))
         except Exception as e:
             logger.warning(f"设置音量失败: {e}")
             return False
 
-    def leave(self):
+    def leave(self, timeout: float = 10.0):
         """离开当前 Agora 房间。"""
-        self._stop_identity_heartbeat()
-        self.stop_audio()
+        deadline = time.monotonic() + max(0.0, timeout)
+        self._stop_identity_heartbeat(timeout=max(0.0, deadline - time.monotonic()))
+        self.stop_audio(timeout=max(0.0, deadline - time.monotonic()))
         if not self._available:
+            self._current_agora_uid = None
             return
         try:
-            if self._current_agora_uid is not None:
-                self.set_voice_state(mic_muted=True, speaker_muted=False)
-            self._run_on_browser("agoraLeave")
+            remaining = max(0.0, deadline - time.monotonic())
+            if self._current_agora_uid is not None and remaining > 0:
+                state_budget = min(1.0, remaining / 4)
+                self._run_on_browser(
+                    "agoraSetVoiceState",
+                    True,
+                    False,
+                    timeout=state_budget,
+                    wait_timeout=state_budget,
+                )
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining <= 0:
+                raise TimeoutError("离开 Agora 房间的关停预算已用尽")
+            self._run_on_browser(
+                "agoraLeave",
+                timeout=min(5.0, remaining),
+                wait_timeout=remaining,
+            )
             logger.info("已离开 Agora 房间")
         except Exception as e:
             logger.warning(f"离开 Agora 房间异常: {e}")
         finally:
             self._current_agora_uid = None
 
-    def destroy(self):
+    def destroy(self, timeout: float = 5.0):
         """释放浏览器资源（进程退出时调用）。"""
-        self.leave()
-        self._shutdown.set()
-        self._task_queue.put(None)
+        deadline = time.monotonic() + max(0.0, timeout)
+        first_request = not self._destroyed
+        self._destroyed = True
+        if first_request:
+            self.leave(timeout=max(0.0, deadline - time.monotonic()))
+        else:
+            self._identity_stop.set()
+            self._stop_event.set()
+        self._preload_stop.set()
+        play_thread = self._play_thread
+        if play_thread and play_thread.is_alive():
+            play_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if play_thread and play_thread.is_alive():
+            logger.warning("服务停止超时: AgoraPlayback，线程仍未退出")
+        identity_thread = self._identity_thread
+        if identity_thread and identity_thread.is_alive():
+            identity_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if identity_thread and identity_thread.is_alive():
+            logger.warning("服务停止超时: AgoraIdentity，线程仍未退出")
+        else:
+            self._identity_thread = None
+        preload_thread = self._preload_thread
+        if preload_thread and preload_thread.is_alive():
+            preload_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if preload_thread and preload_thread.is_alive():
+            logger.warning("服务停止超时: AgoraPreload，线程仍未退出")
+        if first_request:
+            self._shutdown.set()
+            self._task_queue.put(None)
+        if self._browser_thread.is_alive():
+            self._browser_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if self._browser_thread.is_alive():
+            logger.warning("服务停止超时: AgoraBrowser，线程仍未退出")
         if self._temp_audio_path:
             try:
                 os.unlink(self._temp_audio_path)
             except OSError:
                 pass
             self._temp_audio_path = None
+        self._available = False
         logger.info("Agora 浏览器播放器已释放")
 
     def get_state(self) -> str:
@@ -500,7 +632,8 @@ class VoiceClient:
         if not self._available:
             return "unavailable"
         try:
-            return self._run_on_browser("agoraState")
+            state = self._run_on_browser("agoraState")
+            return state if isinstance(state, str) else "error"
         except Exception:
             return "error"
 
@@ -515,7 +648,7 @@ class VoiceClient:
         try:
             agora_uid = self._current_agora_uid if self._current_agora_uid is not None else self._agora_uid
             agora_uid_int = int(agora_uid)
-            result = self._run_on_browser(
+            result = self._run_browser_mapping(
                 "agoraSetVoiceIdentity", self._oopz_uid, agora_uid_int,
             )
             if result and result.get("ok"):
@@ -532,7 +665,7 @@ class VoiceClient:
         if not self._available:
             return False
         try:
-            result = self._run_on_browser(
+            result = self._run_browser_mapping(
                 "agoraSetVoiceState",
                 bool(mic_muted),
                 bool(speaker_muted),
@@ -544,6 +677,8 @@ class VoiceClient:
 
     def _start_identity_heartbeat(self):
         """启动后台线程，定期重发身份标识。"""
+        if self._destroyed:
+            return
         self._stop_identity_heartbeat()
         self._identity_stop.clear()
 
@@ -551,15 +686,22 @@ class VoiceClient:
             while not self._identity_stop.wait(timeout=10):
                 self._send_identity()
 
-        self._identity_thread = threading.Thread(target=_loop, daemon=True)
+        self._identity_thread = threading.Thread(
+            target=_loop,
+            name="AgoraIdentity",
+            daemon=True,
+        )
         self._identity_thread.start()
 
-    def _stop_identity_heartbeat(self):
+    def _stop_identity_heartbeat(self, timeout: float = 5.0):
         """停止身份标识心跳。"""
         self._identity_stop.set()
         if self._identity_thread and self._identity_thread.is_alive():
-            self._identity_thread.join(timeout=5)
-        self._identity_thread = None
+            self._identity_thread.join(timeout=max(0.0, timeout))
+        if self._identity_thread and self._identity_thread.is_alive():
+            logger.warning("服务停止超时: AgoraIdentity，线程仍未退出")
+        else:
+            self._identity_thread = None
 
     def _do_play(self, url: Optional[str] = None, audio_data: Optional[bytes] = None, content_type: str = "audio/mpeg"):
         """后台线程"""
@@ -578,7 +720,10 @@ class VoiceClient:
             elif url:
                 if remote_suppressed:
                     logger.info("远程推流近期失败，直接本地下载")
-                    audio_data, content_type = self._download_audio_with_retry(url)
+                    audio_data, content_type = self._download_audio_with_retry(
+                        url,
+                        stop_event=self._stop_event,
+                    )
                     if audio_data and not self._stop_event.is_set():
                         started, duration = self._play_local_audio(audio_data, content_type)
                 else:
@@ -608,20 +753,29 @@ class VoiceClient:
 
         def _bg_download():
             try:
-                data, ct = self._download_audio_with_retry(url)
+                data, ct = self._download_audio_with_retry(
+                    url,
+                    stop_event=self._stop_event,
+                )
                 download_result.append((data, ct))
             except Exception as e:
                 download_result.append((None, str(e)))
             download_done.set()
 
-        dl_thread = threading.Thread(target=_bg_download, daemon=True)
+        dl_thread = threading.Thread(
+            target=_bg_download,
+            name="AgoraFallbackDownload",
+            daemon=True,
+        )
         dl_thread.start()
 
         remote_ok, remote_dur = self._try_play_remote_url(url)
         if remote_ok:
             return True, remote_dur
 
-        download_done.wait()
+        while not download_done.wait(timeout=0.2):
+            if self._stop_event.is_set():
+                return False, 0.0
         if not download_result or self._stop_event.is_set():
             return False, 0.0
         audio_data, content_type = download_result[0]
@@ -635,7 +789,11 @@ class VoiceClient:
             return False, 0.0
         try:
             logger.info(f"尝试直推远程音频: {url[:80]}...")
-            result = self._run_on_browser("agoraPlayAudio", url, timeout=_REMOTE_PLAY_START_TIMEOUT)
+            result = self._run_browser_mapping(
+                "agoraPlayAudio",
+                url,
+                timeout=_REMOTE_PLAY_START_TIMEOUT,
+            )
         except Exception as e:
             logger.warning(f"远程 URL 推流失败，回退本地下载: {e}")
             self._remote_last_fail = time.monotonic()
@@ -643,7 +801,7 @@ class VoiceClient:
 
         if result and result.get("ok"):
             self._remote_last_fail = 0
-            duration = float(result.get("duration", 0) or 0)
+            duration = self._browser_duration(result)
             logger.info(f"Agora 远程直推已开始 (时长: {duration:.1f}s)")
             return True, duration
 
@@ -679,9 +837,9 @@ class VoiceClient:
         self._temp_audio_path = temp_path
 
         file_url = "file:///" + temp_path.replace("\\", "/")
-        result = self._run_on_browser("agoraPlayAudio", file_url)
+        result = self._run_browser_mapping("agoraPlayAudio", file_url)
         if result and result.get("ok"):
-            duration = float(result.get("duration", 0) or 0)
+            duration = self._browser_duration(result)
             logger.info(f"Agora 本地推流已开始 (时长: {duration:.1f}s)")
             return True, duration
 
@@ -701,7 +859,8 @@ class VoiceClient:
             if time.monotonic() - poll_start > timeout:
                 logger.warning("Agora 推流轮询超时 (%.0fs)，强制结束", timeout)
                 break
-            time.sleep(_PLAY_POLL_INTERVAL)
+            if self._stop_event.wait(_PLAY_POLL_INTERVAL):
+                break
 
     def _download_audio_with_retry(
         self, url: str, stop_event: Optional[threading.Event] = None,
@@ -755,7 +914,8 @@ class VoiceClient:
                 if attempt < max_retries:
                     backoff = 2 * (attempt + 1)
                     logger.info(f"{backoff}s 后重试...")
-                    time.sleep(backoff)
+                    if stop_event.wait(backoff):
+                        return None, content_type
 
         if last_error:
             raise last_error

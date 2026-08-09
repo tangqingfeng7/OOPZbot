@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-
+from typing import cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -85,6 +85,7 @@ class BilibiliMusicTest(unittest.TestCase):
     def test_get_retries_once_after_412(self) -> None:
         bili = self.module.BilibiliMusic()
         target_url = "https://api.bilibili.com/x/web-interface/search/type"
+        bilibili_home = self.module._BILIBILI_HOME
         calls = []
 
         class FakeCookies(dict):
@@ -98,7 +99,7 @@ class BilibiliMusicTest(unittest.TestCase):
 
             def get(self, url, params=None, headers=None, timeout=10):
                 calls.append(url)
-                if url == self.module._BILIBILI_HOME:
+                if url == bilibili_home:
                     self.cookies["buvid3"] = "seed"
                     return _FakeResponse(200, {"ok": True})
                 self.target_calls += 1
@@ -107,11 +108,12 @@ class BilibiliMusicTest(unittest.TestCase):
                 return _FakeResponse(200, {"code": 0, "data": {"result": []}})
 
         fake_session = FakeSession()
-        fake_session.module = self.module
-        bili._session = fake_session
+        bili._session = cast("requests.Session", fake_session)
 
         data = bili._get(target_url, params={"keyword": "测试"})
 
+        self.assertIsNotNone(data)
+        assert data is not None
         self.assertEqual(data["code"], 0)
         self.assertEqual(calls, [target_url, self.module._BILIBILI_HOME, target_url])
         self.assertEqual(fake_session.cookies["buvid3"], "seed")

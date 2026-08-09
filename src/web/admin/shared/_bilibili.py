@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import base64
 import io
+from typing import Any, Optional, Protocol, cast
 from urllib.parse import parse_qs, urlparse
-from typing import Any, Optional
 
 from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_DEFAULT
@@ -39,11 +39,18 @@ _BILIBILI_COOKIE_NAMES = (
 )
 
 
+class _PngImage(Protocol):
+    """qrcode Pillow 后端实际提供、但第三方类型声明未完整描述的保存契约。"""
+
+    def save(self, stream: io.BytesIO, format: str = "PNG", **kwargs: object) -> None:
+        ...
+
+
 def _make_qr_data_uri(content: str) -> str:
     """把登录 URL 渲染为前端可直接展示的二维码 PNG。"""
     if qrcode is None:
         raise RuntimeError("缺少 qrcode 依赖，请先安装 requirements.txt")
-    image = qrcode.make(content)
+    image = cast(_PngImage, qrcode.make(content))
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -115,6 +122,8 @@ def _bilibili_qr_code(payload: dict) -> int:
     """从 B 站扫码轮询响应中提取状态码。"""
     nested = _bilibili_response_data(payload)
     for value in (nested.get("code"), payload.get("code")):
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            continue
         try:
             return int(value)
         except (TypeError, ValueError):

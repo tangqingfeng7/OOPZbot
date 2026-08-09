@@ -5,6 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from core.redis_keys import (
+from core.redis_keys import (  # noqa: E402
     CURRENT,
     PLAY_STATE,
     QUEUE,
@@ -33,8 +34,9 @@ class AreaKeyTest(unittest.TestCase):
         self.assertEqual(area_key(VOLUME, "A1"), "music:A1:volume")
         self.assertEqual(area_key(WEB_COMMANDS, "A1"), "music:A1:web_commands")
 
-    def test_empty_area_falls_back_to_global_key(self) -> None:
-        self.assertEqual(area_key(QUEUE, ""), QUEUE)
+    def test_empty_area_is_rejected_instead_of_using_global_key(self) -> None:
+        with self.assertRaises(ValueError):
+            area_key(QUEUE, "")
 
     def test_base_without_colon_does_not_raise(self) -> None:
         self.assertEqual(area_key("volume", "A1"), "volume:A1")
@@ -119,7 +121,7 @@ class ProfanityWarningExpiryTest(unittest.TestCase):
     def test_legacy_int_format_is_not_dropped(self) -> None:
         # 无时间戳时无从判断是否过期，保守当作未过期，别静默丢掉计数
         service = self._service()
-        service._warnings["u"] = 1
+        service._warnings["u"] = cast(tuple[int, float], 1)
 
         self.assertEqual(service._active_warning_count("u", 10_000.0), 1)
 

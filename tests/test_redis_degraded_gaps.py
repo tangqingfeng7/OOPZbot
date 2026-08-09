@@ -7,6 +7,7 @@ try/except 吞成静默失败；ping() 恒返回 True 又让 /health 在 Redis �
 
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,8 +17,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-import core.queue_manager as qm
-from core.queue_manager import _InMemoryRedis, is_degraded
+import core.queue_manager as qm  # noqa: E402
+from core.queue_manager import _InMemoryRedis, is_degraded  # noqa: E402
 
 
 class InMemoryRedisCapabilityTest(unittest.TestCase):
@@ -47,7 +48,7 @@ class InMemoryRedisCapabilityTest(unittest.TestCase):
         for i in range(3):
             self.r.set(f"ai:history:{i}", "x")
 
-        cursor, keys = self.r.scan(0, match="ai:history:*", count=100)
+        _cursor, keys = self.r.scan(0, match="ai:history:*", count=100)
         removed = self.r.delete(*keys)
 
         self.assertEqual(removed, 3)
@@ -68,7 +69,7 @@ class InMemoryRedisCapabilityTest(unittest.TestCase):
         self.assertEqual(pipe.execute(), [], "execute 之后应清空已排队的命令")
 
     def test_eval_is_deliberately_absent(self) -> None:
-        # 内存里跑不了 LUA，调用点用 hasattr 探测后走分步回退
+        # 内存里不解释 Lua，原子队列操作走明确的内存后端契约。
         self.assertFalse(hasattr(self.r, "eval"))
 
     def test_expire_is_deliberately_absent(self) -> None:
@@ -81,10 +82,14 @@ class DegradedStateTest(unittest.TestCase):
         # 这些是模块级单例，用例间必须存档还原
         self._client = qm._redis_client
         self._retry = qm._last_redis_retry
+        self._generation = qm._redis_generation
+        self._probe = qm._redis_probe_in_flight
 
     def tearDown(self) -> None:
         qm._redis_client = self._client
         qm._last_redis_retry = self._retry
+        qm._redis_generation = self._generation
+        qm._redis_probe_in_flight = self._probe
 
     def test_memory_fallback_is_reported_as_degraded(self) -> None:
         qm._redis_client = _InMemoryRedis()
@@ -100,7 +105,7 @@ class DegradedStateTest(unittest.TestCase):
         with mock.patch.object(web_player, "get_redis", return_value=_InMemoryRedis()):
             request = mock.Mock()
             with mock.patch.object(web_player, "_is_admin_authorized", return_value=True):
-                body = json.loads(web_player.health_check(request).body)
+                body = json.loads(bytes(web_player.health_check(request).body))
         return body["checks"]["redis"]["status"]
 
     def test_health_reports_memory_fallback(self) -> None:
@@ -113,36 +118,53 @@ class DegradedStateTest(unittest.TestCase):
         self.assertEqual(self._health_redis_status(), "ok")
 
 
-class QueueActionFallbackTest(unittest.TestCase):
-    """没有 eval 时 execute_queue_action 应退化成分步操作，而不是崩。"""
+class QueueActionAtomicityTest(unittest.TestCase):
+    """内存降级后仍必须通过后端契约原子修改域队列。"""
+
+    area = "area-A"
+    key = "music:area-A:queue"
 
     def _queue(self):
         r = _InMemoryRedis()
         for name in ("a", "b", "c"):
-            r.rpush("music:queue", name)
+            r.rpush(self.key, name)
         return r
 
-    def test_remove_without_lua(self) -> None:
+    def test_remove_uses_memory_backend_contract(self) -> None:
         from web.web_player import execute_queue_action
 
         r = self._queue()
-        self.assertEqual(execute_queue_action("remove", 1, r), {"ok": True})
-        self.assertEqual(r.lrange("music:queue", 0, -1), ["a", "c"])
+        self.assertEqual(execute_queue_action("remove", 1, r, area=self.area), {"ok": True})
+        self.assertEqual(r.lrange(self.key, 0, -1), ["a", "c"])
 
-    def test_top_without_lua(self) -> None:
+    def test_top_uses_memory_backend_contract(self) -> None:
         from web.web_player import execute_queue_action
 
         r = self._queue()
-        self.assertEqual(execute_queue_action("top", 2, r), {"ok": True})
-        self.assertEqual(r.lrange("music:queue", 0, -1), ["c", "a", "b"])
+        self.assertEqual(execute_queue_action("top", 2, r, area=self.area), {"ok": True})
+        self.assertEqual(r.lrange(self.key, 0, -1), ["c", "a", "b"])
 
-    def test_out_of_range_index_without_lua(self) -> None:
+    def test_random_pop_uses_memory_backend_contract(self) -> None:
+        from core.queue_manager import atomic_queue_pop_random
+
+        r = _InMemoryRedis()
+        for name in ("a", "b", "c"):
+            r.rpush(self.key, json.dumps({"name": name}))
+
+        raw = atomic_queue_pop_random(r, self.key)
+
+        assert raw is not None
+        popped = json.loads(str(raw))
+        self.assertIn(popped["name"], ("a", "b", "c"))
+        self.assertEqual(r.llen(self.key), 2)
+
+    def test_out_of_range_index(self) -> None:
         from web.web_player import execute_queue_action
 
         r = self._queue()
-        self.assertFalse(execute_queue_action("remove", 99, r)["ok"])
+        self.assertFalse(execute_queue_action("remove", 99, r, area=self.area)["ok"])
 
-    def test_negative_index_without_lua(self) -> None:
+    def test_negative_index(self) -> None:
         """端点默认值就是 body.get("index", -1)，请求体缺 index 即命中。
 
         lindex 支持负索引（-1 返回队尾），光靠它判 None 会放行负数，
@@ -154,15 +176,55 @@ class QueueActionFallbackTest(unittest.TestCase):
             for idx in (-1, -2):
                 with self.subTest(action=action, idx=idx):
                     r = self._queue()
-                    self.assertFalse(execute_queue_action(action, idx, r)["ok"])
+                    self.assertFalse(execute_queue_action(action, idx, r, area=self.area)["ok"])
                     self.assertEqual(
-                        r.lrange("music:queue", 0, -1), ["a", "b", "c"], "拒绝时不得改动队列"
+                        r.lrange(self.key, 0, -1), ["a", "b", "c"], "拒绝时不得改动队列"
                     )
 
     def test_unknown_action(self) -> None:
         from web.web_player import execute_queue_action
 
-        self.assertFalse(execute_queue_action("explode", 0, self._queue())["ok"])
+        self.assertFalse(
+            execute_queue_action("explode", 0, self._queue(), area=self.area)["ok"]
+        )
+
+    def test_empty_area_never_touches_global_queue(self) -> None:
+        from web.web_player import execute_queue_action
+
+        r = self._queue()
+        result = execute_queue_action("remove", 0, r, area="")
+
+        self.assertEqual(result["code"], "playback_area_unavailable")
+        self.assertEqual(r.lrange(self.key, 0, -1), ["a", "b", "c"])
+        self.assertEqual(r.lrange("music:queue", 0, -1), [])
+
+    def test_concurrent_top_and_remove_have_a_serializable_result(self) -> None:
+        from web.web_player import execute_queue_action
+
+        r = self._queue()
+        r.rpush(self.key, "d")
+        barrier = threading.Barrier(3)
+        results = []
+
+        def mutate(action: str, index: int) -> None:
+            barrier.wait()
+            results.append(execute_queue_action(action, index, r, area=self.area))
+
+        threads = [
+            threading.Thread(target=mutate, args=("remove", 1)),
+            threading.Thread(target=mutate, args=("top", 2)),
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        self.assertEqual(results, [{"ok": True}, {"ok": True}])
+        self.assertIn(
+            r.lrange(self.key, 0, -1),
+            (["d", "a", "c"], ["c", "b", "d"]),
+        )
 
 
 if __name__ == "__main__":

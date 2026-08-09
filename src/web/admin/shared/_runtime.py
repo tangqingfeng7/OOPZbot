@@ -8,8 +8,14 @@ from __future__ import annotations
 
 import functools
 import inspect
+from typing import TYPE_CHECKING
 
 from fastapi.responses import JSONResponse
+
+from core.redis_protocol import PlaybackCommandStore, RedisDataStore
+
+if TYPE_CHECKING:
+    from oopz.oopz_sender import OopzSender
 
 
 def require_sender(func):
@@ -39,15 +45,28 @@ def require_sender(func):
     return sync_wrapper
 
 
-def _get_redis():
+def _get_redis() -> RedisDataStore:
     """延迟导入，避免循环引用。"""
     from web.web_player import get_redis
     return get_redis()
 
 
-def _get_sender():
+def _get_sender() -> OopzSender | None:
     from web.web_player import get_sender
     return get_sender()
+
+
+def _require_sender() -> OopzSender:
+    """返回已初始化的 sender。
+
+    路由装饰器负责把正常的未初始化状态转换为 503；这里保留一次防御性检查，
+    为端点函数提供静态可验证的非空契约，也避免未来绕过装饰器直接调用时出现
+    难以定位的 ``NoneType`` 属性错误。
+    """
+    sender = _get_sender()
+    if sender is None:
+        raise RuntimeError("sender 未初始化；该端点必须由 require_sender 守卫")
+    return sender
 
 
 def _get_oopz_client():
@@ -85,12 +104,22 @@ def _set_liked_ids_cache(value: list) -> None:
     web_player.liked_ids_cache = value
 
 
-def _execute_control_action(action: str, body: dict, redis_client, area: str = "") -> dict:
+def _execute_control_action(
+    action: str,
+    body: dict,
+    redis_client: PlaybackCommandStore,
+    area: str = "",
+) -> dict:
     from web.web_player import execute_control_action
     return execute_control_action(action, body, redis_client, area=area)
 
 
-def _execute_queue_action(action: str, index, redis_client, area: str = "") -> dict:
+def _execute_queue_action(
+    action: str,
+    index,
+    redis_client: PlaybackCommandStore,
+    area: str,
+) -> dict:
     from web.web_player import execute_queue_action
     return execute_queue_action(action, index, redis_client, area=area)
 
@@ -101,17 +130,18 @@ def _add_song_to_queue(body: dict, area: str = "") -> dict:
 
 
 __all__ = [
-    "require_sender",
-    "_get_redis",
-    "_get_sender",
-    "_get_oopz_client",
-    "_get_netease",
-    "_get_started_at",
+    "_add_song_to_queue",
     "_admin_enabled",
-    "_get_liked_ids_cache",
-    "_get_plugin_runtime",
-    "_set_liked_ids_cache",
     "_execute_control_action",
     "_execute_queue_action",
-    "_add_song_to_queue",
+    "_get_liked_ids_cache",
+    "_get_netease",
+    "_get_oopz_client",
+    "_get_plugin_runtime",
+    "_get_redis",
+    "_get_sender",
+    "_get_started_at",
+    "_require_sender",
+    "_set_liked_ids_cache",
+    "require_sender",
 ]

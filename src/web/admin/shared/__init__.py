@@ -10,8 +10,125 @@
 
 from __future__ import annotations
 
-# --- 跨模块复用的领域依赖再导出（stdlib / typing / fastapi 由各消费方直接导入）---
-from core.http_constants import HTTP_TIMEOUT_DEFAULT  # noqa: F401
+import web.web_player_config as cfg
+from app.services.interaction.setup_diagnostics import SetupDiagnostics
+from core.database import (
+    DB_PATH,
+    MessageStatsDB,
+    ReminderDB,
+    ScheduledMessageDB,
+    SongCache,
+    Statistics,
+    db_connection,
+)
+from core.http_constants import HTTP_TIMEOUT_DEFAULT
+from core.logger_config import get_logger
+from core.queue_manager import (
+    KEY_CURRENT,
+    KEY_PLAY_STATE,
+    KEY_QUEUE,
+    _area_key,
+    get_redis_client,
+)
+from oopz.name_resolver import get_resolver
+from services.scheduler_templates import get_scheduled_template, list_scheduled_templates
+from web.web_link_token import (
+    clear_token,
+    ensure_token,
+    get_active_area,
+    get_token,
+    set_token,
+)
+
+from ._area import (
+    _MEMBERS_RESP_TTL,
+    _get_music_area,
+    _invalidate_members_cache,
+    _members_resp_cache,
+    _music_area_context,
+    _playback_area_unavailable_payload,
+    _require_music_area,
+    _resolve_area,
+    _resolved_area_cache,
+)
+from ._bilibili import (
+    _BILIBILI_API_BASE,
+    _BILIBILI_COOKIE_NAMES,
+    _BILIBILI_LOGIN_BASE,
+    _BILIBILI_NAV_PATH,
+    _BILIBILI_QR_GENERATE_PATH,
+    _BILIBILI_QR_POLL_PATH,
+    _bilibili_account_api_get,
+    _bilibili_account_status,
+    _bilibili_api_get,
+    _bilibili_cookie_from_poll,
+    _bilibili_login_message,
+    _bilibili_qr_code,
+    _bilibili_response_data,
+    _extract_bilibili_profile,
+    _make_qr_data_uri,
+)
+from ._debug import (
+    _cookie_debug_summary,
+    _cookie_pairs_from_header,
+    _cookie_pairs_from_response,
+    _debug_profile_text,
+    _mask_debug_token,
+)
+from ._netease import (
+    _cookie_from_response,
+    _netease_account_status,
+    _netease_api_get,
+    _netease_api_post,
+    _netease_login_message,
+    _netease_qr_code,
+    _netease_response_data,
+    _netease_timestamp_params,
+    _normalize_netease_base_url,
+)
+from ._oopz import (
+    _OOPZ_RUNTIME_FIELDS,
+    _apply_oopz_config_updates,
+    _oopz_login_lock,
+    _oopz_runtime_updates,
+    _refresh_oopz_name_resolver,
+    _refresh_oopz_runtime,
+    _refresh_oopz_sender_private_key,
+    _refresh_oopz_websocket,
+    _reload_private_key_module,
+)
+from ._pages import (
+    _ADMIN_PAGES,
+    _ADMIN_SHELL_TEMPLATE,
+    _load_admin_template,
+    _render_admin_page,
+    _render_topbar_actions,
+)
+from ._requests import read_json_body
+from ._runtime import (
+    _add_song_to_queue,
+    _admin_enabled,
+    _execute_control_action,
+    _execute_queue_action,
+    _get_liked_ids_cache,
+    _get_netease,
+    _get_oopz_client,
+    _get_plugin_runtime,
+    _get_redis,
+    _get_sender,
+    _get_started_at,
+    _require_sender,
+    _set_liked_ids_cache,
+    require_sender,
+)
+from ._session import _clear_admin_session_token, _set_admin_session_token
+from ._snapshots import (
+    _current_song_snapshot,
+    _overview_payload,
+    _queue_snapshot,
+    _tail_file,
+    _top_songs_from_play_history,
+)
 
 try:
     import requests
@@ -22,53 +139,114 @@ except Exception:
     RequestsException = RuntimeError
 
 try:
-    import qrcode  # type: ignore[reportMissingModuleSource]  # noqa: F401
+    import qrcode  # type: ignore[reportMissingModuleSource]
 except Exception:
     qrcode = None  # type: ignore[assignment]
 
-from core.database import (  # noqa: F401
-    DB_PATH,
-    MessageStatsDB,
-    ReminderDB,
-    ScheduledMessageDB,
-    SongCache,
-    Statistics,
-    db_connection,
-)
-from core.logger_config import get_logger
-from oopz.name_resolver import get_resolver  # noqa: F401
-from core.queue_manager import (  # noqa: F401
-    get_redis_client,
-    _area_key,
-    KEY_QUEUE,
-    KEY_CURRENT,
-    KEY_PLAY_STATE,
-)
-from services.scheduler_templates import get_scheduled_template, list_scheduled_templates  # noqa: F401
-from web.web_link_token import (  # noqa: F401
-    clear_token,
-    ensure_token,
-    get_active_area,
-    get_token,
-    set_token,
-)
-
-import web.web_player_config as cfg  # noqa: F401
-from app.services.interaction.setup_diagnostics import SetupDiagnostics  # noqa: F401
-
 logger = get_logger("WebPlayerAdmin")
 
-# --- 各子模块的辅助函数/常量再导出（各子模块通过 __all__ 声明导出面）---
-from ._runtime import *  # noqa: F401,F403,E402
-from ._requests import *  # noqa: F401,F403,E402
-from ._oopz import *  # noqa: F401,F403,E402
-from ._area import *  # noqa: F401,F403,E402
-from ._debug import *  # noqa: F401,F403,E402
-from ._netease import *  # noqa: F401,F403,E402
-from ._bilibili import *  # noqa: F401,F403,E402
-from ._pages import *  # noqa: F401,F403,E402
-from ._session import *  # noqa: F401,F403,E402
-from ._snapshots import *  # noqa: F401,F403,E402
-
-# 与原模块一致：导出全部非 dunder 顶层名字（包含上面的再导出符号与子模块辅助）。
-__all__ = [name for name in globals() if not name.startswith("__")]
+# 共享包的公共面保持显式，新增依赖时由评审决定是否对路由层公开。
+__all__ = [
+    "DB_PATH",
+    "HTTP_TIMEOUT_DEFAULT",
+    "KEY_CURRENT",
+    "KEY_PLAY_STATE",
+    "KEY_QUEUE",
+    "_ADMIN_PAGES",
+    "_ADMIN_SHELL_TEMPLATE",
+    "_BILIBILI_API_BASE",
+    "_BILIBILI_COOKIE_NAMES",
+    "_BILIBILI_LOGIN_BASE",
+    "_BILIBILI_NAV_PATH",
+    "_BILIBILI_QR_GENERATE_PATH",
+    "_BILIBILI_QR_POLL_PATH",
+    "_MEMBERS_RESP_TTL",
+    "_OOPZ_RUNTIME_FIELDS",
+    "MessageStatsDB",
+    "ReminderDB",
+    "RequestsException",
+    "ScheduledMessageDB",
+    "SetupDiagnostics",
+    "SongCache",
+    "Statistics",
+    "_add_song_to_queue",
+    "_admin_enabled",
+    "_apply_oopz_config_updates",
+    "_area_key",
+    "_bilibili_account_api_get",
+    "_bilibili_account_status",
+    "_bilibili_api_get",
+    "_bilibili_cookie_from_poll",
+    "_bilibili_login_message",
+    "_bilibili_qr_code",
+    "_bilibili_response_data",
+    "_clear_admin_session_token",
+    "_cookie_debug_summary",
+    "_cookie_from_response",
+    "_cookie_pairs_from_header",
+    "_cookie_pairs_from_response",
+    "_current_song_snapshot",
+    "_debug_profile_text",
+    "_execute_control_action",
+    "_execute_queue_action",
+    "_extract_bilibili_profile",
+    "_get_liked_ids_cache",
+    "_get_music_area",
+    "_get_netease",
+    "_get_oopz_client",
+    "_get_plugin_runtime",
+    "_get_redis",
+    "_get_sender",
+    "_get_started_at",
+    "_invalidate_members_cache",
+    "_load_admin_template",
+    "_make_qr_data_uri",
+    "_mask_debug_token",
+    "_members_resp_cache",
+    "_music_area_context",
+    "_netease_account_status",
+    "_netease_api_get",
+    "_netease_api_post",
+    "_netease_login_message",
+    "_netease_qr_code",
+    "_netease_response_data",
+    "_netease_timestamp_params",
+    "_normalize_netease_base_url",
+    "_oopz_login_lock",
+    "_oopz_runtime_updates",
+    "_overview_payload",
+    "_playback_area_unavailable_payload",
+    "_queue_snapshot",
+    "_refresh_oopz_name_resolver",
+    "_refresh_oopz_runtime",
+    "_refresh_oopz_sender_private_key",
+    "_refresh_oopz_websocket",
+    "_reload_private_key_module",
+    "_render_admin_page",
+    "_render_topbar_actions",
+    "_require_music_area",
+    "_require_sender",
+    "_resolve_area",
+    "_resolved_area_cache",
+    "_set_admin_session_token",
+    "_set_liked_ids_cache",
+    "_tail_file",
+    "_top_songs_from_play_history",
+    "cfg",
+    "clear_token",
+    "db_connection",
+    "ensure_token",
+    "get_active_area",
+    "get_logger",
+    "get_redis_client",
+    "get_resolver",
+    "get_scheduled_template",
+    "get_token",
+    "list_scheduled_templates",
+    "logger",
+    "qrcode",
+    "read_json_body",
+    "requests",
+    "require_sender",
+    "set_token",
+]

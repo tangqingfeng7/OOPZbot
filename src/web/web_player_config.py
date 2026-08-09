@@ -5,11 +5,19 @@ from __future__ import annotations
 import ast
 import copy
 import importlib
+import ipaddress
 import json
 import os
 
 import config as runtime_config
+from core.config_file_store import (
+    config_file_write_lock,
+    replace_text_files_atomically,
+)
 from core.logger_config import get_logger
+from core.paths import PROJECT_ROOT
+from core.redis_keys import ADMIN_SESSION as KEY_ADMIN_SESSION
+from core.redis_keys import ADMIN_SESSION_COOKIE
 
 logger = get_logger("WebPlayerConfig")
 
@@ -17,8 +25,6 @@ logger = get_logger("WebPlayerConfig")
 # 路径常量
 # ---------------------------------------------------------------------------
 
-from core.paths import PROJECT_ROOT  # noqa: E402 — 统一根路径来源，re-export 供 cfg.PROJECT_ROOT 使用
-from core.redis_keys import ADMIN_SESSION as KEY_ADMIN_SESSION, ADMIN_SESSION_COOKIE  # noqa: E402
 CONFIG_FILE_PATH = os.path.join(PROJECT_ROOT, "config.py")
 
 # 分组名 → config.py 中的源变量名
@@ -68,7 +74,12 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
         "admin_cookie_secure": {"type": "bool", "default": False},
         "admin_login_max_failures": {"type": "int", "min": 0, "max": 100, "default": 5},
         "admin_login_lock_seconds": {"type": "int", "min": 0, "max": 24 * 3600, "default": 300},
-        "trust_proxy_header": {"type": "bool", "default": True},
+        "trusted_proxy_cidrs": {
+            "type": "str_list",
+            "item_format": "cidr",
+            "max_len": 1000,
+            "default": ["127.0.0.1/32", "::1/128"],
+        },
     },
     "auto_recall": {
         "enabled": {"type": "bool", "default": False},
@@ -131,6 +142,9 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
         "password": {"type": "str", "max_len": 256, "sensitive": True, "default": ""},
         "db": {"type": "int", "min": 0, "max": 15, "default": 0},
         "decode_responses": {"type": "bool", "default": True},
+        "socket_connect_timeout": {"type": "float", "min": 0.1, "max": 60, "default": 3.0},
+        "socket_timeout": {"type": "float", "min": 0.1, "max": 300, "default": 5.0},
+        "health_check_interval": {"type": "int", "min": 1, "max": 3600, "default": 30},
     },
     "doubao_chat": {
         "enabled": {"type": "bool", "default": False},
@@ -342,13 +356,23 @@ def admin_login_lock_seconds() -> int:
         return default
 
 
-def trust_proxy_header() -> bool:
-    """是否信任反代透传的 X-Real-IP / X-Forwarded-For 来判定客户端 IP。
-
-    默认信任（文档推荐的部署形态就是 nginx 反代）。把 uvicorn 直接暴露到公网时
-    应设为 False，否则任何人都能伪造这两个头绕过限流与登录锁定。
-    """
-    return bool(WEB_PLAYER_CONFIG.get("trust_proxy_header", True))
+def trusted_proxy_cidrs() -> tuple[str, ...]:
+    """返回通过语法校验的可信反向代理网段。"""
+    default = config_default("web_player", "trusted_proxy_cidrs")
+    raw = WEB_PLAYER_CONFIG.get("trusted_proxy_cidrs", default)
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("WEB_PLAYER_CONFIG.trusted_proxy_cidrs 必须是字符串列表")
+    result: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            network = ipaddress.ip_network(text, strict=False)
+        except ValueError as exc:
+            raise ValueError(f"无效的可信代理网段: {text}") from exc
+        result.append(str(network))
+    return tuple(result)
 
 
 def admin_cookie_name() -> str:
@@ -437,6 +461,12 @@ def coerce_config_value(meta: dict, raw: object) -> object:
         joined = ",".join(items)
         if max_len is not None and len(joined) > max_len:
             raise ValueError(f"总长度不能超过 {max_len}")
+        if meta.get("item_format") == "cidr":
+            for item in items:
+                try:
+                    ipaddress.ip_network(item, strict=False)
+                except ValueError as exc:
+                    raise ValueError(f"无效网段: {item}") from exc
         return items
     if value_type == "json_dict":
         if isinstance(raw, dict):
@@ -543,11 +573,15 @@ def _byte_col_to_char_index(line: str, byte_col: int) -> int:
     return len(line)
 
 
-def _node_span(lines: list[str], offsets: list[int], node: ast.AST) -> tuple[int, int]:
+def _node_span(lines: list[str], offsets: list[int], node: ast.expr) -> tuple[int, int]:
+    end_lineno = node.end_lineno
+    end_col_offset = node.end_col_offset
+    if end_lineno is None or end_col_offset is None:
+        raise RuntimeError("配置语法节点缺少结束位置信息")
     start_col = _byte_col_to_char_index(lines[node.lineno - 1], node.col_offset)
-    end_col = _byte_col_to_char_index(lines[node.end_lineno - 1], node.end_col_offset)
+    end_col = _byte_col_to_char_index(lines[end_lineno - 1], end_col_offset)
     start = offsets[node.lineno - 1] + start_col
-    end = offsets[node.end_lineno - 1] + end_col
+    end = offsets[end_lineno - 1] + end_col
     return start, end
 
 
@@ -572,6 +606,11 @@ def _format_config_assignment(source_name: str, values: dict) -> str:
 
 def persist_config_updates(updates: dict, path: str | None = None) -> None:
     """把后台保存的配置写回 config.py；内存生效由 apply_config_updates 负责。"""
+    with config_file_write_lock():
+        _persist_config_updates_locked(updates, path)
+
+
+def _persist_config_updates_locked(updates: dict, path: str | None = None) -> None:
     if not updates:
         return
     config_path = path or CONFIG_FILE_PATH
@@ -606,7 +645,7 @@ def persist_config_updates(updates: dict, path: str | None = None) -> None:
             )
             continue
 
-        existing_keys: dict[str, ast.AST] = {}
+        existing_keys: dict[str, ast.expr] = {}
         for key_node, value_node in zip(dict_node.keys, dict_node.values):
             if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
                 existing_keys[key_node.value] = value_node
@@ -619,10 +658,13 @@ def persist_config_updates(updates: dict, path: str | None = None) -> None:
                 replacements.append((start, end, literal))
                 continue
 
-            closing_line = lines[dict_node.end_lineno - 1]
+            end_lineno = dict_node.end_lineno
+            if end_lineno is None:
+                raise RuntimeError(f"{source_name} 配置节点缺少结束行")
+            closing_line = lines[end_lineno - 1]
             closing_indent = closing_line[: len(closing_line) - len(closing_line.lstrip())]
             entry_indent = closing_indent + "    "
-            insert_pos = offsets[dict_node.end_lineno - 1]
+            insert_pos = offsets[end_lineno - 1]
             insertions.setdefault(insert_pos, []).append(
                 f"{entry_indent}{_python_literal(field)}: {literal},\n"
             )
@@ -636,13 +678,15 @@ def persist_config_updates(updates: dict, path: str | None = None) -> None:
     for start, end, replacement in sorted(edits, key=lambda item: item[0], reverse=True):
         text = text[:start] + replacement + text[end:]
 
-    temp_path = f"{config_path}.tmp"
-    with open(temp_path, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
-    os.replace(temp_path, config_path)
+    replace_text_files_atomically(((config_path, text),))
 
 
 def persist_admin_uids(uids: list, path: str | None = None) -> None:
+    with config_file_write_lock():
+        _persist_admin_uids_locked(uids, path)
+
+
+def _persist_admin_uids_locked(uids: list, path: str | None = None) -> None:
     config_path = path or CONFIG_FILE_PATH
     if not os.path.exists(config_path):
         raise RuntimeError("config.py 不存在，无法保存管理员列表")
@@ -664,10 +708,7 @@ def persist_admin_uids(uids: list, path: str | None = None) -> None:
             continue
         start, end = _node_span(lines, offsets, node.value)
         text = text[:start] + replacement + text[end:]
-        temp_path = f"{config_path}.tmp"
-        with open(temp_path, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-        os.replace(temp_path, config_path)
+        replace_text_files_atomically(((config_path, text),))
         return
     raise RuntimeError("config.py 中找不到 ADMIN_UIDS")
 

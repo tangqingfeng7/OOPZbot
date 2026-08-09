@@ -3,12 +3,13 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from core.redis_keys import WEB_COMMANDS as KEY_WEB_COMMANDS
 from core.redis_keys import encode_web_command
-
+from domain.playback import GlobalWebCommand
 from web.admin.shared import (
-    RequestsException,
     _BILIBILI_QR_GENERATE_PATH,
     _BILIBILI_QR_POLL_PATH,
+    RequestsException,
     _bilibili_account_status,
     _bilibili_api_get,
     _bilibili_cookie_from_poll,
@@ -78,7 +79,10 @@ async def admin_update_config(request: Request):
             r = web_player.get_redis()
             r.set(web_player.KEY_VOLUME, str(volume))
             # 后台改的是全局默认音量，不归属任何域：留空域即对所有域生效
-            r.rpush(web_player.KEY_WEB_COMMANDS, encode_web_command("", f"volume:{volume}"))
+            r.rpush(
+                KEY_WEB_COMMANDS,
+                encode_web_command(GlobalWebCommand("volume", {"value": volume})),
+            )
         except Exception as e:
             logger.debug("Apply default music volume failed: %s", e)
     cfg.refresh_runtime_dependents(set(applied))
@@ -483,10 +487,10 @@ async def admin_oopz_login(request: Request):
 
     phone, password, timeout = _parse_oopz_login_payload(await read_json_body(request))
 
+    from oopz.oopz_password_login import OopzPasswordLoginError, login_with_password
+
     async with _oopz_login_lock:
         try:
-            from oopz.oopz_password_login import OopzPasswordLoginError, login_with_password
-
             result = await login_with_password(phone, password, timeout=timeout, headless=True, save=True)
             raw_credentials = result.get("raw", {})
             runtime = _refresh_oopz_runtime(raw_credentials)
@@ -502,4 +506,4 @@ async def admin_oopz_login(request: Request):
             logger.exception("后台 OOPZ 账号密码登录失败")
             return JSONResponse({"ok": False, "error": f"OOPZ 登录失败: {exc}"}, status_code=500)
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["router"]

@@ -9,11 +9,12 @@ if sys.platform == "win32":
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from app.bootstrap import BotApplication
-from app.runtime import apply_runtime_overrides
+from app.runtime import apply_runtime_overrides, validate_runtime_config
 
 
 def main() -> None:
     apply_runtime_overrides()
+    validate_runtime_config()
     BotApplication().run()
 
 

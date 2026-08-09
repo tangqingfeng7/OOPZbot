@@ -1,15 +1,18 @@
-import time
 import threading
-import requests
+import time
 from collections import OrderedDict
-from typing import Optional
+from typing import Generic, Optional, TypeVar
 from urllib.parse import urlparse
+
+import requests
 
 from config import NETEASE_CLOUD
 from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
 logger = get_logger("Netease")
+
+_CacheValue = TypeVar("_CacheValue")
 
 
 def _safe_params(params: Optional[dict]) -> dict:
@@ -100,16 +103,16 @@ def _trial_audio_message(song_name: str = "") -> str:
     return f"{label}只返回了 30 秒左右的试听音频，可能需要会员、单曲购买或受版权限制"
 
 
-class _SearchCache:
+class _SearchCache(Generic[_CacheValue]):
     """线程安全的 LRU + TTL 搜索缓存，基于 OrderedDict 实现 O(1) 淘汰。"""
 
     def __init__(self, max_size: int = 128, ttl: int = 300):
-        self._data: OrderedDict[str, tuple[float, object]] = OrderedDict()
+        self._data: OrderedDict[str, tuple[float, _CacheValue]] = OrderedDict()
         self._max_size = max_size
         self._ttl = ttl
         self._lock = threading.Lock()
 
-    def get(self, key: str):
+    def get(self, key: str) -> _CacheValue | None:
         with self._lock:
             entry = self._data.get(key)
             if entry is None:
@@ -121,7 +124,7 @@ class _SearchCache:
             self._data.move_to_end(key)
             return val
 
-    def put(self, key: str, val):
+    def put(self, key: str, val: _CacheValue) -> None:
         with self._lock:
             if key in self._data:
                 self._data.move_to_end(key)
@@ -139,7 +142,7 @@ class NeteaseCloud:
     def __init__(self):
         self.base_url = NETEASE_CLOUD.get("base_url", "").rstrip("/")
         self.cookie = NETEASE_CLOUD.get("cookie", "")
-        self._search_cache = _SearchCache()
+        self._search_cache: _SearchCache[dict] = _SearchCache()
         self._session = requests.Session()
         self._last_song_url_error = ""
         if not self.base_url:

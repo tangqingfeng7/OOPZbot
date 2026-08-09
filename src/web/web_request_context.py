@@ -11,30 +11,52 @@ Cookie：播放器表现为链接反复失效，管理后台表现为「登录�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:  # 仅用于类型标注：运行时不引入 fastapi，便于独立单测
-    from fastapi import Request
+from web.web_rate_limit import ClientAddressRequest, ClientAddressResolver
 
 
-def request_is_https(request: "Request") -> bool:
-    """请求的原始协议是否为 HTTPS（优先信任反代透传的 X-Forwarded-Proto）。"""
+class RequestUrl(Protocol):
+    @property
+    def scheme(self) -> str: ...
+
+
+class RequestContext(ClientAddressRequest, Protocol):
+    """协议判定所需的最小请求接口。"""
+
+    @property
+    def url(self) -> RequestUrl: ...
+
+
+def request_is_https(request: RequestContext, trusted_proxy_cidrs=()) -> bool:
+    """仅在 TCP 对端可信时接受 ``X-Forwarded-Proto``。"""
     proto = request.headers.get("x-forwarded-proto", "")
-    if proto:
-        return proto.split(",")[0].strip().lower() == "https"
+    client = request.client
+    peer = client.host if client else ""
+    resolver = ClientAddressResolver(tuple(trusted_proxy_cidrs or ()))
+    if proto and resolver.is_trusted(peer):
+        normalized = proto.strip().lower()
+        if normalized in {"http", "https"}:
+            return normalized == "https"
     return request.url.scheme == "https"
 
 
-def cookie_secure_for(request: "Request", configured: bool) -> bool:
+def cookie_secure_for(
+    request: RequestContext,
+    configured: bool,
+    trusted_proxy_cidrs=(),
+) -> bool:
     """仅当配置要求 Secure 且当前请求确为 HTTPS 时才返回 True。
 
     ``configured`` 由调用点现取（如 ``cfg.admin_cookie_secure()``），
     本模块不缓存任何配置值。
     """
-    return bool(configured) and request_is_https(request)
+    return bool(configured) and request_is_https(request, trusted_proxy_cidrs)
 
 
 __all__ = [
-    "request_is_https",
+    "RequestContext",
+    "RequestUrl",
     "cookie_secure_for",
+    "request_is_https",
 ]

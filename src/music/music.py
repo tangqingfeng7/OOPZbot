@@ -1,32 +1,51 @@
 from __future__ import annotations
 
-import time
-import uuid
+import copy
 import random
 import threading
-import copy
-from typing import Optional
+import time
+import uuid
+from typing import Protocol, cast
 
-from oopz.oopz_sender import OopzSender
-from music.netease import NeteaseCloud
-from core.queue_manager import QueueManager
+from app.services.playback import PlaybackAreaResolver
+from config import OOPZ_CONFIG, WEB_PLAYER_CONFIG
+from core.database import ImageCache, SongCache, Statistics
+from core.logger_config import get_logger
+from core.queue_manager import QueueManager, get_redis_client
 from core.redis_keys import (
     VOLUME as KEY_VOLUME,
+)
+from core.redis_keys import (
     WEB_COMMANDS as KEY_WEB_COMMANDS,
+)
+from core.redis_keys import (
     decode_web_command,
 )
-from core.database import ImageCache, SongCache, Statistics
-from oopz.name_resolver import NameResolver
-from music.voice_client import VoiceClient
-from config import OOPZ_CONFIG, WEB_PLAYER_CONFIG
-from core.logger_config import get_logger
-from web.web_link_token import clear_token, get_token, seconds_since_access, set_active_area
-from music.music_web_control import WebControlExecutor
+from core.redis_protocol import redis_int
+from domain.playback import (
+    AreaId,
+    AreaWebCommand,
+    GlobalWebCommand,
+    PlaybackSessionSnapshot,
+    WebCommandDecodeError,
+)
 from music.music_platform import PlatformRegistry
 from music.music_playback import (
     PlaybackMixin,
-    reset_web_player_url_cache,  # noqa: F401 — re-export
     _web_player_link,
+    reset_web_player_url_cache,  # noqa: F401 — re-export
+)
+from music.music_web_control import WebControlExecutor
+from music.netease import NeteaseCloud
+from music.voice_client import VoiceClient
+from oopz.name_resolver import NameResolver
+from oopz.oopz_sender import OopzSender
+from web.web_link_token import (
+    clear_token,
+    get_active_area,
+    get_token,
+    seconds_since_access,
+    set_active_area,
 )
 
 logger = get_logger("Music")
@@ -39,6 +58,16 @@ PLAY_MODE_SHUFFLE = "shuffle"
 # autoplay 不再作为可选播放模式，仅作为「队列播完按配置自动续播」时的来源标识。
 PLAY_MODE_AUTOPLAY = "autoplay"
 _VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE}
+
+
+class _NeteaseSongUrlProvider(Protocol):
+    def get_song_url(
+        self,
+        song_id: int,
+        expected_duration_ms: int = 0,
+        song_name: str = "",
+    ) -> str | None: ...
+
 
 _PLATFORM_PREFIX_MAP = {
     "qq:": "qq",
@@ -80,20 +109,25 @@ class MusicHandler(PlaybackMixin):
     队列按域隔离，每个域拥有独立的 QueueManager。
     语音连接同一时刻只有一个（Agora 限制），通过 _voice_channel_area 标识当前所在域。"""
 
-    def __init__(self, sender: OopzSender, voice: Optional[VoiceClient] = None):
+    def __init__(self, sender: OopzSender, voice: VoiceClient | None = None):
         self.supports_interactive_selection = True
         self.sender = sender
         self.voice = voice
         self.netease = NeteaseCloud()
         self._queue_cache: dict[str, QueueManager] = {}
         self.names = NameResolver()
-        self._playback_lock = threading.Lock()
+        self._playback_lock = threading.RLock()
+        self._playback_generation = 0
+        self._service_stop_event = threading.Event()
+        self._auto_play_thread: threading.Thread | None = None
+        self._web_command_thread: threading.Thread | None = None
+        self._background_area_cache: tuple[str, float] = ("", 0.0)
         self._liked_cache: list = []
         self._liked_ids_cache: list = []
         self._play_start_time: float = 0
         self._play_duration: float = 0
-        self._voice_channel_id: Optional[str] = None
-        self._voice_channel_area: Optional[str] = None
+        self._voice_channel_id: str | None = None
+        self._voice_channel_area: str | None = None
         self._voice_enter_time: float = 0
         self._playlist_idle_since: float = 0
         self._web_link_released_due_to_idle: bool = False
@@ -122,25 +156,53 @@ class MusicHandler(PlaybackMixin):
         self._cover_prefetch: dict[str, tuple[threading.Event, dict]] = {}
         self._cover_prefetch_lock = threading.Lock()
 
-    def _get_queue(self, area: str = "") -> QueueManager:
+    def _get_queue(self, area: str) -> QueueManager:
         """获取域隔离的 QueueManager（带缓存）。"""
         area = (area or "").strip()
+        if not area:
+            raise ValueError("播放域不能为空")
         if area not in self._queue_cache:
             self._queue_cache[area] = QueueManager(area=area)
         return self._queue_cache[area]
 
+    def _resolve_background_area(self) -> str:
+        """按活跃域、默认域、首个已加入域解析后台播放域。"""
+        redis_client = get_redis_client()
+        try:
+            active_area = get_active_area(redis_client=redis_client)
+        except Exception:
+            active_area = ""
+
+        def _first_joined_area() -> str:
+            cached, cached_at = self._background_area_cache
+            now = time.monotonic()
+            if cached and now - cached_at < 300:
+                return cached
+            try:
+                areas = self.sender.get_joined_areas(quiet=True)
+                area = str((areas[0] if areas else {}).get("id") or "").strip()
+            except Exception:
+                logger.debug("后台播放域自动探测失败", exc_info=True)
+                area = ""
+            if area:
+                self._background_area_cache = (area, now)
+            return area
+
+        return PlaybackAreaResolver(
+            active_area_reader=lambda: active_area,
+            default_area_reader=lambda: str(OOPZ_CONFIG.get("default_area") or ""),
+            joined_area_reader=_first_joined_area,
+        ).admin().value
+
     @property
     def queue(self) -> QueueManager:
-        """向后兼容：未传 area 时使用当前语音域的队列，或全局默认队列。"""
-        override = getattr(self, "_queue_override", None)
-        if override is not None:
-            return override
-        return self._get_queue(self._voice_channel_area or "")
+        """返回当前播放域队列；无域时明确拒绝，绝不落到全局播放键。"""
+        area = self._voice_channel_area or self._resolve_background_area()
+        if not area:
+            from app.services.playback import PlaybackAreaUnavailable
 
-    @queue.setter
-    def queue(self, value) -> None:
-        """兼容测试注入 mock queue 的旧写法。"""
-        self._queue_override = value
+            raise PlaybackAreaUnavailable(PlaybackAreaUnavailable.message)
+        return self._get_queue(area)
 
     def _mark_web_active_area(self, area: str = "", queue: QueueManager | None = None) -> None:
         """让 Web 播放器跟随当前真正播放的域。"""
@@ -183,17 +245,18 @@ class MusicHandler(PlaybackMixin):
             "platforms": list(self.platforms.available.keys()),
         }
 
-    def _get_web_link(self, area: str = "") -> str:
+    def _get_web_link(self, area: str = "", *, mark_active: bool = True) -> str:
         """获取 Web 播放器链接（按需生成随机访问令牌）。"""
         q = self._get_queue(area)
         redis_client = getattr(q, "redis", None)
-        self._mark_web_active_area(area, queue=q)
+        if mark_active:
+            self._mark_web_active_area(area, queue=q)
         link = _web_player_link(redis_client=redis_client)
         if link:
             self._web_link_released_due_to_idle = False
         return link
 
-    def _release_web_link_if_needed(self):
+    def _release_web_link_if_needed(self, queue=None):
         """播放列表长时间空闲后，释放随机 Web 访问链接。"""
         timeout = int(WEB_PLAYER_CONFIG.get("link_idle_release_seconds", 1800) or 0)
         if timeout <= 0:
@@ -201,7 +264,12 @@ class MusicHandler(PlaybackMixin):
             self._web_link_released_due_to_idle = False
             return
 
-        q = self.queue
+        q = queue
+        if q is None:
+            area = self._resolve_background_area()
+            if not area:
+                return
+            q = self._get_queue(area)
         try:
             current = q.get_current()
             queue_length = q.get_queue_length()
@@ -209,7 +277,7 @@ class MusicHandler(PlaybackMixin):
             logger.debug(f"读取播放队列状态失败，跳过链接释放检查: {e}")
             return
 
-        if current is None and queue_length == 0 and not self._is_playing():
+        if current is None and queue_length == 0 and not self._is_playing(queue=q):
             if self._playlist_idle_since <= 0:
                 self._playlist_idle_since = time.time()
                 return
@@ -242,12 +310,22 @@ class MusicHandler(PlaybackMixin):
     # ------------------------------------------------------------------
 
     def _do_enter_voice(self, voice_channel_id: str, area: str) -> dict:
+        lock = getattr(self, "_playback_lock", None)
+        if lock is None:
+            lock = self._playback_lock = threading.RLock()
+        with lock:
+            return self._do_enter_voice_locked(voice_channel_id, area)
+
+    def _do_enter_voice_locked(self, voice_channel_id: str, area: str) -> dict:
         """执行语音频道进入的核心流程：退出旧频道、API 进入、Agora 连接、更新状态。
         成功返回 enter_channel 的响应 dict，失败返回含 "error" 键的 dict。"""
         from_channel = self._voice_channel_id or ""
         from_area = self._voice_channel_area or ""
 
-        if self._voice_channel_id and self._voice_channel_id != voice_channel_id:
+        if self._voice_channel_id and (
+            self._voice_channel_id != voice_channel_id
+            or self._voice_channel_area != area
+        ):
             self._leave_current_voice_channel()
 
         # 处理服务端残留：本地无记录但服务端可能仍记着 bot 在某个语音频道（上次崩溃/重启留下）。
@@ -280,6 +358,7 @@ class MusicHandler(PlaybackMixin):
 
         self._voice_channel_id = voice_channel_id
         self._voice_channel_area = area
+        self._playback_generation = getattr(self, "_playback_generation", 0) + 1
         self._voice_enter_time = time.time()
         return data
 
@@ -324,24 +403,38 @@ class MusicHandler(PlaybackMixin):
             )
             return False
 
-        # 已经在用户所在的语音频道：直接复用现有连接。重新走 _do_enter_voice
-        # 会让浏览器侧的 agoraJoin 先调用 agoraLeave，把当前正在播放的 audioTrack
-        if (
-            self._voice_channel_id == voice_ch_id
-            and self._voice_channel_area == area
-        ):
-            return True
+        lock = getattr(self, "_playback_lock", None)
+        if lock is None:
+            lock = self._playback_lock = threading.RLock()
+        with lock:
+            # 复用、播放中拒绝和实际进入必须基于同一个会话状态。否则在判断
+            # 与进入之间发生切域时，旧请求可能停止新域刚开始的播放。
+            if (
+                self._voice_channel_id == voice_ch_id
+                and self._voice_channel_area == area
+            ):
+                return True
 
-        if (self._voice_channel_id and self._voice_channel_id != voice_ch_id
-                and self._is_playing()):
-            cur_ch_name = self.names.channel(self._voice_channel_id)
-            self.sender.send_message(
-                f"Bot 正在 {cur_ch_name} 播放中，请等播完或到该频道使用 /st 停止。",
-                channel=channel, area=area,
+            current_channel = self._voice_channel_id
+            current_area = str(self._voice_channel_area or "").strip()
+            target_changed = bool(current_channel) and (
+                current_channel != voice_ch_id or current_area != area
             )
-            return False
+            if target_changed:
+                assert current_channel is not None
+                current_queue = self._get_queue(current_area) if current_area else None
+                if current_queue is None or self._is_playing(queue=current_queue):
+                    cur_ch_name = self.names.channel(current_channel)
+                    self.sender.send_message(
+                        f"Bot 正在 {cur_ch_name} 播放中，请等播完或到该频道使用 /st 停止。",
+                        channel=channel,
+                        area=area,
+                    )
+                    return False
 
-        data = self._do_enter_voice(voice_ch_id, area)
+            # _do_enter_voice 自身也使用同一把 RLock；这里保持外层锁直到状态
+            # 提交完成，确保校验结果不能在进入过程中失效。
+            data = self._do_enter_voice(voice_ch_id, area)
         if "error" in data:
             self.sender.send_message(
                 f"进入语音频道失败: {data['error']}，请稍后再试。",
@@ -408,14 +501,14 @@ class MusicHandler(PlaybackMixin):
         if not self.voice or not self.voice.available:
             return
         try:
-            raw = self.queue.redis.get(KEY_VOLUME)
+            raw = get_redis_client().get(KEY_VOLUME)
         except Exception as e:
             logger.debug(f"读取 {KEY_VOLUME} 失败，跳过音量恢复: {e}")
             return
         if raw is None:
             return
         try:
-            vol = int(raw)
+            vol = redis_int(raw, field="播放音量")
         except (TypeError, ValueError):
             return
         vol = max(0, min(100, vol))
@@ -449,9 +542,20 @@ class MusicHandler(PlaybackMixin):
             logger.warning(f"清理残留语音状态失败: {e}")
 
     def _leave_current_voice_channel(self):
+        lock = getattr(self, "_playback_lock", None)
+        if lock is None:
+            lock = self._playback_lock = threading.RLock()
+        with lock:
+            self._leave_current_voice_channel_locked()
+
+    def _leave_current_voice_channel_locked(self):
         """退出 Bot 当前所在的语音频道。"""
         if not self._voice_channel_id:
             return
+
+        # 在任何外部停止/退出动作前先使旧推流快照失效，避免回调在
+        # leave 期间重新写回上一会话的状态。
+        self._playback_generation = getattr(self, "_playback_generation", 0) + 1
 
         # 先断开 Agora RTC 连接
         if self.voice and self.voice.available:
@@ -480,7 +584,7 @@ class MusicHandler(PlaybackMixin):
             return []
         return p.search_many(keyword, limit=max(1, min(limit, 10)))
 
-    def search_best_candidate(self, keyword: str, platform: str = _PLATFORM_NETEASE) -> Optional[dict]:
+    def search_best_candidate(self, keyword: str, platform: str = _PLATFORM_NETEASE) -> dict | None:
         """快速搜索首条候选，用于 /bf 直播放歌的快速命中。
 
         netease 平台优先在登录账号"我喜欢的音乐"里搜，命中就用喜欢列表的那一首；
@@ -555,13 +659,35 @@ class MusicHandler(PlaybackMixin):
         if song.get("url"):
             data = dict(song)
         elif song.get("name") and song.get("artists"):
-            try:
-                url = p.get_song_url(
-                    song_id,
-                    expected_duration_ms=song.get("duration", 0) or song.get("duration_ms", 0) or 0,
-                    song_name=song.get("name", ""),
+            if platform == _PLATFORM_NETEASE:
+                if isinstance(song_id, bool):
+                    self.sender.send_message(
+                        "错误: 网易云歌曲 ID 无效",
+                        channel=channel,
+                        area=area,
+                    )
+                    return
+                try:
+                    netease_song_id = int(str(song_id))
+                except ValueError:
+                    self.sender.send_message(
+                        "错误: 网易云歌曲 ID 无效",
+                        channel=channel,
+                        area=area,
+                    )
+                    return
+                raw_duration = song.get("duration_ms") or song.get("duration", 0)
+                duration_ms = (
+                    raw_duration
+                    if isinstance(raw_duration, int) and not isinstance(raw_duration, bool)
+                    else 0
                 )
-            except TypeError:
+                url = cast(_NeteaseSongUrlProvider, p).get_song_url(
+                    netease_song_id,
+                    expected_duration_ms=duration_ms,
+                    song_name=str(song.get("name") or ""),
+                )
+            else:
                 url = p.get_song_url(song_id)
             if not url:
                 detail = getattr(p, "last_song_url_error", "") or "无法获取播放链接"
@@ -586,7 +712,7 @@ class MusicHandler(PlaybackMixin):
 
     def play_song(self, keyword: str, platform: str, channel: str, area: str, user: str) -> None:
         """通用的多平台点歌入口。"""
-        voice_ok = [None]
+        voice_ok: list[bool | None] = [None]
         voice_done = threading.Event()
 
         def _voice_check():
@@ -612,15 +738,18 @@ class MusicHandler(PlaybackMixin):
 
     def play_next(self, channel: str, area: str, user: str) -> None:
         """播放队列中的下一首"""
-        if not self._voice_channel_id:
-            self.sender.send_message(
-                "Bot 当前不在语音频道，请先用 /bf 点歌或让 Bot 跟随进入语音频道。",
-                channel=channel,
-                area=area,
-            )
-            return
-
         with self._playback_lock:
+            session = self._playback_snapshot_locked()
+            if session.area is None or session.channel is None:
+                error = "Bot 当前不在语音频道，请先用 /bf 点歌或让 Bot 跟随进入语音频道。"
+            elif session.area.value != str(area or "").strip():
+                error = "Bot 当前正在其他域播放，已拒绝跨域切歌。"
+            else:
+                error = ""
+            if error:
+                self.sender.send_message(error, channel=channel, area=area)
+                return
+
             q = self._get_queue(area)
             next_song = q.play_next()
             if not next_song:
@@ -630,6 +759,7 @@ class MusicHandler(PlaybackMixin):
             next_song["channel"] = channel
             next_song["area"] = area
 
+            session = self._advance_playback_generation_locked()
             if self.voice and self.voice.available:
                 self.voice.stop_audio()
             self._play_start_time = 0
@@ -642,21 +772,19 @@ class MusicHandler(PlaybackMixin):
             q.set_current(next_song)
 
             SongCache.record_play(
-                song_id=next_song.get("song_id"),
-                platform=next_song.get("platform"),
+                song_id=str(next_song.get("song_id") or ""),
+                platform=str(next_song.get("platform") or _PLATFORM_NETEASE),
                 data=next_song,
                 channel_id=channel,
                 user_id=user,
             )
-            Statistics.update_today(next_song.get("platform", _PLATFORM_NETEASE), cache_hit=False)
+            Statistics.update_today(
+                str(next_song.get("platform") or _PLATFORM_NETEASE),
+                cache_hit=False,
+            )
 
-            threading.Thread(
-                target=self._stream_to_voice_channel,
-                args=(next_song["url"], next_song.get("name", "music"), channel, area,
-                      str(next_song.get("song_id", "")), next_song.get("duration_ms", 0)),
-                daemon=True,
-            ).start()
-            self._preload_next_song_if_any()
+            self._start_stream_thread(next_song, session)
+            self._preload_next_song_if_any(queue=q)
 
         text = self._build_now_playing_text("切换到下一首", next_song)
         attachments = next_song.get("attachments", [])
@@ -789,6 +917,8 @@ class MusicHandler(PlaybackMixin):
             self.sender.send_message("随机选歌失败，请稍后再试", channel=channel, area=area)
             return
 
+        if first_text is None:
+            raise RuntimeError("喜欢列表首首歌曲提交成功但未生成通知文本")
         if count > 1 and success_count > 1:
             first_text += f"\n(共 {success_count} 首已加入队列)"
 
@@ -797,6 +927,15 @@ class MusicHandler(PlaybackMixin):
     def stop_play(self, channel: str, area: str) -> None:
         """停止播放并退出语音频道"""
         with self._playback_lock:
+            session = self._playback_snapshot_locked()
+            if session.area is None or session.area.value != str(area or "").strip():
+                self.sender.send_message(
+                    "Bot 当前未在该域播放，已拒绝跨域停止。",
+                    channel=channel,
+                    area=area,
+                )
+                return
+            self._advance_playback_generation_locked()
             self._play_start_time = 0
             self._play_duration = 0
             q = self._get_queue(area)
@@ -810,9 +949,9 @@ class MusicHandler(PlaybackMixin):
             self._leave_current_voice_channel()
         self.sender.send_message("已停止播放，Bot 已退出语音频道", channel=channel, area=area)
 
-    def get_play_mode(self) -> str:
+    def get_play_mode(self, queue=None) -> str:
         """读取当前播放模式；未配置时默认列表循环。"""
-        q = self.queue
+        q = queue or self.queue
         mode = q.get_play_mode() if hasattr(q, "get_play_mode") else None
         if mode not in _VALID_PLAY_MODES:
             mode = PLAY_MODE_LIST
@@ -820,14 +959,15 @@ class MusicHandler(PlaybackMixin):
                 q.set_play_mode(mode)
         return mode
 
-    def set_play_mode(self, mode: str) -> None:
+    def set_play_mode(self, mode: str, queue=None) -> None:
         """设置播放模式。"""
         if mode not in _VALID_PLAY_MODES:
             raise ValueError(f"无效播放模式: {mode}")
-        if hasattr(self.queue, "set_play_mode"):
-            self.queue.set_play_mode(mode)
+        q = queue or self.queue
+        if hasattr(q, "set_play_mode"):
+            q.set_play_mode(mode)
 
-    def _build_autoplay_song(self, current_song: dict | None) -> Optional[dict]:
+    def _build_autoplay_song(self, current_song: dict | None) -> dict | None:
         uid = self.netease.get_user_id()
         if not uid:
             return None
@@ -883,7 +1023,7 @@ class MusicHandler(PlaybackMixin):
             self._liked_search_loading = False
 
     @staticmethod
-    def _match_liked_in(songs: list[dict], keyword: str) -> Optional[dict]:
+    def _match_liked_in(songs: list[dict], keyword: str) -> dict | None:
         """在给定歌曲列表里按 keyword 找最匹配的一首。
 
         匹配策略（按优先级降序）：
@@ -924,11 +1064,11 @@ class MusicHandler(PlaybackMixin):
 
         for bucket in (exact, prefix_name, contains_full, token_match):
             if bucket:
-                bucket.sort(key=lambda s: len((s.get("name") or "")))
+                bucket.sort(key=lambda s: len(s.get("name") or ""))
                 return bucket[0]
         return None
 
-    def _lookup_liked_song(self, keyword: str) -> Optional[dict]:
+    def _lookup_liked_song(self, keyword: str) -> dict | None:
         """在喜欢列表里找最匹配的一首；返回 None 表示未命中（外层走全网搜索）。
 
         - 先在本地 cache 里搜
@@ -961,7 +1101,7 @@ class MusicHandler(PlaybackMixin):
 
     _NEW_LIKED_PROBE_LIMIT = 200
 
-    def _lookup_in_new_liked(self, keyword: str, existing_ids: set) -> Optional[dict]:
+    def _lookup_in_new_liked(self, keyword: str, existing_ids: set) -> dict | None:
         """从 likelist 里找 cache 还没收录的新增 ID，按需拉详情匹配。"""
         try:
             uid = self.netease.get_user_id()
@@ -1006,14 +1146,20 @@ class MusicHandler(PlaybackMixin):
             logger.debug(f"增量喜欢列表查询失败: {e}")
             return None
 
-    def _dequeue_next_song(self, natural_end: bool, current_song: dict | None) -> tuple[Optional[dict], str]:
+    def _dequeue_next_song(
+        self,
+        natural_end: bool,
+        current_song: dict | None,
+        queue=None,
+    ) -> tuple[dict | None, str]:
         """根据播放模式决定下一首歌。"""
-        mode = self.get_play_mode()
+        q = queue or self.queue
+        mode = self.get_play_mode(queue=q)
         if natural_end and mode == PLAY_MODE_SINGLE and current_song:
             return copy.deepcopy(current_song), PLAY_MODE_SINGLE
-        if mode == PLAY_MODE_SHUFFLE and hasattr(self.queue, "pop_random"):
-            return self.queue.pop_random(), "queue"
-        next_song = self.queue.play_next()
+        if mode == PLAY_MODE_SHUFFLE and hasattr(q, "pop_random"):
+            return q.pop_random(), "queue"
+        next_song = q.play_next()
         if next_song:
             return next_song, "queue"
         if natural_end and mode == PLAY_MODE_LIST and _music_auto_play_enabled():
@@ -1024,23 +1170,40 @@ class MusicHandler(PlaybackMixin):
     # 自动播放监控（在 main.py 中作为后台线程启动）
     # ------------------------------------------------------------------
 
-    def _update_play_state_redis(self, **overrides):
+    def start_auto_play_monitor(self) -> None:
+        """幂等启动自动播放监控。"""
+        if self._auto_play_thread and self._auto_play_thread.is_alive():
+            return
+        self._service_stop_event.clear()
+        self._auto_play_thread = threading.Thread(
+            target=self.auto_play_monitor,
+            kwargs={"stop_event": self._service_stop_event},
+            name="MusicAutoPlay",
+            daemon=True,
+        )
+        self._auto_play_thread.start()
+
+    def _update_play_state_redis(self, queue=None, **overrides):
         """更新 Redis 中的 play_state，支持暂停/恢复/跳转时的状态同步"""
         try:
             ps = {"start_time": self._play_start_time, "duration": self._play_duration}
             ps.update(overrides)
-            self.queue.set_play_state(ps)
+            (queue or self.queue).set_play_state(ps)
         except Exception as e:
             logger.debug(f"更新 play_state 失败: {e}")
 
     def start_web_command_listener(self) -> None:
         """启动独立线程，通过 BLPOP 实时监听 Web 控制命令（无延迟）"""
+        if self._web_command_thread and self._web_command_thread.is_alive():
+            return
+        self._service_stop_event.clear()
+
         def _listener():
             logger.info("Web 命令监听线程已启动 (BLPOP)")
             last_warn_at = 0.0
-            while True:
+            while not self._service_stop_event.is_set():
                 try:
-                    result = self.queue.redis.blpop(KEY_WEB_COMMANDS, timeout=2)
+                    result = get_redis_client().blpop(KEY_WEB_COMMANDS, timeout=1)
                     if result:
                         _, cmd_raw = result
                         self._consume_web_command(cmd_raw)
@@ -1051,10 +1214,30 @@ class MusicHandler(PlaybackMixin):
                         last_warn_at = now
                     else:
                         logger.debug(f"Web 命令监听异常（抑制告警）: {e}")
-                    time.sleep(1)
+                    self._service_stop_event.wait(1)
 
-        t = threading.Thread(target=_listener, daemon=True)
-        t.start()
+        self._web_command_thread = threading.Thread(
+            target=_listener,
+            name="MusicWebCommand",
+            daemon=True,
+        )
+        self._web_command_thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """停止音乐后台服务；可重复调用。"""
+        self._service_stop_event.set()
+        deadline = time.monotonic() + max(0.0, timeout)
+        for attribute, name in (
+            ("_auto_play_thread", "MusicAutoPlay"),
+            ("_web_command_thread", "MusicWebCommand"),
+        ):
+            thread = getattr(self, attribute)
+            if thread and thread.is_alive():
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            if thread and thread.is_alive():
+                logger.warning("服务停止超时: %s，线程仍未退出", name)
+            else:
+                setattr(self, attribute, None)
 
     def _consume_web_command(self, cmd_raw) -> bool:
         """解码一条 Web 控制命令并按域决定是否执行。返回是否执行了。
@@ -1062,21 +1245,60 @@ class MusicHandler(PlaybackMixin):
         从监听线程的循环体里抽出来，好让「跨域命令会被跳过」这件事能被直接测到 ——
         埋在 while 循环 + BLPOP 里的话，把域校验整段删掉测试也照样绿。
         """
-        raw = cmd_raw.decode() if isinstance(cmd_raw, bytes) else str(cmd_raw)
-        decoded = decode_web_command(raw)
-        if decoded is None:
-            logger.warning("丢弃无域分隔符的旧 Web 控制命令: %s", raw[:20])
+        try:
+            command = decode_web_command(cmd_raw)
+        except WebCommandDecodeError as exc:
+            raw = cmd_raw.decode(errors="replace") if isinstance(cmd_raw, bytes) else str(cmd_raw)
+            logger.warning("丢弃无效 Web 控制命令 (%s): %s", exc, raw[:80])
             return False
-        cmd_area, cmd = decoded
-        if not self._web_command_applies_here(cmd_area, cmd):
-            logger.info(
-                "跳过来自其他域的 Web 控制命令: area=%s cmd=%s", cmd_area[:8], cmd[:20]
+        lock = getattr(self, "_playback_lock", None)
+        if lock is None:
+            lock = self._playback_lock = threading.RLock()
+        with lock:
+            snapshot = self._playback_snapshot_locked()
+            if not self._web_command_applies_here(command, snapshot=snapshot):
+                area = command.area.value if isinstance(command, AreaWebCommand) else ""
+                logger.info(
+                    "跳过不适用于当前播放会话的 Web 控制命令: area=%s action=%s",
+                    area[:8],
+                    command.action,
+                )
+                return False
+            queue = (
+                self._get_queue(snapshot.area.value)
+                if isinstance(command, AreaWebCommand) and snapshot.area is not None
+                else None
             )
-            return False
-        self._execute_web_command(cmd)
-        return True
+            return self._execute_web_command(command, queue=queue)
 
-    def _web_command_applies_here(self, cmd_area: str, cmd: str) -> bool:
+    def _playback_snapshot_locked(self) -> PlaybackSessionSnapshot:
+        """在持有 ``_playback_lock`` 时捕获完整播放会话。"""
+        current = str(getattr(self, "_voice_channel_area", "") or "").strip()
+        return PlaybackSessionSnapshot(
+            area=AreaId(current) if current else None,
+            channel=getattr(self, "_voice_channel_id", None),
+            generation=int(getattr(self, "_playback_generation", 0)),
+        )
+
+    def _advance_playback_generation_locked(self) -> PlaybackSessionSnapshot:
+        """使旧异步播放任务失效，并返回新播放意图的不可变快照。"""
+        self._playback_generation = (
+            int(getattr(self, "_playback_generation", 0)) + 1
+        )
+        return self._playback_snapshot_locked()
+
+    def _playback_snapshot_is_current_locked(
+        self,
+        snapshot: PlaybackSessionSnapshot,
+    ) -> bool:
+        """调用方持有播放锁时，验证异步任务是否仍属于当前会话。"""
+        return self._playback_snapshot_locked() == snapshot
+
+    def _web_command_applies_here(
+        self,
+        command,
+        snapshot: PlaybackSessionSnapshot | None = None,
+    ) -> bool:
         """命令是否该由当前正在播放的域执行。
 
         命令队列是全局单键，Web 端按自己看到的那个域下发 —— 不校验的话，B 域
@@ -1084,29 +1306,34 @@ class MusicHandler(PlaybackMixin):
         空域只允许全局音量命令；播放控制必须显式带域，且当前正在播放的域必须
         与之完全一致。
         """
-        cmd_area = (cmd_area or "").strip()
-        if not cmd_area:
-            return cmd.startswith("volume:")
-        if cmd.startswith("volume:"):
+        if isinstance(command, GlobalWebCommand):
+            return command.action == "volume"
+        if not isinstance(command, AreaWebCommand):
             return False
-        current = (getattr(self, "_voice_channel_area", "") or "").strip()
-        if not current:
+        if snapshot is None:
+            current = str(getattr(self, "_voice_channel_area", "") or "").strip()
+            snapshot = PlaybackSessionSnapshot(
+                area=AreaId(current) if current else None,
+                channel=getattr(self, "_voice_channel_id", None),
+                generation=int(getattr(self, "_playback_generation", 0)),
+            )
+        if snapshot.area is None:
             return False
-        return cmd_area == current
+        return command.area == snapshot.area
 
-    def _execute_web_command(self, cmd: str):
+    def _execute_web_command(self, command, queue=None) -> bool:
         """执行单条 Web 控制命令"""
         # 兼容测试中 __new__ 构造未执行 __init__ 的场景
         if not hasattr(self, "_web_control") or self._web_control is None:
             self._web_control = WebControlExecutor(self)
-        self._web_control.execute(cmd)
+        return self._web_control.execute(command, queue=queue)
 
 
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------
 
-    def _fetch_netease_song_data(self, song_id: int, channel: str, area: str, user: str) -> Optional[dict]:
+    def _fetch_netease_song_data(self, song_id: int, channel: str, area: str, user: str) -> dict | None:
         """通过歌曲 ID 获取详情并构建统一的 song_data 字典，失败返回 None。"""
         result = self.netease.summarize_by_id(song_id)
         if result["code"] != "success":
@@ -1178,7 +1405,7 @@ class MusicHandler(PlaybackMixin):
     _COVER_PREFETCH_TIMEOUT = 5.0
     _COVER_PREFETCH_TTL = 60.0
 
-    def _cover_prefetch_key(self, song_data: dict) -> Optional[str]:
+    def _cover_prefetch_key(self, song_data: dict) -> str | None:
         cover = song_data.get("cover")
         song_id = song_data.get("song_id")
         if not cover or not song_id:
@@ -1239,7 +1466,7 @@ class MusicHandler(PlaybackMixin):
         with self._cover_prefetch_lock:
             self._cover_prefetch.pop(key, None)
 
-    def _resolve_song_attachments(self, song_data: dict) -> tuple[list, Optional[int], bool]:
+    def _resolve_song_attachments(self, song_data: dict) -> tuple[list, int | None, bool]:
         """在真正提交播放前再处理封面，避免失败请求也触发上传和写库。"""
         attachments = list(song_data.get("attachments", []))
         image_cache_id = None
@@ -1276,7 +1503,7 @@ class MusicHandler(PlaybackMixin):
             "netease": "网易云",
             "qq": "QQ音乐",
             "bilibili": "B站",
-        }.get(song_data.get("platform"), "网易云")
+        }.get(str(song_data.get("platform") or ""), "网易云")
 
         text = (
             f"{prefix}:\n"
@@ -1288,7 +1515,12 @@ class MusicHandler(PlaybackMixin):
         )
 
         if bool(WEB_PLAYER_CONFIG.get("send_link_enabled", True)):
-            link = self._get_web_link(area=song_data.get("area", ""))
+            # 提交阶段已经在播放锁内设置过 active area。封面处理可能耗时，
+            # 此时旧请求生成通知链接绝不能在新会话开始后把 active area 写回旧域。
+            link = self._get_web_link(
+                area=str(song_data.get("area") or ""),
+                mark_active=False,
+            )
             if link:
                 text += f"\n{link}"
 
@@ -1302,13 +1534,21 @@ class MusicHandler(PlaybackMixin):
         """将已准备好的歌曲请求正式提交为播放或排队。prefix 用于自定义通知前缀。"""
         song_data = dict(song_data)
 
-        area = song_data.get("area", "")
-        q = self._get_queue(area)
-        self._mark_web_active_area(area, queue=q)
+        area = str(song_data.get("area") or "").strip()
         direct_play = False
+        queue_position: int | None = None
 
         with self._playback_lock:
-            is_playing = self._is_playing()
+            session = self._playback_snapshot_locked()
+            if session.area is None or session.area.value != area:
+                return {
+                    "code": "playback_session_changed",
+                    "message": "播放域已发生变化，本次点歌未提交，请重试。",
+                    "attachments": [],
+                }
+            q = self._get_queue(area)
+            self._mark_web_active_area(area, queue=q)
+            is_playing = self._is_playing(queue=q)
             current_song = q.get_current()
             queue_length = q.get_queue_length()
 
@@ -1316,35 +1556,24 @@ class MusicHandler(PlaybackMixin):
                 logger.info("检测到残留状态: 歌曲已播完但 current 存在, 自动清理")
                 q.clear_current()
                 current_song = None
+                session = self._advance_playback_generation_locked()
 
             if not is_playing and current_song is None and queue_length == 0:
                 song_data = dict(song_data)
                 play_uuid = str(uuid.uuid4())
                 song_data["play_uuid"] = play_uuid
+                session = self._advance_playback_generation_locked()
                 self._start_playing(song_data.get("duration_ms", 0), area=area)
                 q.set_current(song_data)
 
-                threading.Thread(
-                    target=self._stream_to_voice_channel,
-                    args=(
-                        song_data["url"],
-                        song_data["name"],
-                        song_data.get("channel", ""),
-                        song_data.get("area", ""),
-                        str(song_data.get("song_id", "")),
-                        song_data.get("duration_ms", 0),
-                    ),
-                    daemon=True,
-                ).start()
-                self._preload_next_song_if_any()
+                self._start_stream_thread(song_data, session)
+                self._preload_next_song_if_any(queue=q)
                 direct_play = True
             else:
-                pos = q.add_to_queue(song_data)
-                # 入队的歌也预加载，避免 /next 时浏览器去拉远程 URL 撞上
-                # 5s 超时 → 回退本地 → 再上传，全程能给用户 7+s 的"假静默"。
-                # 预加载 = 后台先把音频字节缓存到本机，next 时 voice.play_audio
-                # 命中缓存直接 agoraPlayLocal，省掉远程超时和下载。
-                self._preload_next_song_if_any()
+                queue_position = q.add_to_queue(song_data)
+                # 入队歌曲提前下载进 voice cache；/next 命中后会直接落临时文件，
+                # 再由 agoraPlayAudio(file://...) 播放，省掉远程尝试和再次下载。
+                self._preload_next_song_if_any(queue=q)
 
         prefetched = self._consume_cover_prefetch(song_data)
         if prefetched is not None:
@@ -1355,21 +1584,30 @@ class MusicHandler(PlaybackMixin):
 
         if direct_play:
             try:
-                q.set_current(song_data)
+                with self._playback_lock:
+                    if self._playback_snapshot_is_current_locked(session):
+                        current = q.get_current() or {}
+                        if current.get("play_uuid") == song_data.get("play_uuid"):
+                            q.set_current(song_data)
             except Exception:
                 pass
             SongCache.record_play(
-                song_data.get("song_id"),
-                song_data.get("platform", _PLATFORM_NETEASE),
+                str(song_data.get("song_id") or ""),
+                str(song_data.get("platform") or _PLATFORM_NETEASE),
                 song_data,
                 image_cache_id,
-                song_data.get("channel", ""),
-                song_data.get("user", ""),
+                str(song_data.get("channel") or ""),
+                str(song_data.get("user") or ""),
             )
-            Statistics.update_today(song_data.get("platform", _PLATFORM_NETEASE), cache_hit)
+            Statistics.update_today(
+                str(song_data.get("platform") or _PLATFORM_NETEASE),
+                cache_hit,
+            )
             text = self._build_song_request_text(song_data, prefix=prefix)
         else:
-            actual = pos + 1 + (1 if current_song or is_playing else 0)
+            if queue_position is None:
+                raise RuntimeError("歌曲未直接播放且未写入队列")
+            actual = queue_position + 1 + (1 if current_song or is_playing else 0)
             text = self._build_song_request_text(song_data, prefix=prefix) + f"\n已加入队列 (位置: {actual})"
 
         return {"code": "success", "message": text, "attachments": attachments}

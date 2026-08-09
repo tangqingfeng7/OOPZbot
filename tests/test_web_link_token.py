@@ -1,15 +1,17 @@
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-import web.web_link_token as web_link_token
-from web.web_link_token import (
+import web.web_link_token as web_link_token  # noqa: E402
+from web.web_link_token import (  # noqa: E402
     KEY_WEB_LAST_ACCESS,
     clear_token,
     seconds_since_access,
@@ -71,6 +73,71 @@ class LastAccessTest(unittest.TestCase):
     def test_corrupt_value_falls_back_to_memory(self) -> None:
         self.redis.store[KEY_WEB_LAST_ACCESS] = "not-a-number"
         self.assertEqual(seconds_since_access(redis_client=self.redis), float("inf"))
+
+    def test_redis_stale_value_cannot_hide_newer_memory_access(self) -> None:
+        now = time.time()
+        web_link_token._memory_last_access = now
+        self.redis.store[KEY_WEB_LAST_ACCESS] = str(now - 3600)
+
+        self.assertLess(seconds_since_access(redis_client=self.redis), 5)
+
+    def test_non_finite_values_are_ignored(self) -> None:
+        for value in ("nan", "inf", "-inf"):
+            with self.subTest(value=value):
+                self.redis.store[KEY_WEB_LAST_ACCESS] = value
+                self.assertEqual(seconds_since_access(redis_client=self.redis), float("inf"))
+
+    def test_out_of_order_touch_keeps_maximum_timestamp(self) -> None:
+        from core.queue_manager import _InMemoryRedis
+
+        redis_client = _InMemoryRedis()
+        with mock.patch.object(web_link_token.time, "time", return_value=200.0):
+            touch_access(redis_client=redis_client)
+        with mock.patch.object(web_link_token.time, "time", return_value=100.0):
+            touch_access(redis_client=redis_client)
+
+        self.assertEqual(float(str(redis_client.get(KEY_WEB_LAST_ACCESS))), 200.0)
+        self.assertEqual(web_link_token._memory_last_access, 200.0)
+
+    def test_memory_backend_replaces_non_finite_existing_timestamp(self) -> None:
+        from core.queue_manager import _InMemoryRedis
+
+        redis_client = _InMemoryRedis()
+        for poisoned in ("nan", "inf", "-inf"):
+            with self.subTest(poisoned=poisoned):
+                redis_client.set(KEY_WEB_LAST_ACCESS, poisoned)
+                self.assertEqual(
+                    redis_client.set_max_float(KEY_WEB_LAST_ACCESS, 200.0),
+                    200.0,
+                )
+
+    def test_process_memory_replaces_non_finite_existing_timestamp(self) -> None:
+        for poisoned in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(poisoned=poisoned):
+                web_link_token._memory_last_access = poisoned
+                with mock.patch.object(web_link_token.time, "time", return_value=200.0):
+                    touch_access(redis_client=None)
+                self.assertEqual(web_link_token._memory_last_access, 200.0)
+
+    def test_memory_backend_concurrent_max_update_is_atomic(self) -> None:
+        from core.queue_manager import _InMemoryRedis
+
+        redis_client = _InMemoryRedis()
+        values = [50.0, 200.0, 125.0, 175.0]
+        barrier = threading.Barrier(len(values))
+
+        def update(value: float) -> None:
+            barrier.wait(timeout=1)
+            redis_client.set_max_float(KEY_WEB_LAST_ACCESS, value)
+
+        threads = [threading.Thread(target=update, args=(value,)) for value in values]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=1)
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(float(str(redis_client.get(KEY_WEB_LAST_ACCESS))), max(values))
 
 
 class IdleReleaseGuardTest(unittest.TestCase):

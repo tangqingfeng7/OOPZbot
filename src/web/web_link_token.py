@@ -1,3 +1,4 @@
+import math
 import secrets
 import threading
 import time
@@ -14,6 +15,30 @@ _lock = threading.Lock()
 _memory_token: str = ""
 _memory_area: str = ""
 _memory_last_access: float = 0.0
+
+_MAX_TIMESTAMP_LUA = """
+local candidate = tonumber(ARGV[1])
+if not candidate or candidate <= 0 or candidate ~= candidate or candidate == math.huge then
+    return redis.error_reply('candidate must be a finite positive timestamp')
+end
+local current = tonumber(redis.call('get', KEYS[1]))
+if not current or current <= 0 or current ~= current or current == math.huge then
+    current = 0
+end
+if candidate > current then
+    redis.call('set', KEYS[1], ARGV[1])
+    return candidate
+end
+return current
+"""
+
+
+def _positive_finite_timestamp(value) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0 and math.isfinite(parsed) else 0.0
 
 
 def _normalize_ttl(ttl_seconds=None) -> int:
@@ -112,31 +137,41 @@ def touch_access(redis_client=None):
     那些请求不进队列。没有这个时间戳，活跃用户会在队列空 30 分钟后被踢下线。
     """
     global _memory_last_access
-    now = time.time()
+    now = _positive_finite_timestamp(time.time())
+    if now <= 0:
+        return
     with _lock:
-        _memory_last_access = now
+        current = _positive_finite_timestamp(_memory_last_access)
+        _memory_last_access = max(current, now)
     if redis_client is not None:
         try:
-            redis_client.set(KEY_WEB_LAST_ACCESS, str(now))
+            if hasattr(redis_client, "set_max_float"):
+                redis_client.set_max_float(KEY_WEB_LAST_ACCESS, now)
+            elif hasattr(redis_client, "eval"):
+                redis_client.eval(_MAX_TIMESTAMP_LUA, 1, KEY_WEB_LAST_ACCESS, str(now))
+            else:
+                # 仅供实现最小 Redis 接口的测试替身；生产 Redis 必须走 Lua。
+                current = _positive_finite_timestamp(redis_client.get(KEY_WEB_LAST_ACCESS))
+                if now > current:
+                    redis_client.set(KEY_WEB_LAST_ACCESS, str(now))
         except Exception as e:
             logger.debug(f"Redis 记录 Web 访问时间失败: {e}")
 
 
 def seconds_since_access(redis_client=None) -> float:
     """距最近一次播放器访问过去了多少秒；从未访问过返回 ``float('inf')``。"""
-    last = 0.0
+    redis_last = 0.0
     if redis_client is not None:
         try:
             raw = redis_client.get(KEY_WEB_LAST_ACCESS)
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", errors="ignore")
-            if raw:
-                last = float(raw)
+            redis_last = _positive_finite_timestamp(raw)
         except Exception as e:
             logger.debug(f"Redis 读取 Web 访问时间失败，使用内存回退: {e}")
-    if last <= 0:
-        with _lock:
-            last = _memory_last_access
+    with _lock:
+        memory_last = _positive_finite_timestamp(_memory_last_access)
+    last = max(redis_last, memory_last)
     if last <= 0:
         return float("inf")
     return max(0.0, time.time() - last)

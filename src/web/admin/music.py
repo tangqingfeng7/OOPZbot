@@ -2,22 +2,23 @@ import asyncio
 import os
 import sys
 import time
+from typing import cast
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.services.playback import PlaybackAreaUnavailable
+from core.json_utils import compact_json
+from core.redis_protocol import RedisAdminClient
 from web.admin.shared import (
     DB_PATH,
-    KEY_QUEUE,
     SetupDiagnostics,
     SongCache,
     Statistics,
     _add_song_to_queue,
-    _area_key,
     _current_song_snapshot,
     _execute_control_action,
     _execute_queue_action,
-    _get_music_area,
     _get_netease,
     _get_plugin_runtime,
     _get_redis,
@@ -25,20 +26,25 @@ from web.admin.shared import (
     _get_started_at,
     _music_area_context,
     _overview_payload,
+    _playback_area_unavailable_payload,
     _queue_snapshot,
+    _require_music_area,
     _set_liked_ids_cache,
     _tail_file,
     _top_songs_from_play_history,
     cfg,
-    read_json_body,
     clear_token,
     db_connection,
     ensure_token,
     get_token,
+    read_json_body,
 )
-from core.json_utils import compact_json
 
 router = APIRouter()
+
+
+def _area_unavailable_response() -> JSONResponse:
+    return JSONResponse(_playback_area_unavailable_payload(), status_code=409)
 
 @router.get("/admin/api/overview")
 def admin_overview():
@@ -132,9 +138,11 @@ async def admin_control(request: Request):
     try:
         body = await request.json()
         action = str(body.get("action", ""))
-        area = _get_music_area()
+        area = "" if action == "volume" else _require_music_area()
         result = _execute_control_action(action=action, body=body, redis_client=_get_redis(), area=area)
         return JSONResponse(result)
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
 
@@ -147,9 +155,18 @@ def admin_liked_refresh():
 
 @router.post("/admin/api/queue/clear")
 def admin_queue_clear():
-    area = _get_music_area()
-    _get_redis().delete(_area_key(KEY_QUEUE, area))
-    return JSONResponse({"ok": True})
+    try:
+        area = _require_music_area()
+        return JSONResponse(
+            _execute_control_action(
+                action="clear",
+                body={},
+                redis_client=_get_redis(),
+                area=area,
+            )
+        )
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
 
 
 @router.get("/admin/api/queue")
@@ -160,6 +177,8 @@ def admin_queue(
     r = _get_redis()
     area_context = _music_area_context(r)
     area = area_context.get("area", "")
+    if not area:
+        return _area_unavailable_response()
     full_queue = _queue_snapshot(r, area=area)
     total = len(full_queue)
     pages = max(1, (total + page_size - 1) // page_size) if total else 1
@@ -184,7 +203,10 @@ def admin_queue(
 @router.post("/admin/api/queue/action")
 async def admin_queue_action(request: Request):
     body = await read_json_body(request)
-    area = _get_music_area()
+    try:
+        area = _require_music_area()
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     result = _execute_queue_action(
         action=body.get("action", ""),
         index=body.get("index", -1),
@@ -274,7 +296,9 @@ def admin_search(
 async def admin_add(request: Request):
     try:
         body = await request.json()
-        return JSONResponse(_add_song_to_queue(body=body, area=_get_music_area()))
+        return JSONResponse(_add_song_to_queue(body=body, area=_require_music_area()))
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
 
@@ -297,10 +321,11 @@ def admin_system():
     try:
         r = _get_redis()
         r.ping()
-        info = r.info(section="server")
+        admin_redis = cast(RedisAdminClient, r)
+        info = admin_redis.info(section="server")
         data["redis"] = {
             "status": "connected",
-            "dbsize": int(r.dbsize() or 0),
+            "dbsize": admin_redis.dbsize(),
             "redis_version": info.get("redis_version", ""),
         }
     except Exception as e:
@@ -323,4 +348,4 @@ def admin_setup_diagnostics():
     report = diagnostics.build_report()
     return JSONResponse({"ok": True, **report}, headers={"Cache-Control": "no-store"})
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["router"]

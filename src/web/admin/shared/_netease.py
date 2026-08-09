@@ -111,6 +111,8 @@ def _netease_qr_code(payload: dict) -> int:
     values = (_netease_response_data(payload).get("code"), payload.get("code"))
     parsed_values = []
     for value in values:
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            continue
         try:
             parsed = int(value)
         except (TypeError, ValueError):

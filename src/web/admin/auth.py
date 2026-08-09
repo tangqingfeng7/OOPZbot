@@ -4,7 +4,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from core.logger_config import get_logger
-
 from web.admin.shared import (
     _admin_enabled,
     _clear_admin_session_token,
@@ -31,7 +30,7 @@ async def admin_login(request: Request):
     if not password:
         return JSONResponse({"ok": False, "error": "未配置 admin_password"}, status_code=503)
 
-    ip = client_ip(request, cfg.trust_proxy_header())
+    ip = client_ip(request, cfg.trusted_proxy_cidrs())
     lock_seconds = cfg.admin_login_lock_seconds()
     remaining = login_guard.locked_seconds(ip, lock_seconds)
     if remaining:
@@ -63,7 +62,11 @@ async def admin_login(request: Request):
         value=token,
         httponly=True,
         samesite="lax",
-        secure=cookie_secure_for(request, cfg.admin_cookie_secure()),
+        secure=cookie_secure_for(
+            request,
+            cfg.admin_cookie_secure(),
+            cfg.trusted_proxy_cidrs(),
+        ),
         max_age=ttl if ttl > 0 else None,
     )
     return response
@@ -81,4 +84,4 @@ def admin_logout(request: Request):
 def admin_me():
     return JSONResponse({"ok": True, "role": "admin"})
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["router"]

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import time
 
-from core.logger_config import get_logger
-
 import web.web_player_config as cfg
+from app.services.playback import PlaybackAreaResolver, PlaybackAreaUnavailable
+from core.logger_config import get_logger
 from web.web_link_token import get_active_area
 
 from ._runtime import _get_redis, _get_sender
@@ -49,18 +49,13 @@ def _music_area_context(redis_client=None) -> dict:
     except Exception:
         logger.debug("读取活跃域失败，继续尝试默认域/自动探测", exc_info=True)
 
-    area = ""
-    source = "none"
-    if active_area:
-        area = active_area
-        source = "active"
-    elif default_area:
-        area = default_area
-        source = "default"
-    else:
-        area = _resolve_area()
-        if area:
-            source = "auto"
+    resolution = PlaybackAreaResolver(
+        active_area_reader=lambda: active_area,
+        default_area_reader=lambda: default_area,
+        joined_area_reader=_resolve_area,
+    ).admin()
+    area = resolution.value
+    source = resolution.source
 
     source_text = {
         "active": "活跃域",
@@ -83,6 +78,21 @@ def _get_music_area(redis_client=None) -> str:
     return _music_area_context(redis_client).get("area", "")
 
 
+def _require_music_area(redis_client=None) -> str:
+    area = _get_music_area(redis_client)
+    if not area:
+        raise PlaybackAreaUnavailable(PlaybackAreaUnavailable.message)
+    return area
+
+
+def _playback_area_unavailable_payload() -> dict:
+    return {
+        "ok": False,
+        "code": PlaybackAreaUnavailable.code,
+        "error": PlaybackAreaUnavailable.message,
+    }
+
+
 _members_resp_cache: dict = {"data": None, "ts": 0.0, "key": ""}
 _MEMBERS_RESP_TTL = 10.0  # 管理后台成员列表响应缓存 10 秒
 
@@ -98,11 +108,13 @@ def _invalidate_members_cache() -> None:
 
 
 __all__ = [
-    "_resolved_area_cache",
-    "_resolve_area",
-    "_music_area_context",
-    "_get_music_area",
-    "_members_resp_cache",
     "_MEMBERS_RESP_TTL",
+    "_get_music_area",
     "_invalidate_members_cache",
+    "_members_resp_cache",
+    "_music_area_context",
+    "_playback_area_unavailable_payload",
+    "_require_music_area",
+    "_resolve_area",
+    "_resolved_area_cache",
 ]

@@ -77,6 +77,9 @@ REDIS_CONFIG = {
     "password": "",
     "db": 0,
     "decode_responses": True,
+    "socket_connect_timeout": 3.0,
+    "socket_timeout": 5.0,
+    "health_check_interval": 30,
 }
 
 # 网易云音乐 API 配置
@@ -242,7 +245,9 @@ WEB_PLAYER_CONFIG = {
     "admin_cookie_secure": False,  # 后台 cookie 是否仅 HTTPS 发送；使用 Nginx + SSL 时应设为 True（纯 HTTP 访问时自动降级）
     "admin_login_max_failures": 5,   # 同一 IP 连续登录失败多少次后锁定；0 关闭锁定
     "admin_login_lock_seconds": 300, # 锁定时长（秒）；0 关闭锁定
-    "trust_proxy_header": True,      # 是否信任反代的 X-Real-IP / X-Forwarded-For 判定客户端 IP；uvicorn 直接暴露公网时设为 False
+    # 仅当 TCP 对端属于以下网段时才信任 X-Real-IP / X-Forwarded-For。
+    # 裸机 Nginx 默认走回环；Docker Compose 会用环境变量覆盖为容器内 Nginx 的固定地址。
+    "trusted_proxy_cidrs": ["127.0.0.1/32", "::1/128"],
 }
 
 # OneBot v11 旁路服务配置

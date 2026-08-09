@@ -3,21 +3,35 @@
 单进程内存实现：整个进程只跑一个 uvicorn worker，所有计数都在本进程内。
 多实例部署时各实例各算各的，需要在反代层另行兜底。
 
-分桶用的客户端 IP 判定也收口在这里 —— nginx 用 ``$proxy_add_x_forwarded_for``
-是**追加**语义，客户端自带的 X-Forwarded-For 会排在真实地址前面，所以取首位
-等于取攻击者可控的值。``X-Real-IP`` 由 nginx 从 ``$remote_addr`` 覆盖写入，
-不可伪造，优先用它。
+分桶用的客户端 IP 判定也收口在这里。只有 TCP 对端属于明确配置的可信代理
+网段时才读取转发头，并从 ``X-Forwarded-For`` 右侧逐个剥离可信代理；
+任一地址畸形就回退到真实 TCP 对端，避免攻击者伪造来源绕过限流。
 """
 
 from __future__ import annotations
 
+import ipaddress
 import time
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
+from collections.abc import Mapping
+from functools import lru_cache
 from threading import Lock
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:  # 仅用于类型标注：运行时不引入 fastapi，便于独立单测
-    from fastapi import Request
+
+class ClientPeer(Protocol):
+    @property
+    def host(self) -> str: ...
+
+
+class ClientAddressRequest(Protocol):
+    """客户端地址解析器依赖的最小请求接口。"""
+
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+    @property
+    def client(self) -> ClientPeer | None: ...
 
 
 class RateLimiter:
@@ -26,9 +40,9 @@ class RateLimiter:
     _MAX_TRACKED_IPS = 2000
 
     def __init__(self, max_requests: int = 60, window_seconds: int = 60):
-        self._max = max_requests
-        self._window = window_seconds
-        self._hits: dict[str, list[float]] = defaultdict(list)
+        self._max = max(1, int(max_requests))
+        self._window = max(1, int(window_seconds))
+        self._hits: OrderedDict[str, list[float]] = OrderedDict()
         self._lock = Lock()
         self._last_cleanup = 0.0
 
@@ -36,7 +50,14 @@ class RateLimiter:
         now = time.monotonic()
         cutoff = now - self._window
         with self._lock:
-            bucket = self._hits[key]
+            bucket = self._hits.get(key)
+            if bucket is None:
+                bucket = []
+                if len(self._hits) >= self._MAX_TRACKED_IPS:
+                    self._hits.popitem(last=False)
+                self._hits[key] = bucket
+            else:
+                self._hits.move_to_end(key)
             bucket[:] = [t for t in bucket if t > cutoff]
             if len(bucket) >= self._max:
                 return False
@@ -50,10 +71,6 @@ class RateLimiter:
         stale = [k for k, v in self._hits.items() if not v or v[-1] <= cutoff]
         for k in stale:
             del self._hits[k]
-        if len(self._hits) > self._MAX_TRACKED_IPS:
-            by_recent = sorted(self._hits.items(), key=lambda x: x[1][-1] if x[1] else 0)
-            for k, _ in by_recent[: len(by_recent) - self._MAX_TRACKED_IPS]:
-                del self._hits[k]
 
     def reset(self) -> None:
         """清空所有桶。仅供测试使用 —— 限流器是模块级单例，用例间会互相污染。"""
@@ -140,25 +157,81 @@ class LoginGuard:
             self._locked_until.clear()
 
 
-def client_ip(request: "Request", trust_proxy: bool) -> str:
-    """限流分桶用的客户端标识。
+class ClientAddressResolver:
+    """只接受来自明确可信代理对端的转发地址。"""
 
-    ``trust_proxy`` 为真时优先 ``X-Real-IP``（nginx 从 ``$remote_addr`` 覆盖写入，
-    客户端伪造不了），其次取 ``X-Forwarded-For`` 的**末位**（追加语义下末位才是
-    离本机最近的那一跳），最后回落到直连地址。
+    _MAX_FORWARDED_HOPS = 32
 
-    直接把 uvicorn 暴露到公网时应设为假，否则任何人都能伪造这两个头绕过限流。
-    """
-    if trust_proxy:
-        real_ip = request.headers.get("x-real-ip", "").strip()
-        if real_ip:
-            return real_ip
+    def __init__(self, trusted_proxy_cidrs: tuple[str, ...] = ()) -> None:
+        networks = []
+        for raw in trusted_proxy_cidrs:
+            try:
+                networks.append(ipaddress.ip_network(str(raw).strip(), strict=False))
+            except ValueError as exc:
+                raise ValueError(f"无效的可信代理网段: {raw}") from exc
+        self._trusted_networks = tuple(networks)
+
+    @staticmethod
+    def _parse_address(raw: object):
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        if text.startswith("[") and "]" in text:
+            text = text[1 : text.index("]")]
+        if "%" in text:
+            text = text.split("%", 1)[0]
+        try:
+            return ipaddress.ip_address(text)
+        except ValueError:
+            return None
+
+    def is_trusted(self, address) -> bool:
+        parsed = address if isinstance(
+            address,
+            (ipaddress.IPv4Address, ipaddress.IPv6Address),
+        ) else self._parse_address(address)
+        return bool(
+            parsed is not None
+            and any(parsed.version == network.version and parsed in network for network in self._trusted_networks)
+        )
+
+    def resolve(self, request: ClientAddressRequest) -> str:
+        client = request.client
+        peer_raw = client.host if client else ""
+        peer = self._parse_address(peer_raw)
+        peer_text = str(peer) if peer is not None else (str(peer_raw).strip() or "unknown")
+        if peer is None or not self.is_trusted(peer):
+            return peer_text
+
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
-            hops = [part.strip() for part in forwarded.split(",") if part.strip()]
-            if hops:
-                return hops[-1]
-    return request.client.host if request.client else "unknown"
+            parts = forwarded.split(",")
+            if any(not part.strip() for part in parts):
+                return peer_text
+            raw_hops = [part.strip() for part in parts]
+            if len(raw_hops) > self._MAX_FORWARDED_HOPS:
+                return peer_text
+            hops = [self._parse_address(part) for part in raw_hops]
+            if any(hop is None for hop in hops):
+                return peer_text
+            chain = [*hops, peer]
+            while chain and self.is_trusted(chain[-1]):
+                chain.pop()
+            return str(chain[-1]) if chain else peer_text
+
+        real_ip = self._parse_address(request.headers.get("x-real-ip", ""))
+        return str(real_ip) if real_ip is not None else peer_text
+
+
+@lru_cache(maxsize=64)
+def _resolver_for(trusted_proxy_cidrs: tuple[str, ...]) -> ClientAddressResolver:
+    return ClientAddressResolver(trusted_proxy_cidrs)
+
+
+def client_ip(request: ClientAddressRequest, trusted_proxy_cidrs=()) -> str:
+    """返回限流和登录锁定共用的规范化客户端地址。"""
+    cidrs = tuple(str(item).strip() for item in (trusted_proxy_cidrs or ()) if str(item).strip())
+    return _resolver_for(cidrs).resolve(request)
 
 
 # 路径 → 限流器。未命中的走 DEFAULT_LIMITER。
@@ -186,14 +259,17 @@ def reset_all() -> None:
 
 
 __all__ = [
-    "RateLimiter",
+    "DEFAULT_LIMITER",
+    "LOGIN_LIMITER",
+    "PATH_LIMITERS",
+    "SEARCH_LIMITER",
+    "ClientAddressRequest",
+    "ClientAddressResolver",
+    "ClientPeer",
     "LoginGuard",
+    "RateLimiter",
     "client_ip",
     "limiter_for",
     "login_guard",
     "reset_all",
-    "PATH_LIMITERS",
-    "DEFAULT_LIMITER",
-    "SEARCH_LIMITER",
-    "LOGIN_LIMITER",
 ]

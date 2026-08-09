@@ -1,9 +1,10 @@
+import queue
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -108,6 +109,38 @@ class VoiceClientPlaybackTest(unittest.TestCase):
         self.assertIn("agoraSetVoiceIdentity", methods)
         self.assertIn("agoraLeave", methods)
         self.assertIsNone(self.client._current_agora_uid)
+
+    def test_browser_call_respects_explicit_shutdown_budget(self) -> None:
+        self.client._shutdown = threading.Event()
+        self.client._task_queue = queue.Queue()
+        started_at = time.monotonic()
+
+        with self.assertRaisesRegex(TimeoutError, "浏览器操作超时"):
+            self.client._run_on_browser(
+                "agoraState",
+                timeout=60,
+                wait_timeout=0.02,
+            )
+
+        self.assertLess(time.monotonic() - started_at, 0.2)
+
+    def test_repeated_destroy_retries_join_for_live_browser_thread(self) -> None:
+        self.client._destroyed = True
+        self.client._available = True
+        self.client._shutdown = threading.Event()
+        self.client._task_queue = queue.Queue()
+        self.client._identity_stop = threading.Event()
+        self.client._preload_stop = threading.Event()
+        self.client._preload_thread = None
+        self.client._play_thread = None
+        self.client._identity_thread = None
+        self.client._browser_thread = Mock()
+        self.client._browser_thread.is_alive.return_value = True
+
+        self.client.destroy(timeout=0)
+        self.client.destroy(timeout=0)
+
+        self.assertEqual(self.client._browser_thread.join.call_count, 2)
 
 
 if __name__ == "__main__":

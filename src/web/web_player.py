@@ -3,34 +3,53 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import time
+from collections.abc import Mapping
 from threading import Lock
-from typing import Optional
+from typing import TYPE_CHECKING, cast
 
-import redis
 import uvicorn
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import web.web_player_config as cfg
+from app.services.playback import (
+    PlaybackAreaResolver,
+    PlaybackAreaUnavailable,
+    PlaybackControlService,
+)
 from core.logger_config import get_logger
-from music.netease import NeteaseCloud
 from core.queue_manager import (
+    KEY_CURRENT,
+    KEY_PLAY_MODE,
+    KEY_PLAY_STATE,
+    KEY_QUEUE,
+    _area_key,
     get_redis_client,
     is_degraded,
-    _area_key,
-    KEY_QUEUE,
-    KEY_CURRENT,
-    KEY_PLAY_STATE,
-    KEY_PLAY_MODE,
 )
-from web.web_link_token import get_token, set_token, get_active_area, touch_access
+from core.redis_keys import (
+    VOLUME as KEY_VOLUME,
+)
+from core.redis_keys import WEB_TOKEN_COOKIE
+from core.redis_protocol import (
+    PlaybackCommandStore,
+    RedisDataStore,
+    redis_json_object,
+    redis_optional_text,
+)
+from music.music_platform import MusicPlatform
+from music.netease import NeteaseCloud
+from web.web_link_token import get_active_area, get_token, set_token, touch_access
 from web.web_rate_limit import client_ip, limiter_for
 from web.web_request_context import cookie_secure_for
 
-import web.web_player_config as cfg
+if TYPE_CHECKING:
+    from oopz.oopz_sender import OopzSender
 
 logger = get_logger("WebPlayer")
 
@@ -43,7 +62,6 @@ app = FastAPI(title="Oopz Music Player", docs_url=None, redoc_url=None)
 
 _WEB_ASSETS_DIR = os.path.join(cfg.PROJECT_ROOT, "src", "web", "assets")
 _ADMIN_ASSETS_DIR = os.path.join(_WEB_ASSETS_DIR, "admin")
-_WEBINTOSH_ASSETS_DIR = os.path.join(cfg.PROJECT_ROOT, "Webintosh", "assets")
 
 
 def _mount_static_if_exists(route: str, directory: str, name: str) -> None:
@@ -54,14 +72,13 @@ def _mount_static_if_exists(route: str, directory: str, name: str) -> None:
 
 
 _mount_static_if_exists("/admin-assets", _ADMIN_ASSETS_DIR, "admin-assets")
-_mount_static_if_exists("/webintosh-assets", _WEBINTOSH_ASSETS_DIR, "webintosh-assets")
 
 # ---------------------------------------------------------------------------
 # 共享状态（admin 模块通过公共函数访问）
 # ---------------------------------------------------------------------------
 
-_redis: Optional[redis.Redis] = None
-_netease: Optional[NeteaseCloud] = None
+_redis: RedisDataStore | None = None
+_netease: NeteaseCloud | None = None
 
 _lyric_cache: dict[str, dict] = {}
 _lyric_lock = Lock()
@@ -69,13 +86,6 @@ _LYRIC_CACHE_MAX = 200
 
 started_at: float = time.time()
 liked_ids_cache: list = []
-
-from core.redis_keys import (
-    WEB_COMMANDS as KEY_WEB_COMMANDS,
-    VOLUME as KEY_VOLUME,
-    WEB_TOKEN_COOKIE,
-    encode_web_command,
-)
 
 # 可选播放模式取值（与 src/music.py 中的 PLAY_MODE_* 常量保持一致）。
 # 注意：autoplay 不是可选模式，仅为队列播完自动续播时的来源标识。
@@ -85,11 +95,10 @@ PLAY_MODE_SHUFFLE = "shuffle"
 _VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE}
 
 
-def _read_play_mode(redis_client: redis.Redis, area: str = "") -> str:
+def _read_play_mode(redis_client: RedisDataStore, area: str = "") -> str:
     raw = redis_client.get(_area_key(KEY_PLAY_MODE, area))
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", errors="ignore")
-    return raw if raw in _VALID_PLAY_MODES else PLAY_MODE_LIST
+    mode = redis_optional_text(raw, field="播放模式")
+    return mode if mode in _VALID_PLAY_MODES else PLAY_MODE_LIST
 
 
 def _normalize_volume(value, fallback: int | None = None) -> int:
@@ -104,13 +113,25 @@ def _normalize_volume(value, fallback: int | None = None) -> int:
     return max(0, min(100, volume))
 
 
-def get_redis() -> redis.Redis:
+def _finite_float(value: object, fallback: float = 0.0) -> float:
+    """解析来自 JSON/Redis 的有限数字。"""
+
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return fallback
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if math.isfinite(parsed) else fallback
+
+
+def get_redis() -> RedisDataStore:
     global _redis
     # 始终对齐全局客户端：Redis 从内存降级中恢复后，Web 层自动切回。
     client = get_redis_client()
     if client is not _redis:
         _redis = client
-    return _redis
+    return client
 
 
 def reset_redis(force: bool = False) -> None:
@@ -118,12 +139,32 @@ def reset_redis(force: bool = False) -> None:
     _redis = get_redis_client(force_reset=True) if force else None
 
 
-def _resolve_area(redis_client: redis.Redis, area: str = "") -> str:
-    """未显式指定区域时，跟随当前活跃播放区域。"""
-    area = (area or "").strip()
-    if area:
-        return area
-    return (get_active_area(redis_client=redis_client) or "").strip()
+def _area_resolver(redis_client: RedisDataStore) -> PlaybackAreaResolver:
+    return PlaybackAreaResolver(
+        active_area_reader=lambda: get_active_area(redis_client=redis_client),
+    )
+
+
+def _resolve_area(
+    redis_client: RedisDataStore,
+    area: str = "",
+    *,
+    required: bool = True,
+) -> str:
+    """解析公共播放器 area；绝不回退到全局播放键。"""
+    resolution = _area_resolver(redis_client).public(area)
+    return resolution.require().value if required else resolution.value
+
+
+def _area_unavailable_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "code": PlaybackAreaUnavailable.code,
+            "error": PlaybackAreaUnavailable.message,
+        },
+        status_code=409,
+    )
 
 
 def get_netease() -> NeteaseCloud:
@@ -138,19 +179,19 @@ def reset_netease() -> None:
     _netease = None
 
 
-_sender = None
+_sender: OopzSender | None = None
 _music_dependency = None
 _plugin_runtime = None
 _plugin_host = None
 _oopz_client = None
 
 
-def set_sender(sender) -> None:
+def set_sender(sender: OopzSender | None) -> None:
     global _sender
     _sender = sender
 
 
-def get_sender():
+def get_sender() -> OopzSender | None:
     return _sender
 
 
@@ -195,11 +236,17 @@ def refresh_music_platforms() -> dict:
         return {"available": False, "reason": "music 未注册"}
     refresh = getattr(_music_dependency, "refresh_platforms", None)
     if callable(refresh):
-        return refresh()
+        result = refresh()
+        if isinstance(result, Mapping):
+            return dict(result)
+        return {"available": False, "reason": "音乐处理器刷新结果无效"}
     handler = getattr(_music_dependency, "_handler", None)
     refresh = getattr(handler, "refresh_platforms", None)
     if callable(refresh):
-        return refresh()
+        result = refresh()
+        if isinstance(result, Mapping):
+            return dict(result)
+        return {"available": False, "reason": "音乐处理器刷新结果无效"}
     return {"available": False, "reason": "音乐处理器尚未初始化"}
 
 
@@ -236,7 +283,7 @@ async def _auth_web_api(request: Request, call_next):
     path = request.url.path or ""
 
     if path.startswith(("/api/", "/admin/api/")):
-        ip = client_ip(request, cfg.trust_proxy_header())
+        ip = client_ip(request, cfg.trusted_proxy_cidrs())
         if not limiter_for(path).is_allowed(ip):
             return JSONResponse(
                 {"ok": False, "error": "请求过于频繁，请稍后再试"},
@@ -263,164 +310,47 @@ async def _auth_web_api(request: Request, call_next):
 # 共享业务逻辑（admin 模块亦调用）
 # ---------------------------------------------------------------------------
 
-def execute_control_action(action: str, body: dict, redis_client: redis.Redis, area: str = "") -> dict:
-    area = (area or "").strip()
-    if action in {"next", "clear", "stop", "pause", "resume", "seek", "mode"} and not area:
-        return {"ok": False, "error": "当前没有可控制的播放域"}
-
-    queue_key = _area_key(KEY_QUEUE, area)
-    if action == "next":
-        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "next"))
-        return {"ok": True}
-    if action == "clear":
-        redis_client.delete(queue_key)
-        return {"ok": True}
-    if action == "stop":
-        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "stop"))
-        return {"ok": True}
-    if action == "pause":
-        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "pause"))
-        return {"ok": True}
-    if action == "resume":
-        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, "resume"))
-        return {"ok": True}
-    if action == "seek":
-        seek_time = body.get("time", 0)
-        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command(area, f"seek:{seek_time}"))
-        return {"ok": True}
-    if action == "volume":
-        # 音量是 Agora 输出设备的属性，不是域的属性：bot 同一时刻只在一个语音频道，
-        # 全仓 KEY_VOLUME 也只有这一个全局键。带域下发会让写入生效、命令被丢弃，
-        # 于是 /api/status 读到的值和实际在响的音量长期背离。
-        vol = _normalize_volume(body.get("value"))
-        redis_client.set(KEY_VOLUME, str(vol))
-        redis_client.rpush(KEY_WEB_COMMANDS, encode_web_command("", f"volume:{vol}"))
-        return {"ok": True, "volume": vol}
-    if action == "mode":
-        mode = body.get("value") or body.get("mode")
-        if mode not in _VALID_PLAY_MODES:
-            return {"ok": False, "error": f"未知播放模式: {mode}"}
-        # 直接写入 Redis：MusicHandler.get_play_mode() 会读取这里的值。
-        # 不走 KEY_WEB_COMMANDS，避免与正在播放的音频流抢锁。
-        redis_client.set(_area_key(KEY_PLAY_MODE, area), mode)
-        return {"ok": True, "mode": mode}
-    return {"ok": False, "error": f"未知操作: {action}"}
+def execute_control_action(
+    action: str,
+    body: dict,
+    redis_client: PlaybackCommandStore,
+    area: str = "",
+) -> dict:
+    return PlaybackControlService(
+        redis_client,
+        default_volume=cfg.default_music_volume(),
+    ).control(action=action, payload=body, area=area)
 
 
-_QUEUE_REMOVE_LUA = """
-local key = KEYS[1]
-local idx = tonumber(ARGV[1])
-if idx < 0 or idx >= redis.call('llen', key) then
-    return -1
-end
-redis.call('lset', key, idx, '__REMOVED__')
-redis.call('lrem', key, 1, '__REMOVED__')
-return 0
-"""
-
-_QUEUE_TOP_LUA = """
-local key = KEYS[1]
-local idx = tonumber(ARGV[1])
-local len = redis.call('llen', key)
-if idx < 0 or idx >= len then
-    return -1
-end
-local item = redis.call('lindex', key, idx)
-redis.call('lset', key, idx, '__REMOVED__')
-redis.call('lrem', key, 1, '__REMOVED__')
-redis.call('lpush', key, item)
-return 0
-"""
-
-
-def execute_queue_action(action: str, index, redis_client: redis.Redis, area: str = "") -> dict:
-    try:
-        idx = int(index)
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "索引无效"}
-    queue_key = _area_key(KEY_QUEUE, area)
-    if action not in ("remove", "top"):
-        return {"ok": False, "error": f"未知操作: {action}"}
-
-    # 内存降级实现跑不了 LUA，退化成非原子的分步操作。降级期本来就是单进程
-    # 单实例，竞态窗口可以接受；这里做能力探测而不是给 _InMemoryRedis 补 eval。
-    if not hasattr(redis_client, "eval"):
-        return _queue_action_without_lua(action, queue_key, idx, redis_client)
-
-    script = _QUEUE_REMOVE_LUA if action == "remove" else _QUEUE_TOP_LUA
-    if redis_client.eval(script, 1, queue_key, idx) == -1:
-        return {"ok": False, "error": "索引无效"}
-    return {"ok": True}
-
-
-def _queue_action_without_lua(action: str, queue_key: str, idx: int, redis_client) -> dict:
-    """Redis 降级到内存实现时的队列操作回退。"""
-    # 边界判定与 LUA 脚本保持一致：lindex 支持负索引（idx=-1 返回队尾），
-    # 单靠它判 None 会放行负数，而端点的默认值恰好是 body.get("index", -1)。
-    if idx < 0 or idx >= redis_client.llen(queue_key):
-        return {"ok": False, "error": "索引无效"}
-    item = redis_client.lindex(queue_key, idx)
-    redis_client.lset(queue_key, idx, "__REMOVED__")
-    redis_client.lrem(queue_key, 1, "__REMOVED__")
-    if action == "top":
-        redis_client.lpush(queue_key, item)
-    return {"ok": True}
+def execute_queue_action(
+    action: str,
+    index,
+    redis_client: PlaybackCommandStore,
+    area: str,
+) -> dict:
+    return PlaybackControlService(redis_client).mutate_queue(
+        action=action,
+        index=index,
+        area=area,
+    )
 
 
 def add_song_to_queue(body: dict, area: str = "") -> dict:
-    song_id = body.get("id")
-    if not song_id:
-        return {"ok": False, "error": "缺少歌曲 ID"}
-    platform = body.get("platform", "netease")
-    p = _resolve_platform(platform)
-    name = body.get("name", "")
-    artists = body.get("artists", "")
-    album = body.get("album", "")
-    cover = body.get("cover", "")
-    duration_ms = body.get("duration", 0)
-    duration_text = body.get("durationText", "")
-    try:
-        url = p.get_song_url(song_id, expected_duration_ms=duration_ms or 0, song_name=name)
-    except TypeError:
-        url = p.get_song_url(song_id)
-    if not url:
-        detail = getattr(p, "last_song_url_error", "") or "无法获取播放链接，可能需要 VIP"
-        return {"ok": False, "error": detail}
-
-    song_data = {
-        "platform": platform,
-        "song_id": str(song_id),
-        "name": name,
-        "artists": artists,
-        "album": album,
-        "url": url,
-        "cover": cover,
-        "duration": duration_text,
-        "duration_ms": duration_ms,
-        "attachments": [],
-        "channel": "",
-        "area": area,
-        "user": "web",
-    }
-    r = get_redis()
-    queue_key = _area_key(KEY_QUEUE, area)
-    pipe = r.pipeline(transaction=False)
-    pipe.rpush(queue_key, json.dumps(song_data, ensure_ascii=False))
-    pipe.llen(queue_key)
-    results = pipe.execute()
-    queue_len = int(results[1] or 0)
-    notify = json.dumps({"name": name, "artists": artists, "position": queue_len}, ensure_ascii=False)
-    r.rpush(KEY_WEB_COMMANDS, encode_web_command(area, f"notify:{notify}"))
-    return {"ok": True, "position": queue_len, "name": name}
+    return PlaybackControlService(
+        get_redis(),
+        redis_provider=get_redis,
+        platform_resolver=_resolve_platform,
+        default_volume=cfg.default_music_volume(),
+    ).add_song(body=body, area=area)
 
 
-_platform_cache: dict = {}
+_platform_cache: dict[str, MusicPlatform] = {}
 
 
-def _resolve_platform(name: str = "netease"):
+def _resolve_platform(name: str = "netease") -> MusicPlatform:
     """根据平台名称获取对应的音乐平台实例（缓存复用）。"""
     if not name or name == "netease":
-        return get_netease()
+        return cast(MusicPlatform, get_netease())
     cached = _platform_cache.get(name)
     if cached is not None:
         return cached
@@ -431,9 +361,10 @@ def _resolve_platform(name: str = "netease"):
         from music.bilibili_music import BilibiliMusic
         inst = BilibiliMusic()
     else:
-        return get_netease()
-    _platform_cache[name] = inst
-    return inst
+        return cast(MusicPlatform, get_netease())
+    platform = cast(MusicPlatform, inst)
+    _platform_cache[name] = platform
+    return platform
 
 
 def _filter_songs_by_keyword(songs: list, keyword: str) -> list:
@@ -469,14 +400,13 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
         pipe.get(_area_key(KEY_PLAY_MODE, area))
         current_raw, play_state_raw, vol_raw, mode_raw = pipe.execute()
         volume = _normalize_volume(vol_raw)
-        if isinstance(mode_raw, bytes):
-            mode_raw = mode_raw.decode("utf-8", errors="ignore")
-        mode = mode_raw if mode_raw in _VALID_PLAY_MODES else PLAY_MODE_LIST
+        mode_value = redis_optional_text(mode_raw, field="播放模式")
+        mode = mode_value if mode_value in _VALID_PLAY_MODES else PLAY_MODE_LIST
 
         if not current_raw:
             return JSONResponse({"playing": False, "volume": volume, "mode": mode})
 
-        current = json.loads(current_raw)
+        current = redis_json_object(current_raw, field="当前播放歌曲")
         progress = 0.0
 
         duration_ms = current.get("duration_ms")
@@ -484,17 +414,14 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
             duration = float(duration_ms) / 1000.0
         else:
             raw_dur = current.get("duration", 0)
-            try:
-                duration = float(raw_dur or 0) / 1000.0
-            except (ValueError, TypeError):
-                duration = 0.0
+            duration = _finite_float(raw_dur) / 1000.0
 
         paused = False
         loading = False
         if play_state_raw:
-            ps = json.loads(play_state_raw)
-            start = float(ps.get("start_time", 0) or 0)
-            dur = float(ps.get("duration", 0) or 0)
+            ps = redis_json_object(play_state_raw, field="播放状态")
+            start = _finite_float(ps.get("start_time"))
+            dur = _finite_float(ps.get("duration"))
             paused = bool(ps.get("paused"))
             loading = bool(ps.get("loading"))
             if dur:
@@ -502,7 +429,7 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
             if loading:
                 progress = 0.0
             elif paused:
-                progress = float(ps.get("pause_elapsed", 0) or 0)
+                progress = _finite_float(ps.get("pause_elapsed"))
             elif start and duration:
                 progress = time.time() - start
 
@@ -529,6 +456,8 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
             "mode": mode,
             "server_time": round(time.time(), 3),
         })
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         logger.error(f"/api/status 异常: {e}")
         return JSONResponse({"playing": False, "error": str(e)})
@@ -543,10 +472,14 @@ def api_lyric(id: str = Query(...), platform: str = Query("netease")):
                 cached = _lyric_cache[cache_key]
                 return JSONResponse({"id": id, **cached})
 
-        p = _resolve_platform(platform)
-        if platform == "netease" and hasattr(p, "get_lyrics"):
-            lyric, tlyric = p.get_lyrics(id)
+        if platform == "netease":
+            try:
+                song_id = int(id)
+            except ValueError as exc:
+                raise ValueError("网易云歌曲 ID 必须是整数") from exc
+            lyric, tlyric = get_netease().get_lyrics(song_id)
         else:
+            p = _resolve_platform(platform)
             lyric = p.get_lyric(id)
             tlyric = None
 
@@ -572,7 +505,7 @@ def api_queue(area: str = Query("", description="域 ID，用于多域隔离")):
         items = r.lrange(queue_key, 0, -1)
         queue: list[dict] = []
         for item in items:
-            song = json.loads(item)
+            song = redis_json_object(item, field="队列歌曲")
             dur_text = song.get("durationText", "")
             if not dur_text:
                 raw_dur = song.get("duration", "")
@@ -586,6 +519,8 @@ def api_queue(area: str = Query("", description="域 ID，用于多域隔离")):
                 "durationText": dur_text,
             })
         return JSONResponse({"queue": queue})
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         logger.error(f"/api/queue 异常: {e}")
         return JSONResponse({"queue": [], "error": str(e)})
@@ -597,6 +532,7 @@ def api_debug(area: str = Query("", description="域 ID")):
     try:
         r = get_redis()
         r.ping()
+        area = _resolve_area(r, area)
         current_key = _area_key(KEY_CURRENT, area)
         queue_key = _area_key(KEY_QUEUE, area)
         current = r.get(current_key)
@@ -606,10 +542,12 @@ def api_debug(area: str = Query("", description="域 ID")):
         return JSONResponse({
             "redis": "connected",
             "area": area or "(default)",
-            current_key: json.loads(current) if current else None,
-            ps_key: json.loads(play_state) if play_state else None,
+            current_key: redis_json_object(current, field="当前播放歌曲") if current else None,
+            ps_key: redis_json_object(play_state, field="播放状态") if play_state else None,
             "queue_length": queue_len,
         })
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         return JSONResponse({"redis": "error", "detail": str(e)})
 
@@ -618,7 +556,7 @@ def api_debug(area: str = Query("", description="域 ID")):
 def api_liked(
     page: int = Query(1, ge=1),
     limit: int = Query(30, ge=1, le=50),
-    keyword: Optional[str] = Query(None, max_length=200),
+    keyword: str | None = Query(None, max_length=200),
 ):
     """获取喜欢的音乐列表（分页）。若传 keyword 则在全部喜欢中搜索后分页返回。"""
     global liked_ids_cache
@@ -691,6 +629,8 @@ async def api_add(request: Request, area: str = Query("", description="域 ID"))
         body = await request.json()
         area = _resolve_area(get_redis(), area)
         return JSONResponse(add_song_to_queue(body=body, area=area))
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         logger.error(f"/api/add 异常: {e}")
         return JSONResponse({"ok": False, "error": str(e)})
@@ -703,9 +643,11 @@ async def api_control(request: Request, area: str = Query("", description="域 I
         body = await request.json()
         action = body.get("action", "")
         r = get_redis()
-        area = _resolve_area(r, area)
+        area = "" if action == "volume" else _resolve_area(r, area)
         result = execute_control_action(action=action, body=body, redis_client=r, area=area)
         return JSONResponse(result)
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         logger.error(f"/api/control 异常: {e}")
         return JSONResponse({"ok": False, "error": str(e)})
@@ -721,6 +663,8 @@ async def api_queue_action(request: Request, area: str = Query("", description="
         r = get_redis()
         area = _resolve_area(r, area)
         return JSONResponse(execute_queue_action(action=action, index=index, redis_client=r, area=area))
+    except PlaybackAreaUnavailable:
+        return _area_unavailable_response()
     except Exception as e:
         logger.error(f"/api/queue/action 异常: {e}")
         return JSONResponse({"ok": False, "error": str(e)})
@@ -773,13 +717,23 @@ def health_check(request: Request):
     # 播放队列状态
     try:
         r = get_redis()
-        queue_len = int(r.llen(KEY_QUEUE) or 0)
-        current = r.get(KEY_CURRENT)
-        checks["music"] = {
-            "status": "ok",
-            "queue_length": queue_len,
-            "now_playing": bool(current),
-        }
+        area = _resolve_area(r, required=False)
+        if area:
+            queue_len = int(r.llen(_area_key(KEY_QUEUE, area)) or 0)
+            current = r.get(_area_key(KEY_CURRENT, area))
+            checks["music"] = {
+                "status": "ok",
+                "area": area,
+                "queue_length": queue_len,
+                "now_playing": bool(current),
+            }
+        else:
+            checks["music"] = {
+                "status": "unavailable",
+                "code": "playback_area_unavailable",
+                "queue_length": 0,
+                "now_playing": False,
+            }
     except Exception as e:
         checks["music"] = {"status": "error", "detail": str(e)}
 
@@ -819,7 +773,7 @@ def index_with_token(token: str, request: Request):
     set_token(token, redis_client=r, ttl_seconds=cfg.token_ttl_seconds())
     area = (request.query_params.get("area") or "").strip()
     html_path = os.path.join(_WEB_ASSETS_DIR, "player.html")
-    with open(html_path, "r", encoding="utf-8") as f:
+    with open(html_path, encoding="utf-8") as f:
         html = f.read()
     html = html.replace(
         "</head>",
@@ -832,7 +786,11 @@ def index_with_token(token: str, request: Request):
         value=token,
         httponly=True,
         samesite="lax",
-        secure=cookie_secure_for(request, cfg.cookie_secure()),
+        secure=cookie_secure_for(
+            request,
+            cfg.cookie_secure(),
+            cfg.trusted_proxy_cidrs(),
+        ),
         max_age=cfg.cookie_max_age_seconds(),
     )
     return resp
@@ -856,4 +814,60 @@ def run_server(host: str | None = None, port: int | None = None) -> None:
     port = port or cfg.web_port()
     display = f"[{host}]" if ":" in host else host
     logger.info(f"Web 播放器启动: http://{display}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="warning",
+        proxy_headers=False,
+    )
+
+
+class WebPlayerService:
+    """可显式停止的 Uvicorn 后台服务。"""
+
+    def __init__(self, host: str | None = None, port: int | None = None) -> None:
+        self.host = host or cfg.web_host()
+        self.port = port or cfg.web_port()
+        self._server: uvicorn.Server | None = None
+        self._thread = None
+        self._lock = Lock()
+
+    def start(self) -> None:
+        import threading
+
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            config = uvicorn.Config(
+                app,
+                host=self.host,
+                port=self.port,
+                log_level="warning",
+                proxy_headers=False,
+            )
+            server = uvicorn.Server(config)
+            self._server = server
+            self._thread = threading.Thread(
+                target=server.run,
+                name="WebPlayerUvicorn",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        with self._lock:
+            server = self._server
+            thread = self._thread
+            if server is None and thread is None:
+                return
+            if server is not None:
+                server.should_exit = True
+        if thread and thread.is_alive():
+            thread.join(timeout=max(0.0, timeout))
+        if thread and thread.is_alive():
+            logger.warning("服务停止超时: WebPlayerUvicorn，线程仍未退出")
+            return
+        with self._lock:
+            self._server = None
+            self._thread = None

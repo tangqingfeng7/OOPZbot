@@ -1,8 +1,9 @@
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -11,21 +12,22 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-from music.music import (
-    MusicHandler,
+import web.web_player_config as cfg  # noqa: E402
+from music.music import (  # noqa: E402
     PLAY_MODE_AUTOPLAY,
     PLAY_MODE_LIST,
     PLAY_MODE_SHUFFLE,
     PLAY_MODE_SINGLE,
+    MusicHandler,
 )
-import web.web_player_config as cfg
 
 
 class MusicModeTest(unittest.TestCase):
     def setUp(self) -> None:
         self._music_config = dict(cfg.MUSIC_CONFIG)
         self.handler = MusicHandler.__new__(MusicHandler)
-        self.handler.queue = Mock()
+        self.queue = Mock()
+        self.handler._queue_cache = {"area-1": self.queue}
         self.handler.netease = Mock()
         self.handler._liked_ids_cache = []
         self.handler._voice_channel_id = "voice-1"
@@ -36,19 +38,19 @@ class MusicModeTest(unittest.TestCase):
         cfg.MUSIC_CONFIG.update(self._music_config)
 
     def test_get_play_mode_defaults_to_list(self) -> None:
-        self.handler.queue.get_play_mode.return_value = None
+        self.queue.get_play_mode.return_value = None
 
         mode = self.handler.get_play_mode()
 
         self.assertEqual(mode, PLAY_MODE_LIST)
-        self.handler.queue.set_play_mode.assert_called_once_with(PLAY_MODE_LIST)
+        self.queue.set_play_mode.assert_called_once_with(PLAY_MODE_LIST)
 
     def test_set_play_mode_rejects_invalid_value(self) -> None:
         with self.assertRaises(ValueError):
             self.handler.set_play_mode("bad-mode")
 
     def test_single_mode_replays_current_song_on_natural_finish(self) -> None:
-        self.handler.queue.get_play_mode.return_value = PLAY_MODE_SINGLE
+        self.queue.get_play_mode.return_value = PLAY_MODE_SINGLE
         current_song = {"name": "song", "nested": {"value": 1}}
 
         next_song, source = self.handler._dequeue_next_song(
@@ -61,8 +63,8 @@ class MusicModeTest(unittest.TestCase):
         self.assertIsNot(next_song, current_song)
 
     def test_shuffle_mode_uses_random_pop(self) -> None:
-        self.handler.queue.get_play_mode.return_value = PLAY_MODE_SHUFFLE
-        self.handler.queue.pop_random.return_value = {"name": "shuffle-song"}
+        self.queue.get_play_mode.return_value = PLAY_MODE_SHUFFLE
+        self.queue.pop_random.return_value = {"name": "shuffle-song"}
 
         next_song, source = self.handler._dequeue_next_song(
             natural_end=False,
@@ -70,13 +72,14 @@ class MusicModeTest(unittest.TestCase):
         )
 
         self.assertEqual(source, "queue")
+        assert next_song is not None
         self.assertEqual(next_song["name"], "shuffle-song")
-        self.handler.queue.pop_random.assert_called_once_with()
-        self.handler.queue.play_next.assert_not_called()
+        self.queue.pop_random.assert_called_once_with()
+        self.queue.play_next.assert_not_called()
 
     def test_autoplay_mode_falls_back_to_liked_song(self) -> None:
-        self.handler.queue.get_play_mode.return_value = PLAY_MODE_AUTOPLAY
-        self.handler.queue.play_next.return_value = None
+        self.queue.get_play_mode.return_value = PLAY_MODE_AUTOPLAY
+        self.queue.play_next.return_value = None
         self.handler.netease.get_user_id.return_value = 100
         self.handler.netease.get_liked_ids.return_value = [1]
         self.handler.netease.summarize_by_id.return_value = {
@@ -99,14 +102,15 @@ class MusicModeTest(unittest.TestCase):
         )
 
         self.assertEqual(source, PLAY_MODE_AUTOPLAY)
+        assert next_song is not None
         self.assertEqual(next_song["name"], "喜欢歌曲")
         self.assertEqual(next_song["channel"], "text-1")
         self.assertEqual(next_song["area"], "area-1")
 
     def test_configured_auto_play_randomizes_after_queue_ends(self) -> None:
         cfg.MUSIC_CONFIG["auto_play_enabled"] = True
-        self.handler.queue.get_play_mode.return_value = PLAY_MODE_LIST
-        self.handler.queue.play_next.return_value = None
+        self.queue.get_play_mode.return_value = PLAY_MODE_LIST
+        self.queue.play_next.return_value = None
         self.handler.netease.get_user_id.return_value = 100
         self.handler.netease.get_liked_ids.return_value = [1]
         self.handler.netease.summarize_by_id.return_value = {
@@ -129,13 +133,14 @@ class MusicModeTest(unittest.TestCase):
         )
 
         self.assertEqual(source, PLAY_MODE_AUTOPLAY)
+        assert next_song is not None
         self.assertEqual(next_song["name"], "auto song")
         self.assertEqual(next_song["channel"], "text-1")
 
     def test_disabled_auto_play_stops_when_queue_is_empty(self) -> None:
         cfg.MUSIC_CONFIG["auto_play_enabled"] = False
-        self.handler.queue.get_play_mode.return_value = PLAY_MODE_LIST
-        self.handler.queue.play_next.return_value = None
+        self.queue.get_play_mode.return_value = PLAY_MODE_LIST
+        self.queue.play_next.return_value = None
 
         next_song, source = self.handler._dequeue_next_song(
             natural_end=True,
@@ -213,7 +218,75 @@ class MusicModeTest(unittest.TestCase):
             text = self.handler._build_song_request_text(song)
 
         self.assertIn("[打开播放器](https://example.test/player)", text)
-        self.handler._get_web_link.assert_called_once_with(area="area-1")
+        self.handler._get_web_link.assert_called_once_with(
+            area="area-1",
+            mark_active=False,
+        )
+
+    def test_stale_song_request_link_cannot_restore_old_active_area(self) -> None:
+        queue = Mock()
+        queue.redis = object()
+        self.handler._get_queue = Mock(return_value=queue)
+        self.handler._web_link_released_due_to_idle = False
+        self.handler.names = Mock()
+        self.handler.names.user.return_value = "旧请求用户"
+        old_request_ready = threading.Event()
+        release_old_request = threading.Event()
+        texts: list[str] = []
+        song = {
+            "platform": "netease",
+            "name": "旧请求歌曲",
+            "artists": "歌手",
+            "album": "专辑",
+            "duration": "3:00",
+            "area": "area-A",
+            "user": "user-A",
+            "attachments": [],
+        }
+
+        def finish_old_request() -> None:
+            old_request_ready.set()
+            self.assertTrue(release_old_request.wait(timeout=2))
+            texts.append(self.handler._build_song_request_text(song))
+
+        with (
+            patch("music.music._web_player_link", return_value="[player](https://example.test)"),
+            patch("music.music.set_active_area") as set_active_area,
+            patch.dict("music.music.WEB_PLAYER_CONFIG", {"send_link_enabled": True}),
+        ):
+            worker = threading.Thread(target=finish_old_request)
+            worker.start()
+            self.assertTrue(old_request_ready.wait(timeout=1))
+            self.handler._mark_web_active_area("area-B", queue=queue)
+            release_old_request.set()
+            worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(texts), 1)
+        set_active_area.assert_called_once_with("area-B", redis_client=queue.redis)
+
+    def test_stale_now_playing_link_cannot_restore_old_active_area(self) -> None:
+        queue = Mock()
+        queue.redis = object()
+        self.handler._get_queue = Mock(return_value=queue)
+        self.handler._web_link_released_due_to_idle = False
+        song = {
+            "platform": "netease",
+            "name": "旧播放歌曲",
+            "artists": "歌手",
+            "area": "area-A",
+            "attachments": [],
+        }
+
+        with (
+            patch("music.music._web_player_link", return_value="[player](https://example.test)"),
+            patch("music.music.set_active_area") as set_active_area,
+        ):
+            self.handler._mark_web_active_area("area-B", queue=queue)
+            text = self.handler._build_now_playing_text("正在播放", song)
+
+        self.assertIn("[player](https://example.test)", text)
+        set_active_area.assert_called_once_with("area-B", redis_client=queue.redis)
 
     def test_start_playing_uses_explicit_area_queue(self) -> None:
         area_queue = Mock()
@@ -223,7 +296,7 @@ class MusicModeTest(unittest.TestCase):
 
         self.handler._get_queue.assert_called_once_with("area-2")
         area_queue.set_play_state.assert_called_once()
-        self.handler.queue.set_play_state.assert_not_called()
+        self.queue.set_play_state.assert_not_called()
 
     def test_play_song_choice_reuses_search_result_without_fetching_detail(self) -> None:
         platform = Mock()
@@ -281,6 +354,125 @@ class MusicModeTest(unittest.TestCase):
         self.assertTrue(result)
         self.handler._do_enter_voice.assert_not_called()
         self.handler.sender.send_message.assert_not_called()
+
+    def test_same_channel_id_in_another_area_is_not_the_same_session(self) -> None:
+        self.handler._playback_lock = threading.RLock()
+        self.handler.voice = Mock()
+        self.handler.voice.available = True
+        self.handler.sender = Mock()
+        self.handler.sender.get_voice_channel_for_user.return_value = "voice-1"
+        self.handler._get_queue = Mock(return_value=self.queue)
+        self.handler._is_playing = Mock(return_value=True)
+        self.handler._do_enter_voice = Mock()
+        self.handler.names = Mock()
+        self.handler.names.channel.return_value = "旧域语音频道"
+
+        result = self.handler._check_and_enter_voice_channel(
+            user="user-1",
+            channel="text-2",
+            area="area-2",
+        )
+
+        self.assertFalse(result)
+        self.handler._get_queue.assert_called_once_with("area-1")
+        self.handler._do_enter_voice.assert_not_called()
+        self.handler.sender.send_message.assert_called_once()
+
+    def test_loading_session_rejects_cross_area_switch(self) -> None:
+        self.handler._playback_lock = threading.RLock()
+        self.handler._play_start_time = time.time()
+        self.handler._play_duration = 120
+        self.handler.voice = Mock()
+        self.handler.voice.available = True
+        self.handler.voice.is_playing = False
+        self.handler.sender = Mock()
+        self.handler.sender.get_voice_channel_for_user.return_value = "voice-2"
+        self.handler._get_queue = Mock(return_value=self.queue)
+        self.queue.get_play_state.return_value = {
+            "start_time": self.handler._play_start_time,
+            "duration": self.handler._play_duration,
+            "loading": True,
+        }
+        self.handler._do_enter_voice = Mock(return_value={})
+        self.handler.names = Mock()
+        self.handler.names.channel.return_value = "旧域语音频道"
+
+        result = self.handler._check_and_enter_voice_channel(
+            user="user-2",
+            channel="text-2",
+            area="area-2",
+        )
+
+        self.assertFalse(result)
+        self.handler._do_enter_voice.assert_not_called()
+        self.handler.sender.send_message.assert_called_once()
+
+    def test_check_and_enter_is_serialized_by_playback_lock(self) -> None:
+        """校验到状态提交之间不能让域切换插入。"""
+        self.handler._playback_lock = threading.RLock()
+        self.handler.voice = Mock()
+        self.handler.voice.available = True
+        self.handler.sender = Mock()
+        resolved = threading.Event()
+        entered = threading.Event()
+
+        def resolve_voice_channel(*_args, **_kwargs):
+            resolved.set()
+            return "voice-2"
+
+        def enter_voice(*_args, **_kwargs):
+            entered.set()
+            return {}
+
+        self.handler.sender.get_voice_channel_for_user.side_effect = resolve_voice_channel
+        self.handler._is_playing = Mock(return_value=False)
+        self.handler._do_enter_voice = Mock(side_effect=enter_voice)
+        self.handler.names = Mock()
+        result: list[bool] = []
+
+        with self.handler._playback_lock:
+            worker = threading.Thread(
+                target=lambda: result.append(
+                    self.handler._check_and_enter_voice_channel(
+                        user="user-1",
+                        channel="text-1",
+                        area="area-1",
+                    )
+                )
+            )
+            worker.start()
+            self.assertTrue(resolved.wait(timeout=1))
+            self.assertFalse(entered.wait(timeout=0.05))
+
+        worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [True])
+        self.assertTrue(entered.is_set())
+
+    def test_enter_voice_leaves_when_only_area_changes(self) -> None:
+        self.handler._playback_lock = threading.RLock()
+        self.handler._playback_generation = 1
+        self.handler.voice = Mock()
+        self.handler.voice.available = True
+        self.handler.sender = Mock()
+        self.handler.sender.enter_channel.return_value = {"roomId": "room"}
+        self.handler.names = Mock()
+        self.handler._resolve_voice_rtc_uid = Mock(return_value=("123", ""))
+        self.handler._join_agora_room = Mock(return_value=(True, ""))
+        self.handler._cleanup_stale_voice_membership = Mock()
+
+        def leave_current() -> None:
+            self.handler._voice_channel_id = None
+            self.handler._voice_channel_area = None
+
+        self.handler._leave_current_voice_channel = Mock(side_effect=leave_current)
+
+        result = self.handler._do_enter_voice("voice-1", "area-2")
+
+        self.assertEqual(result, {"roomId": "room"})
+        self.handler._leave_current_voice_channel.assert_called_once_with()
+        self.assertEqual(self.handler._voice_channel_area, "area-2")
+        self.assertEqual(self.handler._playback_generation, 2)
 
     def test_enter_voice_rolls_back_oopz_channel_when_agora_join_fails(self) -> None:
         self.handler._voice_channel_id = None

@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
-import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from config import WEB_PLAYER_CONFIG
+from core.database import SongCache, Statistics
 from core.http_constants import HTTP_TIMEOUT_PROBE
 from core.logger_config import get_logger
+from domain.playback import PlaybackSessionSnapshot
 from web.web_link_token import ensure_token
-from core.database import SongCache, Statistics
 
 if TYPE_CHECKING:
-    pass
+    from core.queue_manager import QueueManager
+    from music.music_platform import PlatformRegistry
 
 logger = get_logger("MusicPlayback")
 
@@ -137,184 +139,320 @@ def _web_player_link(redis_client=None) -> str:
 class PlaybackMixin:
     """播放相关逻辑的 Mixin，供 MusicHandler 等使用"""
 
-    def auto_play_monitor(self):
+    if TYPE_CHECKING:
+        voice: Any
+        sender: Any
+        platforms: PlatformRegistry
+        netease: Any
+        _playback_lock: threading.RLock
+        _voice_channel_id: str | None
+        _voice_channel_area: str | None
+        _voice_enter_time: float
+        _play_start_time: float
+        _play_duration: float
+
+        @property
+        def queue(self) -> QueueManager: ...
+
+        def _get_queue(self, area: str) -> QueueManager: ...
+
+        def _resolve_background_area(self) -> str: ...
+
+        def _mark_web_active_area(
+            self,
+            area: str = "",
+            queue: QueueManager | None = None,
+        ) -> None: ...
+
+        def _get_web_link(self, area: str = "", *, mark_active: bool = True) -> str: ...
+
+        def _leave_current_voice_channel(self) -> None: ...
+
+        def _release_web_link_if_needed(self, queue: QueueManager | None = None) -> None: ...
+
+        def _playback_snapshot_locked(self) -> PlaybackSessionSnapshot: ...
+
+        def _playback_snapshot_is_current_locked(
+            self,
+            snapshot: PlaybackSessionSnapshot,
+        ) -> bool: ...
+
+        def _advance_playback_generation_locked(self) -> PlaybackSessionSnapshot: ...
+
+        def _dequeue_next_song(
+            self,
+            natural_end: bool,
+            current_song: dict | None,
+            queue: QueueManager,
+        ) -> tuple[dict | None, str]: ...
+
+    def auto_play_monitor(self, stop_event: threading.Event | None = None):
         """定期检查播放状态，自动播放下一首（基于歌曲时长判断是否播完）"""
-        while True:
+        if stop_event is None:
+            candidate = getattr(self, "_service_stop_event", None)
+            stop_event = candidate if isinstance(candidate, threading.Event) else threading.Event()
+        while not stop_event.is_set():
+            wait_seconds = _AUTO_PLAY_CHECK_INTERVAL
             try:
-                is_playing = self._is_playing()
+                area = self._resolve_background_area()
+                if not area:
+                    if stop_event.wait(wait_seconds):
+                        return
+                    continue
 
-                if not is_playing:
-                    with self._playback_lock:
-                        if self._is_playing():
-                            time.sleep(_AUTO_PLAY_CHECK_INTERVAL)
-                            continue
+                stream_song: dict | None = None
+                stream_session: PlaybackSessionSnapshot | None = None
+                record_song: dict | None = None
+                record_channel = ""
+                notify_song: dict | None = None
+                notify_source = ""
+                queue = None
+                is_playing = False
 
-                        current = self.queue.get_current()
+                with self._playback_lock:
+                    session = self._playback_snapshot_locked()
+                    if session.area is not None and session.area.value != area:
+                        logger.debug(
+                            "自动播放跳过已切换的域: resolved=%s current=%s generation=%d",
+                            area[:8],
+                            session.area.value[:8],
+                            session.generation,
+                        )
+                        wait_seconds = _PLAY_FADE_DELAY
+                    else:
+                        queue = self._get_queue(area)
+                        is_playing = self._is_playing(queue=queue)
+
+                    if queue is not None and not is_playing:
+                        current = queue.get_current()
                         finished_song = None
 
                         if current is not None:
                             logger.info("自动播放监控: 歌曲已播完，清理 current 状态")
                             finished_song = current
-                            self.queue.clear_current()
+                            queue.clear_current()
                             try:
-                                self.queue.clear_play_state()
+                                queue.clear_play_state()
                             except Exception as e:
                                 logger.debug(f"自动播放监控清理 play_state 失败: {e}")
                             current = None
+                            session = self._advance_playback_generation_locked()
 
-                        queue_length = self.queue.get_queue_length()
+                        queue_length = queue.get_queue_length()
                         if (queue_length > 0 or finished_song is not None) and current is None:
-                            if not self._voice_channel_id:
-                                time.sleep(2)
-                                continue
-                            dequeue_next = getattr(self, "_dequeue_next_song", None)
-                            if callable(dequeue_next):
-                                next_song, _source = dequeue_next(
+                            if session.area is None or session.channel is None:
+                                wait_seconds = 2
+                            else:
+                                next_song, source = self._dequeue_next_song(
                                     natural_end=finished_song is not None,
                                     current_song=finished_song,
+                                    queue=queue,
                                 )
-                            else:
-                                next_song, _source = (
-                                    self.queue.play_next() if queue_length > 0 else None,
-                                    "queue",
-                                )
-                            if next_song:
-                                ch = next_song.get("channel") or self._voice_channel_id
-                                ar = next_song.get("area") or self._voice_channel_area
-                                next_song["channel"] = ch
-                                next_song["area"] = ar
+                                if next_song:
+                                    if finished_song is None:
+                                        session = self._advance_playback_generation_locked()
+                                    ch = next_song.get("channel") or session.channel
+                                    next_song["channel"] = ch
+                                    next_song["area"] = area
 
-                                if not ch:
-                                    logger.warning("自动播放: 未获取到语音频道，歌曲保留在队列")
-                                    try:
-                                        self.queue.redis.lpush(self.queue._qkey(), json.dumps(next_song, ensure_ascii=False))
-                                    except Exception as e:
-                                        logger.error(f"自动播放回退入队失败，歌曲可能丢失: {e}")
-                                    time.sleep(2)
-                                    continue
+                                    if not ch:
+                                        logger.warning("自动播放: 未获取到消息频道，歌曲保留在队列")
+                                        try:
+                                            queue.redis.lpush(
+                                                queue._qkey(),
+                                                json.dumps(next_song, ensure_ascii=False),
+                                            )
+                                        except Exception as e:
+                                            logger.error(
+                                                "自动播放回退入队失败，歌曲可能丢失: %s",
+                                                e,
+                                            )
+                                        wait_seconds = 2
+                                    else:
+                                        next_song["play_uuid"] = str(uuid.uuid4())
+                                        self._mark_web_active_area(area, queue=queue)
+                                        self._start_playing(
+                                            next_song.get("duration_ms", 0),
+                                            area=area,
+                                        )
+                                        queue.set_current(next_song)
 
-                                play_uuid = str(uuid.uuid4())
-                                next_song["play_uuid"] = play_uuid
-                                if hasattr(self, "_mark_web_active_area"):
-                                    self._mark_web_active_area(ar)
-                                self._start_playing(next_song.get("duration_ms", 0), area=ar)
-                                self.queue.set_current(next_song)
+                                        stream_song = next_song
+                                        stream_session = session
+                                        record_song = next_song
+                                        record_channel = ch
+                                        notify_song = next_song
+                                        notify_source = source
+                                        wait_seconds = _PLAY_FADE_DELAY
+                                        logger.info("自动播放: %s", next_song.get("name"))
 
-                                SongCache.record_play(
-                                    song_id=next_song.get("song_id"),
-                                    platform=next_song.get("platform"),
-                                    data=next_song,
-                                    channel_id=ch,
-                                    user_id=next_song.get("user", ""),
-                                )
-                                Statistics.update_today(next_song.get("platform", "netease"), cache_hit=False)
-                                logger.info(f"自动播放: {next_song.get('name')}")
-
-                                threading.Thread(
-                                    target=self._stream_to_voice_channel,
-                                    args=(next_song["url"], next_song.get("name", "music"), ch, ar,
-                                          str(next_song.get("song_id", "")), next_song.get("duration_ms", 0)),
-                                    daemon=True,
-                                ).start()
-                                self._preload_next_song_if_any()
-
-                                # 智能续播（autoplay）由系统从喜欢列表挑歌，不打扰频道；
-                                # 队列内的正常切歌仍发送通知。
-                                if _source != "autoplay":
-                                    text = self._build_now_playing_text("自动播放", next_song)
-                                    self.sender.send_message(
-                                        text=text,
-                                        attachments=next_song.get("attachments", []),
-                                        channel=ch,
-                                        area=ar,
-                                    )
-
-                                time.sleep(_PLAY_FADE_DELAY)
-                        elif queue_length == 0 and current is None and self._voice_channel_id:
+                        elif queue_length == 0 and current is None and session.channel:
                             grace = time.time() - self._voice_enter_time < 30
                             if not grace:
                                 logger.info("队列已空，Bot 自动退出语音频道")
                                 self._leave_current_voice_channel()
 
-                self._release_web_link_if_needed()
-                time.sleep(_AUTO_PLAY_CHECK_INTERVAL)
+                    if queue is not None:
+                        self._release_web_link_if_needed(queue=queue)
+
+                if record_song is not None:
+                    try:
+                        SongCache.record_play(
+                            song_id=str(record_song.get("song_id") or ""),
+                            platform=str(record_song.get("platform") or "netease"),
+                            data=record_song,
+                            channel_id=record_channel,
+                            user_id=str(record_song.get("user") or ""),
+                        )
+                        Statistics.update_today(
+                            str(record_song.get("platform") or "netease"),
+                            cache_hit=False,
+                        )
+                    except Exception:
+                        logger.debug("记录自动播放历史失败", exc_info=True)
+                if stream_song is not None and stream_session is not None:
+                    self._start_stream_thread(stream_song, stream_session)
+                    self._preload_next_song_if_any(queue=queue)
+                if notify_song is not None and notify_source != "autoplay":
+                    text = self._build_now_playing_text("自动播放", notify_song)
+                    self.sender.send_message(
+                        text=text,
+                        attachments=notify_song.get("attachments", []),
+                        channel=record_channel,
+                        area=area,
+                    )
 
             except Exception as e:
                 logger.error(f"自动播放监控出错: {e}")
-                time.sleep(_PLAY_FADE_DELAY)
+                wait_seconds = _PLAY_FADE_DELAY
 
-    def _preload_next_song_if_any(self):
+            if stop_event.wait(wait_seconds):
+                return
+
+    def _preload_next_song_if_any(self, queue=None):
         """若队列中还有下一首且带 URL，则后台预加载其音频，减少切歌卡顿。"""
         if not self.voice or not self.voice.available:
             return
         try:
-            next_item = self.queue.peek_next()
+            next_item = (queue or self.queue).peek_next()
             if next_item and next_item.get("url"):
                 self.voice.preload_audio(next_item["url"])
         except Exception as e:
             logger.debug(f"预加载下一首失败（忽略）: {e}")
 
-    def _stream_to_voice_channel(self, url: str, name: str, channel: str, area: str,
-                                 song_id: str = None, duration_ms: int = 0):
-        """后台线程：通过 Agora 推流到语音频道"""
-        q = self._get_queue(area) if hasattr(self, "_get_queue") else self.queue
-        if not self.voice or not self.voice.available or not self._voice_channel_id:
-            logger.warning("语音频道未连接，无法推流")
-            self._play_start_time = 0
-            self._play_duration = 0
-            q.clear_current()
-            try:
-                q.clear_play_state()
-            except Exception as e:
-                logger.debug(f"推流前清理 play_state 失败: {e}")
+    def _start_stream_thread(
+        self,
+        song: dict,
+        session: PlaybackSessionSnapshot,
+    ) -> None:
+        """只用不可变会话快照启动推流线程。"""
+        threading.Thread(
+            target=self._stream_to_voice_channel,
+            args=(
+                str(song["url"]),
+                str(song.get("name") or "music"),
+                session,
+                str(song.get("song_id") or ""),
+                str(song.get("platform") or "netease"),
+            ),
+            name=f"MusicStream-{session.generation}",
+            daemon=True,
+        ).start()
+
+    def _stream_to_voice_channel(
+        self,
+        url: str,
+        name: str,
+        session: PlaybackSessionSnapshot,
+        song_id: str = "",
+        platform_name: str = "netease",
+    ) -> None:
+        """后台线程：仅在捕获的播放会话仍有效时向 Agora 提交推流。"""
+        if session.area is None:
+            logger.warning("推流快照缺少播放域，已拒绝")
             return
+        with self._playback_lock:
+            if not self._playback_snapshot_is_current_locked(session):
+                logger.info(
+                    "丢弃过期推流任务: area=%s generation=%d",
+                    session.area.value[:8],
+                    session.generation,
+                )
+                return
+            q = self._get_queue(session.area.value)
+            voice = self.voice
+            if not voice or not voice.available or session.channel is None:
+                logger.warning("语音频道未连接，无法推流")
+                self._play_start_time = 0
+                self._play_duration = 0
+                q.clear_current()
+                try:
+                    q.clear_play_state()
+                except Exception as e:
+                    logger.debug(f"推流前清理 play_state 失败: {e}")
+                return
 
         def _on_audio_started():
-            self._play_start_time = time.time()
-            try:
-                q.set_play_state({
-                    "start_time": self._play_start_time,
-                    "duration": self._play_duration,
-                    "loading": False,
-                })
-                logger.info(f"音频实际开始播放，已校准 start_time: {name}")
-            except Exception as e:
-                logger.debug(f"校准 start_time 写入 Redis 失败: {e}")
+            with self._playback_lock:
+                if not self._playback_snapshot_is_current_locked(session):
+                    return
+                self._play_start_time = time.time()
+                try:
+                    q.set_play_state({
+                        "start_time": self._play_start_time,
+                        "duration": self._play_duration,
+                        "loading": False,
+                    })
+                    logger.info(f"音频实际开始播放，已校准 start_time: {name}")
+                except Exception as e:
+                    logger.debug(f"校准 start_time 写入 Redis 失败: {e}")
 
         try:
-            self.voice.play_audio(url, on_started=_on_audio_started)
+            with self._playback_lock:
+                if not self._playback_snapshot_is_current_locked(session):
+                    return
+                voice.play_audio(url, on_started=_on_audio_started)
             logger.info(f"已提交 Agora 推流任务: {name}")
+            return
         except Exception as e:
             if song_id:
                 logger.info(f"推流失败，尝试重新获取音频URL: {name}")
                 try:
-                    current = q.get_current() or {}
-                    platform_name = current.get("platform", "netease")
-                    p = self.platforms.get(platform_name) if hasattr(self, "platforms") else None
+                    p = (
+                        self.platforms.get(platform_name)
+                        if hasattr(self, "platforms")
+                        else None
+                    )
                     refetch = p or self.netease
                     new_url = refetch.get_song_url(song_id)
                     if new_url:
-                        self.voice.play_audio(new_url, on_started=_on_audio_started)
+                        with self._playback_lock:
+                            if not self._playback_snapshot_is_current_locked(session):
+                                return
+                            voice.play_audio(new_url, on_started=_on_audio_started)
                         logger.info(f"重新获取URL后推流成功: {name}")
                         return
                 except Exception as inner_e:
                     logger.debug(f"重新获取音频 URL 失败: {inner_e}")
             logger.warning(f"Agora 推流失败: {e}")
 
-            self._play_start_time = 0
-            self._play_duration = 0
-            q.clear_current()
-            try:
-                q.clear_play_state()
-            except Exception as clear_e:
-                logger.debug(f"推流失败后清理 play_state 失败: {clear_e}")
+            with self._playback_lock:
+                if not self._playback_snapshot_is_current_locked(session):
+                    return
+                self._play_start_time = 0
+                self._play_duration = 0
+                q.clear_current()
+                try:
+                    q.clear_play_state()
+                except Exception as clear_e:
+                    logger.debug(f"推流失败后清理 play_state 失败: {clear_e}")
 
     def _start_playing(self, duration_ms: int, area: str | None = None):
         """记录播放开始时间和时长，同步到 Redis 供 Web 播放器读取"""
         self._play_start_time = time.time()
         self._play_duration = duration_ms / 1000 if duration_ms else _DEFAULT_PLAY_DURATION
         try:
-            q = self._get_queue(area) if area is not None and hasattr(self, "_get_queue") else self.queue
+            q = self._get_queue(area) if area is not None else self.queue
             q.set_play_state({
                 "start_time": self._play_start_time,
                 "duration": self._play_duration,
@@ -323,15 +461,18 @@ class PlaybackMixin:
         except Exception as e:
             logger.debug(f"写入 play_state 到 Redis 失败: {e}")
 
-    def _is_playing(self) -> bool:
+    def _is_playing(self, queue=None) -> bool:
         """根据时间判断当前歌曲是否还在播放（暂停状态也算播放中）"""
         if self._play_start_time <= 0:
             return False
         try:
-            ps = self.queue.get_play_state()
+            ps = (queue or self.queue).get_play_state()
             if ps:
                 if ps.get("paused"):
                     return True
+                if ps.get("loading") is True:
+                    elapsed = time.time() - self._play_start_time
+                    return elapsed < self._play_duration
         except Exception as e:
             logger.debug(f"读取 play_state 失败，按时间判定播放状态: {e}")
         voice_state = None
@@ -353,7 +494,7 @@ class PlaybackMixin:
             "netease": "网易云",
             "qq": "QQ音乐",
             "bilibili": "B站",
-        }.get(song_data.get("platform"), "未知")
+        }.get(str(song_data.get("platform") or ""), "未知")
 
         text = f"{prefix}:\n来自于{platform_name}:\n"
         text += f"歌曲: {song_data['name']}\n"
@@ -364,7 +505,12 @@ class PlaybackMixin:
         if song_data.get("duration"):
             text += f"时长: {song_data['duration']}\n"
 
-        link = self._get_web_link(area=song_data.get("area", ""))
+        # 播放提交时已经在锁内更新活跃域；通知可能在离锁后才生成。旧播放通知
+        # 只能生成链接，不能把并发切换后的新活跃域覆盖回去。
+        link = self._get_web_link(
+            area=str(song_data.get("area") or ""),
+            mark_active=False,
+        )
         if link:
             text += link
 

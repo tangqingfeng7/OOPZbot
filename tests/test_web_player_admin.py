@@ -114,7 +114,7 @@ class WebPlayerAdminTest(unittest.TestCase):
         import web.web_rate_limit as web_rate_limit
 
         web_rate_limit.reset_all()
-        self.client = TestClient(self.module.app)
+        self.client = TestClient(self.module.app, client=("127.0.0.1", 50000))
 
     def test_plugins_api_requires_login(self) -> None:
         with patch.object(self.module, "_admin_enabled", return_value=True):
@@ -332,7 +332,79 @@ class WebPlayerAdminTest(unittest.TestCase):
         self.assertTrue(data["playing"])
         self.assertEqual(data["name"], "稻香")
 
-    def test_control_without_area_follows_active_area(self) -> None:
+    def test_public_playback_endpoints_return_exact_409_without_area(self) -> None:
+        from core.queue_manager import _InMemoryRedis
+
+        r = _InMemoryRedis()
+        r.set("music:web_access_token", "token-1")
+        self.client.cookies.set("web_token", "token-1")
+        requests = (
+            ("get", "/api/status", None),
+            ("get", "/api/queue", None),
+            ("get", "/api/debug", None),
+            ("post", "/api/add", {"id": "1"}),
+            ("post", "/api/control", {"action": "next"}),
+            ("post", "/api/queue/action", {"action": "remove", "index": 0}),
+        )
+
+        with patch.object(self.module, "get_redis", return_value=r):
+            for method, url, body in requests:
+                with self.subTest(url=url):
+                    call = getattr(self.client, method)
+                    response = call(url, json=body) if body is not None else call(url)
+                    self.assertEqual(response.status_code, 409)
+                    self.assertEqual(
+                        response.json(),
+                        {
+                            "ok": False,
+                            "code": "playback_area_unavailable",
+                            "error": "当前没有可用的播放域",
+                        },
+                    )
+
+        for global_key in (
+            self.module.KEY_QUEUE,
+            self.module.KEY_CURRENT,
+            self.module.KEY_PLAY_STATE,
+            self.module.KEY_PLAY_MODE,
+        ):
+            self.assertNotIn(global_key, r.keys())
+
+    def test_admin_playback_endpoints_return_exact_409_without_area(self) -> None:
+        import web.admin.shared._area as area_module
+        from core.queue_manager import _InMemoryRedis
+
+        r = _InMemoryRedis()
+        requests = (
+            ("post", "/admin/api/control", {"action": "next"}),
+            ("post", "/admin/api/queue/clear", None),
+            ("get", "/admin/api/queue", None),
+            ("post", "/admin/api/queue/action", {"action": "remove", "index": 0}),
+            ("post", "/admin/api/add", {"id": "1"}),
+        )
+        with (
+            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "_admin_enabled", return_value=True),
+            patch.object(self.module, "_is_admin_authorized", return_value=True),
+            patch.object(area_module.cfg, "OOPZ_CONFIG", {"default_area": ""}),
+            patch.object(area_module, "get_active_area", return_value=""),
+            patch.object(area_module, "_resolve_area", return_value=""),
+        ):
+            for method, url, body in requests:
+                with self.subTest(url=url):
+                    call = getattr(self.client, method)
+                    response = call(url, json=body) if body is not None else call(url)
+                    self.assertEqual(response.status_code, 409)
+                    self.assertEqual(
+                        response.json(),
+                        {
+                            "ok": False,
+                            "code": "playback_area_unavailable",
+                            "error": "当前没有可用的播放域",
+                        },
+                    )
+
+    def test_global_volume_does_not_bind_to_active_area(self) -> None:
         r = _FakeRedis()
         r.set("music:web_access_token", "token-1")
         r.set("music:web_active_area", "area-2")
@@ -348,7 +420,7 @@ class WebPlayerAdminTest(unittest.TestCase):
             response = self.client.post("/api/control", json={"action": "volume", "volume": 50})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["area"], "area-2")
+        self.assertEqual(response.json()["area"], "")
 
     def test_config_update_writes_config_py(self) -> None:
         import web.web_player_config as cfg

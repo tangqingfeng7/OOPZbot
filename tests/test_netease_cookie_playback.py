@@ -35,7 +35,7 @@ class NeteaseCookiePlaybackTest(unittest.TestCase):
         self._old_config_module = sys.modules.get("config")
         self._old_netease_module = sys.modules.get("music.netease")
         fake_config = types.ModuleType("config")
-        fake_config.NETEASE_CLOUD = {
+        fake_config.__dict__["NETEASE_CLOUD"] = {
             "base_url": "http://netease.example",
             "cookie": "MUSIC_U=abc",
             "audio_quality": "exhigh",
