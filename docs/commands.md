@@ -353,7 +353,11 @@ Bot 会自动检测所有用户消息中的违规内容，检测到后自动撤�
 
 ## Web 播放器
 
-访问 `http://<服务器IP>:8080/` 即可打开 Web 播放器。默认情况下 Bot 点歌消息会附带可点击的播放器链接，可通过 `WEB_PLAYER_CONFIG.send_link_enabled` 关闭发送。
+必须使用 Bot 签发且路径形如 `/w/{token}` 的完整播放器链接（例如
+`https://<域名>/w/{token}`；直接访问应用端口时也可能是
+`http://<服务器IP>:8080/w/{token}`）。直接访问 `GET /` 恒定返回 HTTP 403。默认情况下
+Bot 点歌消息会附带当前有效的可点击播放器链接，可通过
+`WEB_PLAYER_CONFIG.send_link_enabled` 关闭发送。
 
 > 播放器地址自动检测：优先获取公网 IPv4，无公网时回退内网 IP。也可在 `WEB_PLAYER_CONFIG.url` 中手动指定。
 
@@ -382,7 +386,7 @@ Web 控制命令通过 Redis `BLPOP` 实时消费，延迟 < 100ms。前端采�
   在频道里发送 `/setup` 可看到自己的 UID 与配置步骤；填进 `config.py` 的 `ADMIN_UIDS` 后重启生效
 - 脏话自动禁言默认对所有非管理员用户生效（可通过 `skip_admins` 配置）。
   `ADMIN_UIDS` 为空时全员免检 —— 否则服主自己被自动禁言后，「解禁」也会因无管理员而无法执行
-- **Web 播放器** 无需登录，局域网内可用
+- **Web 播放器** 无需账号登录，但必须持有 Bot 签发的有效 `/w/{token}` 链接
 
 ## 插件命令显示
 

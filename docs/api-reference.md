@@ -955,6 +955,29 @@ PUT /client/v1/area/v1/member/v1/dragInto
 
 ## 成员 API
 
+### 获取域管理日志
+
+```http
+GET /client/v1/area/v1/operateLogs?area={area}&offset={offset}&opTypes={opTypes}
+```
+
+**参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `area` | 域 ID；`OopzApiMixin.get_area_operate_logs` 未显式传入时使用 `OOPZ_CONFIG["default_area"]` |
+| `offset` | 非负偏移量，Bot 默认传 `0` |
+| `opTypes` | JSON 数组字符串；域成员通知轮询传 `["AREA_SUBSCRIBE","AREA_UNSUBSCRIBE"]` |
+
+Bot 从响应 `data.logs` 列表中读取域成员变更；当前解析器使用每项的 `optUid`
+（兼容 `uid` / `person`）、`content` 和 `createTime`（兼容 `time` / `timestamp`），且只将
+`content` 为 `加入域` 或 `退出域` 的记录识别为成员变更。
+
+**Bot 中的用途与调用位置：**
+
+- `src/oopz/oopz_api.py` 的 `OopzApiMixin.get_area_operate_logs` 封装请求，并对 429 执行限流重试。
+- `src/services/area_join_notifier.py` 的 `fetch_operate_log_changes` 调用该封装；它是域成员加入/退出通知的默认数据源，解析结果也用于产生 OneBot v11 群成员增减事件。
+
 ### 获取域成员列表（含在线状态）
 
 ```
@@ -1523,6 +1546,7 @@ GET /general/v1/speech
 | POST | `https://gateway.oopz.cn/client/v1/area/v1/enter?area=...&recover=false` | 进入区域 |
 | GET | `https://gateway.oopz.cn/area/v3/info?area=...` | 区域信息 |
 | GET | `https://gateway.oopz.cn/area/v3/members?area=...&offsetStart=0&offsetEnd=49` | 区域成员列表 |
+| GET | `https://gateway.oopz.cn/client/v1/area/v1/operateLogs?area=...&offset=0&opTypes=...` | 域管理日志 |
 | GET | `https://gateway.oopz.cn/client/v1/area/v1/detail/v1/channels?area=...` | 频道列表 |
 | POST | `https://gateway.oopz.cn/area/v2/channel/enter` | 进入频道 |
 | GET | `https://gateway.oopz.cn/area/v3/channel/setting/info?channel=...` | 频道设置信息 |

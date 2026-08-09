@@ -133,7 +133,8 @@ python tools/create_plugin_scaffold.py admin_demo --admin-only
 - 标准 `metadata`
 - 标准 `command_capabilities`
 - 最小 `config_spec`
-- 空实现的 `handle_mention / handle_slash`
+- 同时继承 `PluginCommandMixin` 与 `BotModule` 的插件类
+- 待实现的 `dispatch_command`；`handle_mention` / `handle_slash` 由 mixin 统一处理
 
 ## 推荐开发流程
 
