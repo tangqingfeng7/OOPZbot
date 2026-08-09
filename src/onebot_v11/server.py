@@ -5,7 +5,8 @@ import hashlib
 import hmac
 import json
 import time
-from typing import Any, Literal, Mapping
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol
 
 from aiohttp import ClientConnectorError, ClientSession, WSMsgType, WSServerHandshakeError, web
 
@@ -17,6 +18,11 @@ logger = get_logger("OneBotV11Server")
 
 JsonDict = dict[str, Any]
 WsRole = Literal["api", "event", "universal"]
+
+
+class _TextWebSocket(Protocol):
+    async def send_str(self, data: str, compress: int | None = None) -> None:
+        ...
 
 
 class OneBotV11Server:
@@ -79,8 +85,12 @@ class OneBotV11Server:
 
     @property
     def bound_port(self) -> int:
-        if self.site and getattr(self.site, "_server", None) and self.site._server.sockets:
-            return int(self.site._server.sockets[0].getsockname()[1])
+        addresses = self.runner.addresses if self.runner is not None else []
+        for address in addresses:
+            if isinstance(address, tuple) and len(address) > 1:
+                port = address[1]
+                if isinstance(port, int):
+                    return port
         return self.config.port
 
     def _setup_routes(self) -> None:
@@ -332,5 +342,5 @@ class OneBotV11Server:
         return web.Response(text=json.dumps(data, ensure_ascii=False), status=status, content_type="application/json")
 
     @staticmethod
-    async def _ws_send_json(ws: web.WebSocketResponse, data: Any) -> None:
+    async def _ws_send_json(ws: _TextWebSocket, data: Any) -> None:
         await ws.send_str(json.dumps(data, ensure_ascii=False))

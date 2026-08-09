@@ -4,8 +4,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from config import AUTO_RECALL_CONFIG
 from app.services.runtime import CommandRuntimeView, sender_of
+from config import AUTO_RECALL_CONFIG
 from core.logger_config import get_logger
 
 logger = get_logger("MessageRecallScheduler")
@@ -59,7 +59,30 @@ class MessageRecallScheduler:
         if delay <= 0:
             return
 
+        self.schedule_recall(
+            message_id,
+            channel,
+            area,
+            timestamp,
+            delay=float(delay),
+        )
+
+    def schedule_recall(
+        self,
+        message_id: str,
+        channel: str,
+        area: str,
+        timestamp: str = "",
+        *,
+        delay: float,
+    ) -> bool:
+        """将一条撤回任务交给共享 worker；停止后拒绝新任务。"""
+        if not message_id or delay <= 0:
+            return False
+
         with self._lock:
+            if self._stopped:
+                return False
             max_pending = self._max_pending()
             if len(self._pending) >= max_pending:
                 logger.warning(
@@ -67,13 +90,13 @@ class MessageRecallScheduler:
                     max_pending,
                     str(message_id)[:16],
                 )
-                return
+                return False
 
             self._sequence += 1
             heapq.heappush(
                 self._pending,
                 _ScheduledRecall(
-                    due_at=time.monotonic() + float(delay),
+                    due_at=time.monotonic() + delay,
                     sequence=self._sequence,
                     message_id=message_id,
                     channel=channel,
@@ -83,6 +106,7 @@ class MessageRecallScheduler:
             )
             self._ensure_worker_locked()
             self._condition.notify()
+            return True
 
     def cancel_all(self) -> int:
         """取消所有待执行的撤回任务，返回取消数量。"""
@@ -92,7 +116,7 @@ class MessageRecallScheduler:
             self._condition.notify()
         return count
 
-    def stop(self) -> int:
+    def stop(self, timeout: float = 3.0) -> int:
         """停止后台调度线程，并取消所有待执行任务。"""
         with self._lock:
             count = len(self._pending)
@@ -101,7 +125,9 @@ class MessageRecallScheduler:
             self._condition.notify_all()
             worker = self._worker
         if worker and worker.is_alive():
-            worker.join(timeout=3)
+            worker.join(timeout=max(0.0, timeout))
+        if worker and worker.is_alive():
+            logger.warning("服务停止超时: MessageRecallScheduler，线程仍未退出")
         return count
 
     @staticmethod
@@ -114,7 +140,6 @@ class MessageRecallScheduler:
     def _ensure_worker_locked(self) -> None:
         if self._worker and self._worker.is_alive():
             return
-        self._stopped = False
         self._worker = threading.Thread(
             target=self._worker_loop,
             name="MessageRecallScheduler",

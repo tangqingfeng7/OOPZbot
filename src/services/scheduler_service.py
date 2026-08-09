@@ -11,13 +11,13 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+from core.constants import build_mention
 from core.database import (
     CN_TZ,
     ReminderDB,
     ScheduledMessageDB,
     cn_now,
 )
-from core.constants import build_mention
 from core.logger_config import get_logger
 
 logger = get_logger("Scheduler")
@@ -51,12 +51,15 @@ class ScheduledMessageService:
         self._thread.start()
         logger.info("ScheduledMessageService 已启动 (间隔 %ds)", self._interval)
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 3.0) -> None:
         self._stop_event.set()
         t = self._thread
         if t and t.is_alive():
-            t.join(timeout=3)
-        self._thread = None
+            t.join(timeout=max(0.0, timeout))
+        if t and t.is_alive():
+            logger.warning("服务停止超时: ScheduledMessageService，线程仍未退出")
+        else:
+            self._thread = None
 
     def _loop(self) -> None:
         while not self._stop_event.wait(self._interval):
@@ -111,12 +114,15 @@ class ReminderService:
         self._thread.start()
         logger.info("ReminderService 已启动 (间隔 %ds)", self._interval)
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 3.0) -> None:
         self._stop_event.set()
         t = self._thread
         if t and t.is_alive():
-            t.join(timeout=3)
-        self._thread = None
+            t.join(timeout=max(0.0, timeout))
+        if t and t.is_alive():
+            logger.warning("服务停止超时: ReminderService，线程仍未退出")
+        else:
+            self._thread = None
 
     def _loop(self) -> None:
         while not self._stop_event.wait(self._interval):

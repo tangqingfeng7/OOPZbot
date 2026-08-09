@@ -2,11 +2,12 @@ import asyncio
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -109,6 +110,7 @@ class OneBotV11AdapterTest(unittest.TestCase):
         self.assertEqual(event["raw_message"], "hello")
         self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
         self.assertIsNotNone(stored)
+        assert stored is not None
         self.assertEqual(stored.oopz_message_id, "oopz-msg-1")
 
     def test_member_enter_event_converts_to_group_increase(self) -> None:
@@ -215,6 +217,10 @@ class OneBotV11AdapterTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertIn("message_id", result["data"])
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertIsNotNone(stored.raw)
+        assert stored.raw is not None
         self.assertEqual(stored.raw["message"], [{"type": "text", "data": {"text": "hi"}}])
         sender.send_message.assert_called_once()
         self.assertEqual(sender.send_message.call_args.kwargs["area"], "area-1")
@@ -261,6 +267,10 @@ class OneBotV11AdapterTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(sender.send_message.call_args.args[0], "[CQ:at,qq=123] hello")
         self.assertEqual(sender.send_message.call_args.kwargs["mentionList"], [])
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertIsNotNone(stored.raw)
+        assert stored.raw is not None
         self.assertEqual(stored.raw["message"], [
             {"type": "text", "data": {"text": "[CQ:at,qq=123] hello"}}
         ])
@@ -453,6 +463,7 @@ class OneBotV11ServerTest(unittest.TestCase):
     def test_http_auth_and_get_status(self) -> None:
         async def scenario() -> None:
             from aiohttp import ClientSession
+
             from onebot_v11.config import OneBotV11ServerConfig
             from onebot_v11.server import OneBotV11Server
 
@@ -483,6 +494,7 @@ class OneBotV11ServerTest(unittest.TestCase):
     def test_heartbeat_is_broadcast_to_event_clients(self) -> None:
         async def scenario() -> None:
             from aiohttp import ClientSession, WSMsgType
+
             from onebot_v11.config import OneBotV11ServerConfig
             from onebot_v11.server import OneBotV11Server
 
@@ -519,6 +531,7 @@ class OneBotV11ServerTest(unittest.TestCase):
     def test_http_post_reporting_delivers_events(self) -> None:
         async def scenario() -> None:
             from aiohttp import web
+
             from onebot_v11.config import OneBotV11ServerConfig
             from onebot_v11.server import OneBotV11Server
 
@@ -534,7 +547,8 @@ class OneBotV11ServerTest(unittest.TestCase):
             await runner.setup()
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
-            port = site._server.sockets[0].getsockname()[1]
+            self.assertTrue(runner.addresses)
+            port = int(runner.addresses[0][1])
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 adapter = self._adapter(tmpdir)
@@ -565,6 +579,7 @@ class OneBotV11ServerTest(unittest.TestCase):
     def test_reverse_websocket_delivers_events(self) -> None:
         async def scenario() -> None:
             from aiohttp import WSMsgType, web
+
             from onebot_v11.config import OneBotV11ServerConfig
             from onebot_v11.server import OneBotV11Server
 
@@ -586,7 +601,8 @@ class OneBotV11ServerTest(unittest.TestCase):
             await runner.setup()
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
-            port = site._server.sockets[0].getsockname()[1]
+            self.assertTrue(runner.addresses)
+            port = int(runner.addresses[0][1])
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 adapter = self._adapter(tmpdir)
@@ -624,6 +640,7 @@ class OneBotV11ServerTest(unittest.TestCase):
     def test_forward_websocket_receives_events(self) -> None:
         async def scenario() -> None:
             from aiohttp import ClientSession, WSMsgType
+
             from onebot_v11.config import OneBotV11ServerConfig
             from onebot_v11.server import OneBotV11Server
 
@@ -663,6 +680,67 @@ class OneBotStoreTest(unittest.TestCase):
 
             self.assertEqual(len(set(numbers)), 1)
             self.assertEqual(store.resolve_id(numbers[0]).source, source)
+
+
+class OneBotV11ServiceLifecycleTest(unittest.TestCase):
+    def _service(self, tmpdir: str):
+        from onebot_v11.config import OneBotV11ServerConfig
+        from onebot_v11.service import OneBotV11Service
+
+        return OneBotV11Service(
+            Mock(),
+            OneBotV11ServerConfig(
+                enabled=True,
+                db_path=str(Path(tmpdir) / "onebot.sqlite3"),
+                enable_http=False,
+                enable_ws=False,
+                enable_ws_reverse=False,
+                heartbeat_enabled=False,
+            ),
+        )
+
+    def test_stop_is_idempotent_and_joins_service_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            service.start()
+            service_thread = service._thread
+            self.assertIsNotNone(service_thread)
+            assert service_thread is not None
+            self.assertTrue(service_thread.is_alive())
+
+            service.stop(timeout=2)
+            service.stop(timeout=2)
+
+        self.assertIsNone(service._thread)
+        self.assertIsNone(service._loop)
+
+    def test_stop_during_async_start_is_not_lost(self) -> None:
+        class DelayedServer:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.stop_calls = 0
+
+            async def start(self) -> None:
+                self.entered.set()
+                await asyncio.sleep(0.05)
+
+            async def stop(self) -> None:
+                self.stop_calls += 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            delayed = DelayedServer()
+            cast(Any, service).server = delayed
+            starter = threading.Thread(target=service.start)
+            starter.start()
+            self.assertTrue(delayed.entered.wait(timeout=1))
+
+            service.stop(timeout=1)
+            starter.join(timeout=1)
+
+        self.assertFalse(starter.is_alive())
+        self.assertIsNone(service._thread)
+        self.assertEqual(delayed.stop_calls, 1)
 
 
 if __name__ == "__main__":

@@ -2,11 +2,11 @@ import os
 import time
 from typing import Optional
 
+from app.services.runtime import CommandRuntimeView, sender_of
 from config import AUTO_RECALL_CONFIG
 from core.constants import Msg
 from core.database import SongCache
 from core.logger_config import LOG_FILE, get_logger
-from app.services.runtime import CommandRuntimeView, sender_of
 
 logger = get_logger("RecallService")
 
@@ -47,6 +47,14 @@ class RecallService:
 
             message_id = recent["messageId"]
             content_preview = recent.get("content", "")[:30]
+
+        if not isinstance(message_id, str) or not message_id:
+            self._sender.send_message(
+                f"{Msg.ERR} 消息记录缺少有效的消息 ID",
+                channel=channel,
+                area=area,
+            )
+            return
 
         timestamp = self._runtime.services.safety.message_lookup.resolve_timestamp(message_id, channel, area)
         result = self._sender.recall_message(
@@ -145,7 +153,12 @@ class RecallService:
         if not arg:
             enabled = AUTO_RECALL_CONFIG.get("enabled", False)
             delay = AUTO_RECALL_CONFIG.get("delay", 30)
-            exclude = AUTO_RECALL_CONFIG.get("exclude_commands", [])
+            raw_exclude = AUTO_RECALL_CONFIG.get("exclude_commands", [])
+            exclude = (
+                [item for item in raw_exclude if isinstance(item, str)]
+                if isinstance(raw_exclude, list)
+                else []
+            )
             status = "开启" if enabled else "关闭"
             exclude_names = {
                 "ai_chat": "AI 聊天",

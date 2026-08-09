@@ -1,12 +1,11 @@
+from app.lifecycle.context import AppContext
+from bot.command_handler import CommandHandler
 from core.logger_config import get_logger
 from core.message_dispatcher import MessageDispatcher
-from services.area_join_notifier import start_area_join_notifier
-from bot.command_handler import CommandHandler
+from onebot_v11 import OneBotV11Service, get_onebot_v11_config
 from oopz.oopz_client import OopzClient
 from oopz.oopz_sender import OopzSender, SensitiveContentError
-
-from app.lifecycle.context import AppContext
-from onebot_v11 import OneBotV11Service, get_onebot_v11_config
+from services.area_join_notifier import start_area_join_notifier
 
 logger = get_logger("AppContext")
 
@@ -48,6 +47,9 @@ class AppContextBuilder:
 
     def build(self, sender: OopzSender, voice=None) -> AppContext:
         handler = CommandHandler(sender, voice_client=voice)
+        sender.bind_auto_recall_scheduler(
+            handler.services.safety.recall_scheduler
+        )
         onebot_config = get_onebot_v11_config()
         onebot_v11 = OneBotV11Service(sender, onebot_config) if onebot_config.enabled else None
         notifier_callback = start_area_join_notifier(
@@ -71,6 +73,8 @@ class AppContextBuilder:
             dispatcher.submit(key, _handle_chat_task, msg_data)
 
         def _dispatch_other_event(event: int, data: dict) -> None:
+            if notifier_callback is None:
+                return
             dispatcher.submit("__other_events__", notifier_callback, event, data)
 
         client = OopzClient(

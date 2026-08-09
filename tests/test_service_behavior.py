@@ -2,8 +2,8 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock, patch
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -12,13 +12,22 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
+from app.services.runtime import CommandRuntimeView  # noqa: E402
+
+
+def _runtime(**components: object) -> CommandRuntimeView:
+    """把每个用例需要的最小运行时切片标记为服务协议测试桩。"""
+
+    return cast(CommandRuntimeView, SimpleNamespace(**components))
+
+
 class CommandAccessServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.plugins = Mock()
         # 裸 Mock 的任意方法都返回真值；这两个是「拦截」语义，默认必须为假
         self.plugins.has_admin_only_mention_prefix.return_value = False
         self.plugins.has_admin_only_slash_command.return_value = False
-        self.runtime = SimpleNamespace(plugins=self.plugins, bot_mention="(met)bot(met)")
+        self.runtime = _runtime(plugins=self.plugins, bot_mention="(met)bot(met)")
 
     def test_is_admin_is_fail_closed_when_admin_list_empty(self) -> None:
         # 空名单曾被当作「所有人都是管理员」——那是首启默认态，
@@ -99,7 +108,7 @@ class RoleServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
         self.target_resolution = Mock()
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
                 community=SimpleNamespace(target_resolution=self.target_resolution),
@@ -175,7 +184,7 @@ class MemberServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
         self.target_resolution = Mock()
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
                 community=SimpleNamespace(target_resolution=self.target_resolution),
@@ -235,7 +244,7 @@ class MemberServiceTest(unittest.TestCase):
 class TargetResolutionServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
-        self.runtime = SimpleNamespace(
+        self.runtime = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
         )
 
@@ -283,7 +292,7 @@ class ModerationCommandActionsTest(unittest.TestCase):
         self.sender = Mock()
         self.target_resolution = Mock()
         self.moderation = Mock()
-        self.runtime = SimpleNamespace(
+        self.runtime = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
                 community=SimpleNamespace(target_resolution=self.target_resolution),
@@ -316,7 +325,7 @@ class ModerationCommandActionsTest(unittest.TestCase):
 class ProfanityGuardServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
-        self.handler = SimpleNamespace(infrastructure=SimpleNamespace(sender=self.sender))
+        self.handler = _runtime(infrastructure=SimpleNamespace(sender=self.sender))
 
     def test_handle_profanity_warns_before_muting(self) -> None:
         from app.services.safety.profanity_guard_service import ProfanityGuardService
@@ -360,7 +369,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
 
         with patch("app.services.safety.profanity_guard_service.PROFANITY_CONFIG", config):
             service = ProfanityGuardService(self.handler)
-            service._warnings["user-1"] = 1
+            service._warnings["user-1"] = cast(tuple[int, float], 1)
             with patch("oopz.name_resolver.NameResolver") as resolver:
                 resolver.return_value.user.return_value = "测试用户"
 
@@ -413,7 +422,7 @@ class RecallServiceTest(unittest.TestCase):
 
         self.sender = Mock()
         self.message_lookup = Mock()
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
                 safety=SimpleNamespace(message_lookup=self.message_lookup),
@@ -476,10 +485,13 @@ class RecallServiceTest(unittest.TestCase):
 class MessageRecallSchedulerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
-        self.runtime = SimpleNamespace(infrastructure=SimpleNamespace(sender=self.sender))
+        self.runtime = _runtime(
+            infrastructure=SimpleNamespace(sender=self.sender)
+        )
 
     def test_schedules_recall_on_single_worker(self) -> None:
         import time
+
         import app.services.safety.message_recall_scheduler as module
 
         config = {"enabled": True, "delay": 0.01, "max_pending": 10, "exclude_commands": []}
@@ -515,11 +527,54 @@ class MessageRecallSchedulerTest(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_schedule_after_stop_does_not_restart_worker(self) -> None:
+        import app.services.safety.message_recall_scheduler as module
+
+        config = {"enabled": True, "delay": 30, "max_pending": 10, "exclude_commands": []}
+        with patch.object(module, "AUTO_RECALL_CONFIG", config):
+            service = module.MessageRecallScheduler(self.runtime)
+            service.stop()
+            service.schedule_user_message_recall(
+                "late-message",
+                "channel-1",
+                "area-1",
+            )
+
+        self.assertIsNone(service._worker)
+        self.assertEqual(service.cancel_all(), 0)
+
+    def test_explicit_schedule_uses_same_bounded_worker(self) -> None:
+        import app.services.safety.message_recall_scheduler as module
+
+        config = {"enabled": True, "delay": 30, "max_pending": 1, "exclude_commands": []}
+        with patch.object(module, "AUTO_RECALL_CONFIG", config):
+            service = module.MessageRecallScheduler(self.runtime)
+            try:
+                self.assertTrue(
+                    service.schedule_recall(
+                        "bot-message",
+                        "channel-1",
+                        "area-1",
+                        delay=30,
+                    )
+                )
+                self.assertFalse(
+                    service.schedule_recall(
+                        "overflow",
+                        "channel-1",
+                        "area-1",
+                        delay=30,
+                    )
+                )
+                self.assertEqual(service.cancel_all(), 1)
+            finally:
+                service.stop()
+
 
 class ModerationServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
         )
 
@@ -623,7 +678,7 @@ class HelpServiceTest(unittest.TestCase):
         self.plugin_descriptor_cls = PluginDescriptor
         self.plugin_metadata_cls = PluginMetadata
         self.plugin_capabilities_cls = PluginCommandCapabilities
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, chat=self.chat, plugins=self.plugins),
             services=SimpleNamespace(
                 routing=SimpleNamespace(access=self.access),
@@ -708,7 +763,7 @@ class PluginManagementServiceTest(unittest.TestCase):
         self.plugin_descriptor_cls = PluginDescriptor
         self.plugin_metadata_cls = PluginMetadata
         self.plugin_capabilities_cls = PluginCommandCapabilities
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, plugins=self.plugins),
             plugin_host=object(),
         )
@@ -757,7 +812,7 @@ class PluginManagementServiceTest(unittest.TestCase):
         self.plugins.load.return_value = PluginOperationResult.success(
             "已加载 demo",
             plugin_name="demo",
-            code=PluginOperationCode.SUCCESS,
+            code=cast(PluginOperationCode, PluginOperationCode.SUCCESS),
         )
         with patch.object(module, "normalize_plugin_name", return_value="demo"):
             service = module.PluginManagementService(self.handler)
@@ -773,7 +828,7 @@ class PluginManagementServiceTest(unittest.TestCase):
         self.plugins.unload.return_value = PluginOperationResult.failure(
             "卸载失败",
             plugin_name="demo",
-            code=PluginOperationCode.NOT_LOADED,
+            code=cast(PluginOperationCode, PluginOperationCode.NOT_LOADED),
         )
         with patch.object(module, "normalize_plugin_name", return_value="demo"):
             service = module.PluginManagementService(self.handler)
@@ -789,7 +844,7 @@ class CommonCommandServiceTest(unittest.TestCase):
         self.music = Mock()
         self.chat = Mock()
         self.recall_scheduler = Mock()
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, music=self.music, chat=self.chat),
             services=SimpleNamespace(
                 safety=SimpleNamespace(recall_scheduler=self.recall_scheduler),
@@ -878,7 +933,7 @@ class ChatInteractionServiceTest(unittest.TestCase):
         self.sender = Mock()
         self.chat = Mock()
         self.recall_scheduler = Mock()
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, chat=self.chat),
             services=SimpleNamespace(
                 safety=SimpleNamespace(recall_scheduler=self.recall_scheduler),
@@ -948,7 +1003,7 @@ class MusicCommandServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sender = Mock()
         self.music = Mock()
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, music=self.music),
         )
 
@@ -1059,7 +1114,7 @@ class MusicCommandInteractiveSelectionTest(unittest.TestCase):
         self.music = Mock()
         self.music.supports_interactive_selection = True
         self.music.search_best_candidate.return_value = None
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, music=self.music),
             services=SimpleNamespace(
                 interaction=SimpleNamespace(selection=self.selection),
@@ -1132,7 +1187,7 @@ class SetupServiceTest(unittest.TestCase):
         self.plugins = Mock()
         self.access = Mock()
         self.access.has_configured_admins.return_value = True
-        self.handler = SimpleNamespace(
+        self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             plugins=self.plugins,
             services=SimpleNamespace(routing=SimpleNamespace(access=self.access)),
@@ -1240,19 +1295,35 @@ class ProfanitySelfLockTest(unittest.TestCase):
 
     def test_empty_admin_list_skips_profanity_for_everyone(self) -> None:
         import app.services.routing.command_message_service as module
+        from app.services.routing.command_message_service import MessageContext
 
         service, _ = self._service(has_admins=False)
-        ctx = SimpleNamespace(user="someone", message_id="m1", content="x", channel="c", area="a")
+        ctx = MessageContext(
+            raw={},
+            user="someone",
+            message_id="m1",
+            content="x",
+            channel="c",
+            area="a",
+            timestamp="",
+        )
 
         with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):
             self.assertFalse(service.handle_profanity(ctx))
 
     def test_configured_admin_list_still_checks_non_admins(self) -> None:
         import app.services.routing.command_message_service as module
+        from app.services.routing.command_message_service import MessageContext
 
         service, access = self._service(has_admins=True)
-        ctx = SimpleNamespace(
-            user="someone", message_id="m1", content="x", channel="c", area="a", timestamp=0
+        ctx = MessageContext(
+            raw={},
+            user="someone",
+            message_id="m1",
+            content="x",
+            channel="c",
+            area="a",
+            timestamp="0",
         )
 
         with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):

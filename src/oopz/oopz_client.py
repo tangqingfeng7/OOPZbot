@@ -1,17 +1,17 @@
 import base64
 import json
 import os
-import time
 import threading
-from typing import Callable, Optional
+import time
+from collections.abc import Callable
 
 import websocket
 
-from config import OOPZ_CONFIG, DEFAULT_HEADERS
+from config import DEFAULT_HEADERS, OOPZ_CONFIG
 from core.logger_config import get_logger
+from core.proxy_utils import get_websocket_proxy_kwargs
 from oopz.name_resolver import get_resolver
 from oopz.oopz_sender import SensitiveContentError
-from core.proxy_utils import get_websocket_proxy_kwargs
 
 logger = get_logger("OopzClient")
 
@@ -33,7 +33,7 @@ _HEALTHY_SESSION_SECONDS = 60.0
 _JWT_REFRESH_MARGIN_SECONDS = 60.0
 
 
-def _jwt_expires_in(token: str) -> Optional[float]:
+def _jwt_expires_in(token: str) -> float | None:
     """解析 JWT 的 exp 字段，返回距过期的秒数（负数=已过期）。
 
     解析失败返回 None（视为未知，不据此阻止连接）。仅做 base64 解码，
@@ -75,9 +75,7 @@ def _auth_response_failed(body: dict) -> bool:
     if body.get("error"):
         return True
     code = body.get("code")
-    if code is not None and str(code).strip().lower() in _AUTH_FAILURE_CODES:
-        return True
-    return False
+    return code is not None and str(code).strip().lower() in _AUTH_FAILURE_CODES
 
 # 设置 OOPZ_DEBUG_WS_EVENTS=1 打开 WS 收到事件的原始 body 调试日志，
 # 默认关闭以避免高频事件刷屏。诊断语音状态广播、成员变更等问题时再打开。
@@ -98,14 +96,14 @@ class OopzClient:
 
     def __init__(
         self,
-        on_chat_message: Optional[Callable[[dict], None]] = None,
-        on_other_event: Optional[Callable[[int, dict], None]] = None,
-        on_raw_event: Optional[Callable[[dict], None]] = None,
+        on_chat_message: Callable[[dict], None] | None = None,
+        on_other_event: Callable[[int, dict], None] | None = None,
+        on_raw_event: Callable[[dict], None] | None = None,
         reconnect_interval: float = 2.0,
         max_reconnect_interval: float = 120.0,
         heartbeat_interval: float = 10.0,
         stale_connection_timeout: float = 90.0,
-        credential_refresher: Optional[Callable[[], Optional[dict]]] = None,
+        credential_refresher: Callable[[], dict | None] | None = None,
         min_credential_refresh_interval: float = 300.0,
     ):
         self.on_chat_message = on_chat_message
@@ -126,9 +124,15 @@ class OopzClient:
         self._device_id = OOPZ_CONFIG["device_id"]
         self._jwt_token = OOPZ_CONFIG["jwt_token"]
 
-        self._ws: Optional[websocket.WebSocketApp] = None
+        self._ws: websocket.WebSocketApp | None = None
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._heartbeat_lock = threading.Lock()
+        self._heartbeat_workers: dict[
+            threading.Thread,
+            tuple[object, threading.Event],
+        ] = {}
         self._consecutive_failures = 0
         self._fail_lock = threading.Lock()
         self._hb_body = json.dumps({"person": self._person_id})
@@ -150,6 +154,7 @@ class OopzClient:
 
     def start(self):
         """阻塞运行（带指数退避自动重连）"""
+        self._stop_event.clear()
         self._running = True
         while self._running:
             self._maybe_refresh_expired_credentials()
@@ -163,7 +168,7 @@ class OopzClient:
             if self._running:
                 delay = self._next_reconnect_delay()
                 logger.info(f"{delay:.1f}s 后重连 (第 {self._consecutive_failures} 次)")
-                time.sleep(delay)
+                self._stop_event.wait(delay)
 
     def _reset_backoff_if_session_healthy(self) -> None:
         """只有存活足够久的会话才清零退避计数：TCP 能建立但立刻被
@@ -176,15 +181,57 @@ class OopzClient:
 
     def start_async(self):
         """在后台线程中运行"""
-        self._thread = threading.Thread(target=self.start, daemon=True)
+        if self._thread and self._thread.is_alive():
+            return self._thread
+        self._thread = threading.Thread(target=self.start, name="OopzClient", daemon=True)
         self._thread.start()
         return self._thread
 
-    def stop(self):
+    def stop(self, timeout: float = 5.0):
         """停止客户端"""
+        deadline = time.monotonic() + max(0.0, timeout)
         self._running = False
-        if self._ws:
-            self._ws.close()
+        self._stop_event.set()
+        heartbeat_threads = self._signal_heartbeat_workers()
+
+        close_thread: threading.Thread | None = None
+        websocket_app = self._ws
+        if websocket_app is not None:
+            # websocket-client 的 close 可以等待对端 close frame，不能让它
+            # 突破调用方给 stop 的总预算。放到 daemon 线程后，既向新版
+            # websocket-client 传递剩余 timeout，也能在旧签名/测试替身只接受
+            # close() 时保持 stop 本身有界。
+            def _close_websocket() -> None:
+                try:
+                    close_timeout = max(0.0, deadline - time.monotonic())
+                    try:
+                        websocket_app.close(timeout=close_timeout)
+                    except TypeError:
+                        websocket_app.close()
+                except Exception as exc:
+                    logger.warning("WebSocket 关闭异常: %s", exc)
+
+            close_thread = threading.Thread(
+                target=_close_websocket,
+                name="OopzWebSocketClose",
+                daemon=True,
+            )
+            close_thread.start()
+
+        current = threading.current_thread()
+        named_threads: list[tuple[str, threading.Thread | None]] = []
+        if close_thread is not None:
+            named_threads.append((close_thread.name, close_thread))
+        named_threads.extend(
+            (thread.name, thread)
+            for thread in heartbeat_threads
+        )
+        named_threads.append(("OopzClient", self._thread))
+        for name, thread in named_threads:
+            if thread and thread is not current and thread.is_alive():
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            if thread and thread is not current and thread.is_alive():
+                logger.warning("服务停止超时: %s，线程仍未退出", name)
 
     def update_credentials(self, person_uid: str, device_id: str, jwt_token: str, reconnect: bool = True) -> None:
         """热更新认证凭据；关闭当前连接后由重连循环使用新身份。"""
@@ -282,7 +329,25 @@ class OopzClient:
         logger.info("WebSocket 连接已建立")
         self._last_recv_time = time.time()
         self._send_auth(ws)
-        threading.Thread(target=self._heartbeat_loop, args=(ws,), daemon=True).start()
+        self._signal_heartbeat_workers()
+        connection_stop = threading.Event()
+
+        def _run_heartbeat() -> None:
+            try:
+                self._heartbeat_loop(ws, connection_stop)
+            finally:
+                current = threading.current_thread()
+                with self._heartbeat_lock:
+                    self._heartbeat_workers.pop(current, None)
+
+        heartbeat_thread = threading.Thread(
+            target=_run_heartbeat,
+            name="OopzHeartbeat",
+            daemon=True,
+        )
+        with self._heartbeat_lock:
+            self._heartbeat_workers[heartbeat_thread] = (ws, connection_stop)
+        heartbeat_thread.start()
 
     def _on_message(self, ws, message: str):
         self._last_recv_time = time.time()
@@ -349,6 +414,7 @@ class OopzClient:
         logger.error(f"WebSocket 错误: {error}")
 
     def _on_close(self, ws, code, reason):
+        self._signal_heartbeat_workers(ws)
         logger.warning(f"连接关闭 (code={code}, reason={reason})")
 
     def _handle_auth_response(self, ws, data: dict) -> None:
@@ -404,9 +470,22 @@ class OopzClient:
         except Exception as e:
             logger.debug("发送心跳失败（连接可能已关闭）: %s", e)
 
-    def _heartbeat_loop(self, ws):
-        while self._running:
-            time.sleep(self.heartbeat_interval)
+    def _signal_heartbeat_workers(self, ws=None) -> tuple[threading.Thread, ...]:
+        """唤醒指定连接（或全部连接）的心跳线程，并返回待 join 的线程快照。"""
+        with self._heartbeat_lock:
+            workers = tuple(
+                (thread, stop_event)
+                for thread, (worker_ws, stop_event) in self._heartbeat_workers.items()
+                if ws is None or worker_ws is ws
+            )
+        for _thread, stop_event in workers:
+            stop_event.set()
+        return tuple(thread for thread, _stop_event in workers)
+
+    def _heartbeat_loop(self, ws, connection_stop: threading.Event):
+        while self._running and not connection_stop.is_set():
+            if connection_stop.wait(self.heartbeat_interval) or self._stop_event.is_set():
+                break
             if not (ws.sock and ws.sock.connected):
                 break
             self._send_heartbeat(ws)

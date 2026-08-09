@@ -1,10 +1,11 @@
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -13,8 +14,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
-from domain.plugins.base import BotModule, PluginMetadata
+from domain.plugins.base import BotModule, PluginMetadata  # noqa: E402
+from domain.plugins.plugin_operation import (  # noqa: E402
+    PluginOperationCode,
+    PluginOperationResult,
+)
 
 
 class _FakePlugin(BotModule):
@@ -109,6 +113,71 @@ class PluginRuntimeStateTest(unittest.TestCase):
         self.assertIsInstance(PluginOperationCode.SUCCESS, str)
         self.assertEqual(PluginOperationCode.SUCCESS, "success")
         self.assertEqual(str(PluginOperationCode.SUCCESS), "success")
+
+    def test_stop_unloads_plugins_once_without_disabling_next_start(self) -> None:
+        from app.infrastructure.runtime import PluginRuntime
+
+        self.state_path.write_text(
+            json.dumps({"enabled_plugins": ["alpha"]}),
+            encoding="utf-8",
+        )
+        runtime = PluginRuntime(state_path=self.state_path)
+        plugin = _FakePlugin("alpha")
+        runtime.registry.register(plugin)
+
+        with patch.object(plugin, "on_unload") as on_unload:
+            runtime.stop()
+            runtime.stop()
+
+        on_unload.assert_called_once_with()
+        self.assertEqual(runtime.enabled_plugin_names(), [])
+        payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["enabled_plugins"], ["alpha"])
+
+    def test_stop_returns_within_budget_when_plugin_unload_blocks(self) -> None:
+        from app.infrastructure.runtime import PluginRuntime
+
+        runtime = PluginRuntime(state_path=self.state_path)
+        plugin = _FakePlugin("slow")
+        runtime.registry.register(plugin)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_unload() -> None:
+            entered.set()
+            release.wait(timeout=1)
+
+        with patch.object(plugin, "on_unload", side_effect=blocking_unload):
+            started_at = time.monotonic()
+            runtime.stop(timeout=0.03)
+            elapsed = time.monotonic() - started_at
+            self.assertTrue(entered.is_set())
+            self.assertLess(elapsed, 0.15)
+            release.set()
+            if runtime._stop_thread:
+                runtime._stop_thread.join(timeout=1)
+
+    def test_stop_uses_reverse_order_and_isolates_plugin_failures(self) -> None:
+        from app.infrastructure.runtime import PluginRuntime
+
+        runtime = PluginRuntime(state_path=self.state_path)
+        first = _FakePlugin("first")
+        second = _FakePlugin("second")
+        runtime.registry.register(first)
+        runtime.registry.register(second)
+        calls: list[str] = []
+
+        def fail_second() -> None:
+            calls.append("second")
+            raise RuntimeError("second unload failed")
+
+        with (
+            patch.object(first, "on_unload", side_effect=lambda: calls.append("first")),
+            patch.object(second, "on_unload", side_effect=fail_second),
+        ):
+            runtime.stop(timeout=1)
+
+        self.assertEqual(calls, ["second", "first"])
 
 
 if __name__ == "__main__":

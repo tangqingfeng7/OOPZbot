@@ -876,7 +876,8 @@ class OneBotV11Adapter:
         return parse_group_source(record.source)
 
     def _save_message_mapping(self, payload: Mapping[str, Any]) -> None:
-        extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+        raw_extra = payload.get("extra")
+        extra = raw_extra if isinstance(raw_extra, dict) else {}
         oopz_message_id = str(extra.get("oopz_message_id") or "")
         if not oopz_message_id or not payload.get("message_id"):
             return

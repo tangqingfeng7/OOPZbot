@@ -46,6 +46,11 @@ class PluginRegistry:
             logger.exception("PluginRegistry: 模块 %s on_unload 异常: %s", name, e)
         return True
 
+    def stop_all(self) -> None:
+        """按注册的相反顺序卸载全部插件；可重复调用。"""
+        for name in tuple(reversed(self._order)):
+            self.unregister(name)
+
     def get(self, name: str) -> Optional[BotModule]:
         return self._modules.get(name)
 

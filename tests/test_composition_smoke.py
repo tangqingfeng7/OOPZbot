@@ -1,9 +1,10 @@
+import contextlib
+import signal
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch, sentinel
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -50,6 +51,7 @@ class BotApplicationCompositionTest(unittest.TestCase):
             patch.object(bootstrap_module, "BackgroundServiceRunner") as background_runner_cls,
             patch.object(bootstrap_module, "NeteaseApiRuntime") as netease_runtime_cls,
             patch.object(bootstrap_module, "ShutdownCoordinator") as shutdown_cls,
+            patch.object(bootstrap_module.signal, "signal"),
         ):
             startup_builder = startup_builder_cls.return_value
             voice_builder = voice_builder_cls.return_value
@@ -69,7 +71,114 @@ class BotApplicationCompositionTest(unittest.TestCase):
             netease_runtime.start.assert_called_once_with()
             background_runner.start.assert_called_once_with(context)
             context.client.start.assert_called_once_with()
-            shutdown.stop.assert_called_once_with(context, netease_runtime)
+            shutdown.stop.assert_called_once_with(
+                context,
+                netease_runtime,
+                background_runner,
+            )
+
+    def test_signal_during_background_start_skips_client_and_uses_coordinator(self) -> None:
+        from app import bootstrap as bootstrap_module
+
+        registered = {}
+        with (
+            patch.object(bootstrap_module, "StartupResourceBuilder"),
+            patch.object(bootstrap_module, "VoiceRuntimeBuilder"),
+            patch.object(bootstrap_module, "AppContextBuilder") as context_builder_cls,
+            patch.object(bootstrap_module, "BackgroundServiceRunner") as background_runner_cls,
+            patch.object(bootstrap_module, "NeteaseApiRuntime") as netease_runtime_cls,
+            patch.object(bootstrap_module, "ShutdownCoordinator") as shutdown_cls,
+            patch.object(
+                bootstrap_module.signal,
+                "signal",
+                side_effect=lambda signum, handler: registered.__setitem__(signum, handler),
+            ),
+        ):
+            context = Mock()
+            context_builder_cls.return_value.build.return_value = context
+            background_runner = background_runner_cls.return_value
+
+            def interrupt_during_start(_context) -> None:
+                # 模拟第三方启动代码吞掉 KeyboardInterrupt；阶段边界
+                # 仍必须根据不可逆 stop request 阻止 client.start() 清除状态。
+                with contextlib.suppress(KeyboardInterrupt):
+                    registered[signal.SIGTERM](signal.SIGTERM, None)
+
+            background_runner.start.side_effect = interrupt_during_start
+            app = bootstrap_module.BotApplication()
+            app.run()
+
+        context.client.start.assert_not_called()
+        context.client.stop.assert_not_called()
+        shutdown_cls.return_value.stop.assert_called_once_with(
+            context,
+            netease_runtime_cls.return_value,
+            background_runner,
+        )
+
+    def test_signal_handler_only_records_request_and_never_stops_client(self) -> None:
+        from app import bootstrap as bootstrap_module
+
+        registered = {}
+        with (
+            patch.object(bootstrap_module, "StartupResourceBuilder"),
+            patch.object(bootstrap_module, "VoiceRuntimeBuilder"),
+            patch.object(bootstrap_module, "AppContextBuilder"),
+            patch.object(bootstrap_module, "BackgroundServiceRunner"),
+            patch.object(bootstrap_module, "NeteaseApiRuntime"),
+            patch.object(bootstrap_module, "ShutdownCoordinator"),
+            patch.object(
+                bootstrap_module.signal,
+                "signal",
+                side_effect=lambda signum, handler: registered.__setitem__(signum, handler),
+            ),
+        ):
+            app = bootstrap_module.BotApplication()
+            context = Mock()
+            app._context = context
+            app._install_signal_handlers()
+
+            with self.assertRaises(KeyboardInterrupt):
+                registered[signal.SIGTERM](signal.SIGTERM, None)
+
+        self.assertTrue(app._stop_requested)
+        self.assertEqual(app._stop_signal, signal.SIGTERM)
+        context.client.stop.assert_not_called()
+
+    def test_second_signal_does_not_interrupt_started_shutdown(self) -> None:
+        from app import bootstrap as bootstrap_module
+
+        registered = {}
+        with (
+            patch.object(bootstrap_module, "StartupResourceBuilder"),
+            patch.object(bootstrap_module, "VoiceRuntimeBuilder"),
+            patch.object(bootstrap_module, "AppContextBuilder"),
+            patch.object(bootstrap_module, "BackgroundServiceRunner") as background_runner_cls,
+            patch.object(bootstrap_module, "NeteaseApiRuntime") as netease_runtime_cls,
+            patch.object(bootstrap_module, "ShutdownCoordinator") as shutdown_cls,
+            patch.object(
+                bootstrap_module.signal,
+                "signal",
+                side_effect=lambda signum, handler: registered.__setitem__(signum, handler),
+            ),
+        ):
+            app = bootstrap_module.BotApplication()
+            context = Mock()
+            app._context = context
+            app._install_signal_handlers()
+
+            shutdown_cls.return_value.stop.side_effect = lambda *_args: registered[signal.SIGINT](
+                signal.SIGINT, None
+            )
+            app.stop()
+            app.stop()
+
+        shutdown_cls.return_value.stop.assert_called_once_with(
+            context,
+            netease_runtime_cls.return_value,
+            background_runner_cls.return_value,
+        )
+        context.client.stop.assert_not_called()
 
 
 class CommandHandlerCompositionTest(unittest.TestCase):
@@ -128,6 +237,31 @@ class CommandHandlerCompositionTest(unittest.TestCase):
             self.assertEqual(registry.routing.message.build_context.call_count, 2)
             self.assertEqual(registry.routing.message.remember_message.call_count, 2)
             self.assertEqual(registry.routing.command.route.call_count, 2)
+
+
+class AppContextBuilderCompositionTest(unittest.TestCase):
+    def test_sender_uses_runtime_recall_scheduler(self) -> None:
+        from app.lifecycle import context_builder as module
+
+        sender = Mock()
+        handler = Mock()
+        handler.services.safety.recall_scheduler = sentinel.recall_scheduler
+        dispatcher = Mock()
+        onebot_config = SimpleNamespace(enabled=False)
+
+        with (
+            patch.object(module, "CommandHandler", return_value=handler),
+            patch.object(module, "get_onebot_v11_config", return_value=onebot_config),
+            patch.object(module, "start_area_join_notifier", return_value=None),
+            patch.object(module, "MessageDispatcher", return_value=dispatcher),
+            patch.object(module, "OopzClient"),
+        ):
+            module.AppContextBuilder().build(sender)
+
+        sender.bind_auto_recall_scheduler.assert_called_once_with(
+            sentinel.recall_scheduler
+        )
+        dispatcher.start.assert_called_once_with()
 
 
 if __name__ == "__main__":

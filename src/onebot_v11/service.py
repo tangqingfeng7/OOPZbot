@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import Any
 
 from core.logger_config import get_logger
@@ -31,39 +32,61 @@ class OneBotV11Service:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
+        self._serving = threading.Event()
+        self._stop_requested = threading.Event()
+        self._state_lock = threading.Lock()
 
     def start(self) -> None:
         if not self.config.enabled:
             return
-        if self._thread and self._thread.is_alive():
-            return
-        self._thread = threading.Thread(target=self._run_loop, name="OneBotV11", daemon=True)
-        self._thread.start()
+        with self._state_lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_requested.clear()
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                name="OneBotV11",
+                daemon=True,
+            )
+            self._thread.start()
         self._started.wait(timeout=5)
 
-    def stop(self) -> None:
-        if not self._loop:
-            return
-        future = asyncio.run_coroutine_threadsafe(self.server.stop(), self._loop)
-        try:
-            future.result(timeout=5)
-        except Exception as exc:
-            logger.warning("停止 OneBot v11 服务失败: %s", exc)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5)
-        self._loop = None
-        self._thread = None
-        self._started.clear()
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop_requested.set()
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._state_lock:
+            loop = self._loop
+            thread = self._thread
+
+        # 初始化阶段不打断 server.start()；启动协程完成后会看到
+        # _stop_requested 并直接进入 finally 清理。已进入 run_forever 时，
+        # 只需唤醒事件循环，资源统一由所属线程释放。
+        if loop and self._serving.is_set() and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                logger.debug("OneBot v11 事件循环已关闭")
+        current = threading.current_thread()
+        if thread and thread is not current and thread.is_alive():
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if thread and thread is not current and thread.is_alive():
+            logger.warning("服务停止超时: OneBotV11，线程仍未退出")
+        else:
+            with self._state_lock:
+                if self._thread is thread:
+                    self._thread = None
+                if self._loop is loop:
+                    self._loop = None
+            self._started.clear()
 
     def emit_raw_event(self, raw: dict[str, Any]) -> None:
-        if not self.config.enabled or not self._loop:
+        if not self.config.enabled or self._stop_requested.is_set() or not self._loop:
             return
         asyncio.run_coroutine_threadsafe(self.adapter.emit_raw_event(raw), self._loop)
 
     def emit_member_change(self, action: str, area: str, uid: str) -> None:
         """Thread-safe entry for the member-list poller to report join/leave."""
-        if not self.config.enabled or not self._loop:
+        if not self.config.enabled or self._stop_requested.is_set() or not self._loop:
             return
         asyncio.run_coroutine_threadsafe(
             self.adapter.emit_member_change(action, area, uid), self._loop
@@ -71,18 +94,28 @@ class OneBotV11Service:
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
-        self._loop = loop
+        with self._state_lock:
+            self._loop = loop
         asyncio.set_event_loop(loop)
         try:
+            if self._stop_requested.is_set():
+                return
             loop.run_until_complete(self.server.start())
             self._started.set()
+            self._serving.set()
+            if self._stop_requested.is_set():
+                loop.call_soon(loop.stop)
             loop.run_forever()
         except Exception:
             logger.exception("OneBot v11 服务线程异常")
         finally:
+            self._serving.clear()
+            self._started.clear()
             try:
                 if self.server:
                     loop.run_until_complete(self.server.stop())
             finally:
                 loop.close()
-                self._started.clear()
+                with self._state_lock:
+                    if self._loop is loop:
+                        self._loop = None

@@ -6,6 +6,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +14,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from oopz.oopz_client import (
+from oopz.oopz_client import (  # noqa: E402
     OopzClient,
     _auth_response_failed,
     _jwt_expires_in,
@@ -41,12 +42,14 @@ class JwtExpiryParseTest(unittest.TestCase):
         token = _fake_jwt({"exp": int(time.time()) - 3600})
         result = _jwt_expires_in(token)
         self.assertIsNotNone(result)
+        assert result is not None
         self.assertLess(result, 0)
 
     def test_valid_token_returns_positive(self) -> None:
         token = _fake_jwt({"exp": int(time.time()) + 3600})
         result = _jwt_expires_in(token)
         self.assertIsNotNone(result)
+        assert result is not None
         self.assertGreater(result, 3000)
 
     def test_token_without_exp_returns_none(self) -> None:
@@ -55,7 +58,8 @@ class JwtExpiryParseTest(unittest.TestCase):
     def test_garbage_token_returns_none(self) -> None:
         self.assertIsNone(_jwt_expires_in("not-a-jwt"))
         self.assertIsNone(_jwt_expires_in(""))
-        self.assertIsNone(_jwt_expires_in(None))
+        # 故意越过公开类型契约，验证运行时对旧调用方传入 None 仍会安全失败。
+        self.assertIsNone(_jwt_expires_in(cast(str, None)))
 
 
 class AuthResponseFailureDetectionTest(unittest.TestCase):
@@ -74,7 +78,9 @@ class AuthResponseFailureDetectionTest(unittest.TestCase):
         self.assertFalse(_auth_response_failed({"code": "200"}))
         self.assertFalse(_auth_response_failed({"r": 1}))
         self.assertFalse(_auth_response_failed({"person": "u1"}))
-        self.assertFalse(_auth_response_failed("not a dict"))
+        # 负向健壮性测试：保留非字典运行时输入，但明确标注为测试越界。
+        invalid_body = cast(dict[object, object], "not a dict")
+        self.assertFalse(_auth_response_failed(invalid_body))
 
 
 class StaleConnectionDetectionTest(unittest.TestCase):
@@ -101,8 +107,13 @@ class StaleConnectionDetectionTest(unittest.TestCase):
         client._running = True
         client._last_recv_time = time.time() - 10
         ws = _fake_ws()
+        connection_stop = threading.Event()
 
-        loop = threading.Thread(target=client._heartbeat_loop, args=(ws,), daemon=True)
+        loop = threading.Thread(
+            target=client._heartbeat_loop,
+            args=(ws, connection_stop),
+            daemon=True,
+        )
         loop.start()
         loop.join(timeout=2)
 
@@ -115,14 +126,109 @@ class StaleConnectionDetectionTest(unittest.TestCase):
         client._running = True
         client._last_recv_time = time.time()
         ws = _fake_ws()
+        connection_stop = threading.Event()
 
-        loop = threading.Thread(target=client._heartbeat_loop, args=(ws,), daemon=True)
+        loop = threading.Thread(
+            target=client._heartbeat_loop,
+            args=(ws, connection_stop),
+            daemon=True,
+        )
         loop.start()
         time.sleep(0.1)
         client._running = False
+        connection_stop.set()
         loop.join(timeout=2)
 
         ws.close.assert_not_called()
+
+    def test_reconnect_stops_and_tracks_every_heartbeat_worker(self) -> None:
+        client = self._client(stale=60.0, heartbeat_interval=60.0)
+        client._running = True
+        first_ws = _fake_ws()
+        second_ws = _fake_ws()
+
+        client._on_open(first_ws)
+        with client._heartbeat_lock:
+            first_thread = next(iter(client._heartbeat_workers))
+        client._on_open(second_ws)
+
+        first_thread.join(timeout=1)
+        self.assertFalse(first_thread.is_alive(), "重连后旧心跳线程应立即退出")
+
+        client.stop(timeout=1)
+        with client._heartbeat_lock:
+            remaining = tuple(client._heartbeat_workers)
+        self.assertFalse(any(thread.is_alive() for thread in remaining))
+
+
+class StopBudgetTest(unittest.TestCase):
+    @staticmethod
+    def _assert_bounded_stop(close_method: Any) -> tuple[float, threading.Event]:
+        client = OopzClient()
+        client._ws = cast(Any, SimpleNamespace(close=close_method))
+        started = time.monotonic()
+        client.stop(timeout=0.01)
+        return time.monotonic() - started, close_method.started
+
+    def test_slow_close_receives_remaining_timeout_without_blocking_stop(self) -> None:
+        class SlowClose:
+            def __init__(self) -> None:
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.timeout = None
+
+            def __call__(self, *, timeout: float) -> None:
+                self.timeout = timeout
+                self.started.set()
+                self.release.wait(timeout=1)
+
+        close = SlowClose()
+        elapsed, close_started = self._assert_bounded_stop(close)
+        try:
+            self.assertTrue(close_started.wait(timeout=0.1))
+            self.assertIsNotNone(close.timeout)
+            assert close.timeout is not None
+            self.assertGreaterEqual(close.timeout, 0.0)
+            self.assertLessEqual(close.timeout, 0.01)
+            self.assertLess(elapsed, 0.15)
+        finally:
+            close.release.set()
+
+    def test_legacy_close_signature_cannot_escape_stop_budget(self) -> None:
+        class LegacySlowClose:
+            def __init__(self) -> None:
+                self.started = threading.Event()
+                self.release = threading.Event()
+
+            def __call__(self) -> None:
+                self.started.set()
+                self.release.wait(timeout=1)
+
+        close = LegacySlowClose()
+        elapsed, close_started = self._assert_bounded_stop(close)
+        try:
+            self.assertTrue(close_started.wait(timeout=0.1))
+            self.assertLess(elapsed, 0.15)
+        finally:
+            close.release.set()
+
+    def test_close_exception_does_not_skip_thread_join(self) -> None:
+        client = OopzClient()
+        close = Mock(side_effect=RuntimeError("close failed"))
+        client._ws = cast(Any, SimpleNamespace(close=close))
+        worker_done = threading.Event()
+        client._thread = threading.Thread(
+            target=lambda: (time.sleep(0.01), worker_done.set()),
+            name="OopzClient",
+            daemon=True,
+        )
+        client._thread.start()
+
+        client.stop(timeout=0.2)
+
+        self.assertTrue(worker_done.is_set())
+        self.assertFalse(client._thread.is_alive())
+        close.assert_called_once()
 
 
 class CredentialRefreshTest(unittest.TestCase):

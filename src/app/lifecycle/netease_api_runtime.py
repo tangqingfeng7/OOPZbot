@@ -3,7 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
-import time
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +19,7 @@ logger = setup_logger("NeteaseApiRuntime")
 class NeteaseApiRuntime:
     def __init__(self) -> None:
         self._process: Optional[subprocess.Popen] = None
+        self._stop_event = threading.Event()
 
     @staticmethod
     def _project_root() -> Path:
@@ -30,6 +31,7 @@ class NeteaseApiRuntime:
         return cls._project_root() / raw_path.strip()
 
     def start(self) -> None:
+        self._stop_event.clear()
         path = NETEASE_CLOUD.get("auto_start_path", "")
         if not path or not path.strip():
             return
@@ -67,6 +69,7 @@ class NeteaseApiRuntime:
         self._wait_until_ready()
 
     def stop(self, timeout: float = 5.0) -> None:
+        self._stop_event.set()
         if not self._process or self._process.poll() is not None:
             return
 
@@ -95,7 +98,8 @@ class NeteaseApiRuntime:
         url = f"{base_url}/"
 
         for _ in range(30):
-            time.sleep(0.5)
+            if self._stop_event.wait(0.5):
+                return
             if self._process and self._process.poll() is not None:
                 logger.warning("网易云 API 子进程已退出 (code=%s)，放弃等待。", self._process.returncode)
                 return

@@ -10,7 +10,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from core.message_dispatcher import MessageDispatcher
+from core.message_dispatcher import MessageDispatcher  # noqa: E402
 
 
 def _wait_until(predicate, timeout: float = 2.0) -> bool:
@@ -108,7 +108,7 @@ class MessageDispatcherTest(unittest.TestCase):
 
             thread = dispatcher._threads[0]
             gate.set()
-            dispatcher.stop(timeout=3)
+            self.assertTrue(dispatcher.stop(timeout=3))
 
             self.assertFalse(thread.is_alive(), "工作线程应收到停止信号并退出")
             self.assertEqual(done, [0, 1], "积压必须处理完再退出")
@@ -119,9 +119,56 @@ class MessageDispatcherTest(unittest.TestCase):
         # 关停期间还收新消息的话，队列永远排不干净，drain 没有终止性
         dispatcher = MessageDispatcher(workers=1, maxsize=8)
         dispatcher.submit("k", lambda: None)
-        dispatcher.stop(timeout=2)
+        self.assertTrue(dispatcher.stop(timeout=2))
 
         self.assertFalse(dispatcher.submit("k", lambda: None))
+
+    def test_stop_before_start_is_permanent_and_rejects_submit(self) -> None:
+        dispatcher = MessageDispatcher(workers=1, maxsize=8)
+
+        self.assertTrue(dispatcher.stop(timeout=0))
+        dispatcher.start()
+
+        self.assertFalse(dispatcher.submit("k", lambda: None))
+        self.assertEqual(dispatcher._threads, [])
+
+    def test_timeout_cancels_waiting_tasks_and_worker_eventually_exits(self) -> None:
+        dispatcher = MessageDispatcher(workers=1, maxsize=8)
+        entered = threading.Event()
+        release = threading.Event()
+        queued_results: list[int] = []
+
+        def blocking_task() -> None:
+            entered.set()
+            release.wait(timeout=2)
+
+        try:
+            self.assertTrue(dispatcher.submit("k", blocking_task))
+            self.assertTrue(entered.wait(timeout=1))
+            self.assertTrue(dispatcher.submit("k", queued_results.append, 1))
+            self.assertTrue(dispatcher.submit("k", queued_results.append, 2))
+            worker = dispatcher._threads[0]
+
+            started_at = time.monotonic()
+            fully_stopped = dispatcher.stop(timeout=0.03)
+            elapsed = time.monotonic() - started_at
+
+            self.assertFalse(fully_stopped, "in-flight 任务未退出时必须返回 False")
+            self.assertLess(elapsed, 0.2, "stop 不得超出总预算长时阻塞")
+            self.assertEqual(queued_results, [], "超时时应取消尚未开始的任务")
+            self.assertFalse(dispatcher.submit("k", queued_results.append, 3))
+            self.assertTrue(worker.is_alive())
+
+            release.set()
+            self.assertTrue(
+                _wait_until(lambda: not worker.is_alive()),
+                "in-flight 任务返回后 worker 应收到 sentinel 并退出",
+            )
+            self.assertEqual(queued_results, [])
+            self.assertTrue(dispatcher.stop(timeout=0.1))
+        finally:
+            release.set()
+            dispatcher.stop(timeout=1)
 
     def test_submit_cannot_land_behind_stop_sentinel(self) -> None:
         """submit 一旦返回 True，任务就必须排在关停 sentinel 之前。"""
@@ -173,14 +220,14 @@ class MessageDispatcherTest(unittest.TestCase):
     def test_stop_is_idempotent(self) -> None:
         dispatcher = MessageDispatcher(workers=2, maxsize=8)
         dispatcher.submit("k", lambda: None)
-        dispatcher.stop(timeout=2)
-        dispatcher.stop(timeout=2)  # 不应抛异常
+        self.assertTrue(dispatcher.stop(timeout=2))
+        self.assertTrue(dispatcher.stop(timeout=2))  # 不应抛异常
 
     def test_stop_terminates_workers(self) -> None:
         dispatcher = MessageDispatcher(workers=2, maxsize=8)
         dispatcher.submit("k", lambda: None)
         threads = list(dispatcher._threads)
-        dispatcher.stop(timeout=2)
+        self.assertTrue(dispatcher.stop(timeout=2))
 
         self.assertTrue(_wait_until(lambda: all(not t.is_alive() for t in threads)))
 

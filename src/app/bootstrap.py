@@ -1,8 +1,4 @@
 import signal
-from typing import Optional
-
-from core.logger_config import setup_logger
-from oopz.oopz_password_login import OopzPasswordLoginError, refresh_credentials_from_config_password
 
 from app.lifecycle import (
     AppContext,
@@ -12,6 +8,11 @@ from app.lifecycle import (
     ShutdownCoordinator,
     StartupResourceBuilder,
     VoiceRuntimeBuilder,
+)
+from core.logger_config import setup_logger
+from oopz.oopz_password_login import (
+    OopzPasswordLoginError,
+    refresh_credentials_from_config_password,
 )
 
 logger = setup_logger("Main")
@@ -27,7 +28,10 @@ class BotApplication:
         self._shutdown = ShutdownCoordinator()
         self._startup_resources = StartupResourceBuilder()
         self._voice_runtime = VoiceRuntimeBuilder()
-        self._context: Optional[AppContext] = None
+        self._context: AppContext | None = None
+        self._stop_requested = False
+        self._shutdown_in_progress = False
+        self._stop_signal: int | None = None
 
     @staticmethod
     def _warn_if_no_admins() -> None:
@@ -48,11 +52,14 @@ class BotApplication:
 
     def _install_signal_handlers(self) -> None:
         def _graceful_stop(signum, _frame):
-            name = signal.Signals(signum).name
-            logger.info("收到 %s，正在停止...", name)
-            if self._context:
-                self._context.client.stop()
-            else:
+            # Python 信号回调可在主线程持有业务锁时插入。这里只做
+            # 不可逆状态写入和控制流中断，不记日志、不 join，也不调用
+            # client.stop()；所有有预算的清理统一由 ShutdownCoordinator 执行。
+            already_requested = self._stop_requested
+            self._stop_requested = True
+            if self._stop_signal is None:
+                self._stop_signal = signum
+            if not already_requested and not self._shutdown_in_progress:
                 raise KeyboardInterrupt
 
         signal.signal(signal.SIGTERM, _graceful_stop)
@@ -64,12 +71,19 @@ class BotApplication:
         logger.info("=" * 50)
         self._warn_if_no_admins()
 
-        self._install_signal_handlers()
         try:
+            # 注册第一个 handler 后信号就可能立即到达，因此安装过程
+            # 本身也必须在 finally 的保护范围内。
+            self._install_signal_handlers()
+            self._raise_if_stop_requested()
             self._netease_runtime.start()
+            self._raise_if_stop_requested()
             self._refresh_oopz_credentials_from_config()
+            self._raise_if_stop_requested()
             self._context = self._build_context()
+            self._raise_if_stop_requested()
             self._background_services.start(self._context)
+            self._raise_if_stop_requested()
             self._context.client.start()
         except KeyboardInterrupt:
             pass
@@ -79,7 +93,24 @@ class BotApplication:
         logger.info("Oopz Bot 已停止。")
 
     def stop(self) -> None:
-        self._shutdown.stop(self._context, self._netease_runtime)
+        self._stop_requested = True
+        if self._shutdown_in_progress:
+            return
+        # 先公布关停已开始：此后再到达的信号只保留 stop request，
+        # 不再抛 KeyboardInterrupt 打断 Coordinator 的数据库刷盘和资源回收。
+        self._shutdown_in_progress = True
+        if self._stop_signal is not None:
+            logger.info("收到 %s，正在停止...", signal.Signals(self._stop_signal).name)
+        self._shutdown.stop(
+            self._context,
+            self._netease_runtime,
+            self._background_services,
+        )
+
+    def _raise_if_stop_requested(self) -> None:
+        """在启动阶段边界阻止信号后继续启动下一项服务。"""
+        if self._stop_requested:
+            raise KeyboardInterrupt
 
     def _refresh_oopz_credentials_from_config(self) -> None:
         try:

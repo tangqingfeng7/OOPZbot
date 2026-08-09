@@ -1,20 +1,28 @@
 import json
 import os
+import threading
+import time
 from dataclasses import dataclass
-from typing import Optional
-
-from services.chat import ChatHandler
-from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
-from oopz.oopz_sender import OopzSender
-from domain.plugins.base import PluginDescriptor
 
 from core.constants import PLUGINS_DIR_NAME
+from core.logger_config import get_logger
 from core.paths import DATA_DIR
+from domain.plugins.base import PluginDescriptor
+from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
+from oopz.oopz_sender import OopzSender
+from services.chat import ChatHandler
 
 from .gateways import ChatGateway, SenderGateway
-from .plugin_runtime import PluginRegistry, discover_plugins, load_plugin, reload_plugin_config, unload_plugin
+from .plugin_runtime import (
+    PluginRegistry,
+    discover_plugins,
+    load_plugin,
+    reload_plugin_config,
+    unload_plugin,
+)
 
 _DEFAULT_PLUGIN_STATE_PATH = os.path.join(DATA_DIR, "plugin_runtime_state.json")
+logger = get_logger("PluginRuntime")
 
 
 class MusicGateway:
@@ -31,7 +39,7 @@ class MusicGateway:
             # 只有真正用到音乐命令时才导入并创建处理器。
             from music.music import MusicHandler
 
-            self._handler = MusicHandler(self._sender, voice=self._voice_client)
+            self._handler = MusicHandler(self._sender.raw, voice=self._voice_client)
         return self._handler
 
     def __getattr__(self, name: str):
@@ -43,7 +51,10 @@ class MusicGateway:
             return {"available": True, "refreshed": False, "reason": "音乐处理器尚未初始化"}
         refresh = getattr(self._handler, "refresh_platforms", None)
         if callable(refresh):
-            return refresh()
+            result = refresh()
+            if isinstance(result, dict):
+                return result
+            return {"available": False, "refreshed": False, "reason": "刷新结果格式无效"}
         return {"available": False, "refreshed": False, "reason": "音乐处理器不支持刷新"}
 
 
@@ -54,6 +65,8 @@ class PluginRuntime:
         self._plugins_dir = plugins_dir
         self._registry = PluginRegistry()
         self._state_path = os.fspath(state_path) if state_path else _DEFAULT_PLUGIN_STATE_PATH
+        self._stop_lock = threading.Lock()
+        self._stop_thread: threading.Thread | None = None
 
     @property
     def registry(self) -> PluginRegistry:
@@ -94,8 +107,8 @@ class PluginRuntime:
     def try_dispatch_slash(
         self,
         command: str,
-        subcommand: Optional[str],
-        arg: Optional[str],
+        subcommand: str | None,
+        arg: str | None,
         channel: str,
         area: str,
         user: str,
@@ -113,7 +126,7 @@ class PluginRuntime:
         if not os.path.isfile(self._state_path):
             return None
         try:
-            with open(self._state_path, "r", encoding="utf-8") as file:
+            with open(self._state_path, encoding="utf-8") as file:
                 payload = json.load(file)
         except Exception:
             return None
@@ -161,6 +174,26 @@ class PluginRuntime:
 
     def reload_config(self, plugin_name: str, handler=None) -> PluginOperationResult:
         return reload_plugin_config(self._registry, plugin_name, handler=handler)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """在调用方预算内停止全部插件，不改写下次启用状态。"""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._stop_lock:
+            stop_thread = self._stop_thread
+            if stop_thread is None or not stop_thread.is_alive():
+                if not self._registry.list_descriptors():
+                    return
+                stop_thread = threading.Thread(
+                    target=self._registry.stop_all,
+                    name="PluginShutdown",
+                    daemon=True,
+                )
+                self._stop_thread = stop_thread
+                stop_thread.start()
+
+        stop_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if stop_thread.is_alive():
+            logger.warning("服务停止超时: PluginShutdown，插件仍在后台停止")
 
     def load_all(self, handler=None) -> list[str]:
         discovered = self.discover()

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import os
 import json
+import os
 import sqlite3
 import threading
+import time
+from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timezone, timedelta
-from typing import Generator, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from core.logger_config import get_logger
 from core.paths import DATA_DIR
@@ -28,6 +30,14 @@ def _safe_json_loads(raw: str | None, fallback=None):
         return json.loads(raw)
     except (json.JSONDecodeError, ValueError, TypeError):
         return fallback if fallback is not None else {}
+
+
+def _required_database_id(value: object, *, operation: str) -> int:
+    """校验 SQLite 主键结果，避免把失败的 ``lastrowid=None`` 传到业务层。"""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"{operation} 未返回有效数据库主键")
+    return value
 
 
 def cn_now() -> str:
@@ -316,7 +326,10 @@ class SongCache:
             ).fetchone()
 
             if row:
-                song_cache_id = row["id"]
+                song_cache_id = _required_database_id(
+                    row["id"],
+                    operation="读取歌曲缓存",
+                )
             else:
                 cursor = conn.execute(
                     """INSERT INTO song_cache
@@ -333,7 +346,10 @@ class SongCache:
                         now,
                     ),
                 )
-                song_cache_id = cursor.lastrowid
+                song_cache_id = _required_database_id(
+                    cursor.lastrowid,
+                    operation="创建歌曲缓存",
+                )
 
         return song_cache_id
 
@@ -376,7 +392,10 @@ class SongCache:
             ).fetchone()
 
             if row:
-                song_cache_id = row["id"]
+                song_cache_id = _required_database_id(
+                    row["id"],
+                    operation="读取歌曲缓存",
+                )
                 conn.execute(
                     """UPDATE song_cache SET
                        song_name=?,
@@ -411,7 +430,10 @@ class SongCache:
                         now,
                     ),
                 )
-                song_cache_id = cursor.lastrowid
+                song_cache_id = _required_database_id(
+                    cursor.lastrowid,
+                    operation="创建歌曲缓存",
+                )
 
             conn.execute(
                 "INSERT INTO play_history (song_cache_id, platform, channel_id, user_id, played_at) VALUES (?, ?, ?, ?, ?)",
@@ -550,7 +572,10 @@ class ScheduledMessageDB:
                 (name, cron_hour, cron_minute, weekdays, channel_id, area_id,
                  message_text, now, now),
             )
-            return cursor.lastrowid
+            return _required_database_id(
+                cursor.lastrowid,
+                operation="创建定时消息",
+            )
 
     @staticmethod
     def update(task_id: int, **kwargs) -> bool:
@@ -646,7 +671,10 @@ class ReminderDB:
                    VALUES (?, ?, ?, ?, ?, 0, ?)""",
                 (user_id, channel_id, area_id, message_text, fire_at, now),
             )
-            return cursor.lastrowid
+            return _required_database_id(
+                cursor.lastrowid,
+                operation="创建提醒",
+            )
 
     @staticmethod
     def get_pending(now_str: str) -> list[dict]:
@@ -721,6 +749,7 @@ class _MessageStatsBatcher:
         self._buffer: dict[tuple[str, str, str, str], int] = {}
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._final_flush_thread: threading.Thread | None = None
         self._stop = threading.Event()
 
     def _ensure_started_locked(self) -> None:
@@ -772,12 +801,37 @@ class _MessageStatsBatcher:
                 self.flush()
             except Exception:
                 logger.exception("MessageStats flush_loop 异常")
+        # timeout=0 时调用方不等待，但 daemon 批处理线程仍做
+        # 一次最后的最佳努力刷盘，避免有线程时直接丢下缓冲。
+        try:
+            self.flush()
+        except Exception:
+            logger.exception("MessageStats 最终刷入异常")
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
         self._stop.set()
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=3)
-        self.flush()
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if self._thread and self._thread.is_alive():
+            logger.warning("服务停止超时: MsgStatsBatcher，线程仍未退出")
+
+        with self._lock:
+            if not self._buffer:
+                return
+            flush_thread = self._final_flush_thread
+            if flush_thread is None or not flush_thread.is_alive():
+                flush_thread = threading.Thread(
+                    target=self.flush,
+                    name="MsgStatsFinalFlush",
+                    daemon=True,
+                )
+                self._final_flush_thread = flush_thread
+                flush_thread.start()
+
+        flush_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if flush_thread.is_alive():
+            logger.warning("服务停止超时: MsgStatsFinalFlush，刷盘仍在后台继续")
 
 
 _msg_stats_batcher = _MessageStatsBatcher()
@@ -796,9 +850,9 @@ class MessageStatsDB:
         _msg_stats_batcher.flush()
 
     @staticmethod
-    def stop() -> None:
+    def stop(timeout: float = 3.0) -> None:
         """停止后台线程并刷入缓冲区（关闭时调用）。"""
-        _msg_stats_batcher.stop()
+        _msg_stats_batcher.stop(timeout=timeout)
 
     @staticmethod
     def get_channel_daily(channel_id: str, area_id: str, days: int = 14) -> list[dict]:
