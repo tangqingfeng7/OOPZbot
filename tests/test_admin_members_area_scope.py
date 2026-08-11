@@ -1,8 +1,11 @@
-"""后台成员页「域」参数的前端契约测试
+"""后台成员页选中「全部域」时，域参数要传对
 """
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -10,31 +13,33 @@ SCRIPT = Path(__file__).resolve().parents[1] / "src/web/assets/admin/pages/membe
 
 # 脚本是注入到模板里的片段（顶层是 var 声明），包一层函数即可独立求值。
 HARNESS = """
-async () => {
-  const results = [];
-  const run = async (area, map, picked) => {
-    let currentArea = area;
-    let memberAreaMap = map;
-    let askedWith = null;
-    const AdminShell = {
-      pickArea: (areas) => { askedWith = areas.map((a) => a.areaId); return Promise.resolve(picked); },
-    };
-    %(fns)s
-    return {
-      listArea: getArea(),
-      opArea: await getMemberArea("u1"),
-      opAreaUnknown: await getMemberArea("nope"),
-      primary: getMemberAreaPrimary("u1"),
-      askedWith,
-    };
+const run = async (area, map, picked) => {
+  let currentArea = area;
+  let memberAreaMap = map;
+  let askedWith = null;
+  const AdminShell = {
+    pickArea: (areas) => { askedWith = areas.map((a) => a.areaId); return Promise.resolve(picked); },
   };
-  results.push(["single", await run("A", {}, "")]);
-  results.push(["all", await run("__all__", { u1: [{ areaId: "B", areaName: "B域" }] }, "")]);
+  %(fns)s
+  return {
+    listArea: getArea(),
+    opArea: await getMemberArea("u1"),
+    opAreaUnknown: await getMemberArea("nope"),
+    primary: getMemberAreaPrimary("u1"),
+    askedWith,
+  };
+};
+
+(async () => {
   const multi = { u1: [{ areaId: "B", areaName: "B域" }, { areaId: "C", areaName: "C域" }] };
-  results.push(["multi", await run("__all__", multi, "C")]);
-  results.push(["multiCancelled", await run("__all__", multi, "")]);
-  return results;
-}
+  const results = {
+    single: await run("A", {}, ""),
+    all: await run("__all__", { u1: [{ areaId: "B", areaName: "B域" }] }, ""),
+    multi: await run("__all__", multi, "C"),
+    multiCancelled: await run("__all__", multi, ""),
+  };
+  process.stdout.write(JSON.stringify(results));
+})();
 """
 
 
@@ -57,21 +62,21 @@ def _extract(name: str) -> str:
 
 class MembersAreaScopeTest(unittest.TestCase):
     def test_area_scope_contract(self) -> None:
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:  # pragma: no cover
-            self.skipTest("playwright 未安装")
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            self.skipTest("需要 node 执行前端函数")
 
         fns = "\n".join(
             _extract(name) for name in ("getArea", "getMemberArea", "getMemberAreaPrimary")
         )
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            try:
-                page = browser.new_page()
-                results = dict(page.evaluate(HARNESS % {"fns": fns}))
-            finally:
-                browser.close()
+        proc = subprocess.run(
+            [node, "-e", HARNESS % {"fns": fns}],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, f"node 执行失败: {proc.stderr}")
+        results = json.loads(proc.stdout)
 
         single = results["single"]
         self.assertEqual(single["listArea"], "A")
