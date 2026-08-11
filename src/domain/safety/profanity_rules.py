@@ -1,11 +1,9 @@
 from collections.abc import Sequence
-from typing import Optional
-
 
 DEFAULT_MUTE_THRESHOLDS = (1, 5, 60, 1440, 4320, 10080)
 
 
-def match_keyword(text: str, keywords: Sequence[str]) -> Optional[str]:
+def match_keyword(text: str, keywords: Sequence[str]) -> str | None:
     lowered = text.lower()
     for keyword in keywords:
         if keyword in lowered:
@@ -16,7 +14,7 @@ def match_keyword(text: str, keywords: Sequence[str]) -> Optional[str]:
 def match_context_keyword(
     messages: Sequence[str],
     keywords: Sequence[str],
-) -> Optional[tuple[str, int]]:
+) -> tuple[str, int] | None:
     if len(messages) < 2:
         return None
 

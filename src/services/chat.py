@@ -1,5 +1,5 @@
-import requests
-from typing import Optional
+
+import aiohttp
 
 from config import CHAT_CONFIG, DOUBAO_CONFIG, DOUBAO_IMAGE_CONFIG
 from core.logger_config import get_logger
@@ -28,7 +28,7 @@ def _normalize_ai_base(raw: str, *known_suffixes: str) -> str:
     return base
 
 
-def _extract_chat_content(data: dict) -> Optional[str]:
+def _extract_chat_content(data: dict) -> str | None:
     """从 OpenAI 兼容的 chat/completions 响应中安全提取文本内容。"""
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -40,7 +40,7 @@ def _extract_chat_content(data: dict) -> Optional[str]:
     return content.strip() if isinstance(content, str) and content.strip() else None
 
 
-def _extract_image_url(data: dict) -> Optional[str]:
+def _extract_image_url(data: dict) -> str | None:
     """从图片生成 API 响应中安全提取第一张图片 URL。"""
     items = data.get("data")
     if not isinstance(items, list) or not items:
@@ -55,9 +55,10 @@ def _extract_image_url(data: dict) -> Optional[str]:
 class ChatHandler:
     """关键词匹配 + AI 聊天回复"""
 
-    def __init__(self):
+    def __init__(self, session: aiohttp.ClientSession | None = None):
         self.enabled = CHAT_CONFIG.get("enabled", True)
-        self._session = requests.Session()
+        self._session = session
+        self._owns_session = session is None
 
         # 豆包 AI
         self.ai_enabled = DOUBAO_CONFIG.get("enabled", False)
@@ -92,7 +93,7 @@ class ChatHandler:
     def keyword_replies(self) -> dict:
         return CHAT_CONFIG.get("keyword_replies") or {}
 
-    def try_reply(self, content: str) -> Optional[str]:
+    def try_reply(self, content: str) -> str | None:
         """
         尝试根据消息内容生成自动回复。
         优先关键词匹配，无匹配则不回复（普通消息不触发 AI）。
@@ -112,7 +113,38 @@ class ChatHandler:
 
         return None
 
-    def ai_reply(self, content: str, history: list[dict] | None = None) -> Optional[str]:
+    async def _client(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+            self._owns_session = True
+        return self._session
+
+    async def close(self) -> None:
+        if self._owns_session and self._session is not None and not self._session.closed:
+            await self._session.close()
+
+    async def _post_json(
+        self,
+        url: str,
+        *,
+        headers: dict,
+        payload: dict,
+        timeout: float,
+    ) -> dict:
+        session = await self._client()
+        async with session.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+        if not isinstance(data, dict):
+            raise ValueError("API 响应不是 JSON 对象")
+        return data
+
+    async def ai_reply(self, content: str, history: list[dict] | None = None) -> str | None:
         """
         调用豆包 AI 生成回复。
         用于 @bot 触发的非指令消息。
@@ -127,13 +159,13 @@ class ChatHandler:
         messages.append({"role": "user", "content": content})
 
         try:
-            resp = self._session.post(
+            data = await self._post_json(
                 f"{self._ai_base}/chat/completions",
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self._ai_key}",
                 },
-                json={
+                payload={
                     "model": self._ai_model,
                     "messages": messages,
                     "max_tokens": self._max_tokens,
@@ -141,8 +173,6 @@ class ChatHandler:
                 },
                 timeout=_AI_TIMEOUT,
             )
-            resp.raise_for_status()
-            data = resp.json()
 
             reply = _extract_chat_content(data)
             if not reply:
@@ -155,7 +185,7 @@ class ChatHandler:
             logger.error(f"豆包 AI 请求失败: {e}")
             return None
 
-    def generate_image(self, prompt: str) -> Optional[str]:
+    async def generate_image(self, prompt: str) -> str | None:
         """
         调用豆包 Seedream 生成图片。
         返回图片 URL，失败返回 None。
@@ -165,13 +195,13 @@ class ChatHandler:
 
         try:
             logger.info(f"图片生成请求: {prompt[:50]}...")
-            resp = self._session.post(
+            data = await self._post_json(
                 f"{self._img_base}/images/generations",
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self._img_key}",
                 },
-                json={
+                payload={
                     "model": self._img_model,
                     "prompt": prompt,
                     "n": 1,
@@ -181,8 +211,6 @@ class ChatHandler:
                 },
                 timeout=_IMAGE_TIMEOUT,
             )
-            resp.raise_for_status()
-            data = resp.json()
 
             url = _extract_image_url(data)
             if not url:
@@ -195,7 +223,7 @@ class ChatHandler:
             logger.error(f"图片生成失败: {e}")
             return None
 
-    def check_profanity(self, content: str) -> Optional[str]:
+    async def check_profanity(self, content: str) -> str | None:
         """
         调用豆包 AI 判断消息是否含有辱骂/攻击性内容。
         返回违规原因字符串，未违规返回 None。
@@ -216,13 +244,13 @@ class ChatHandler:
             "只回复\"正常\"或\"违规:原因\"（原因不超过10字），不要解释。"
         )
         try:
-            resp = self._session.post(
+            data = await self._post_json(
                 f"{self._ai_base}/chat/completions",
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self._ai_key}",
                 },
-                json={
+                payload={
                     "model": self._ai_model,
                     "messages": [
                         {"role": "system", "content": "你是游戏社区内容审核AI，职责是严格识别一切辱骂、攻击、诅咒内容。从严判定，宁可误判也不能漏判。只输出判定结果。"},
@@ -233,8 +261,7 @@ class ChatHandler:
                 },
                 timeout=_MODERATION_TIMEOUT,
             )
-            resp.raise_for_status()
-            result = _extract_chat_content(resp.json())
+            result = _extract_chat_content(data)
             if not result:
                 logger.warning("AI 审核返回结构异常，跳过本次检测")
                 return None

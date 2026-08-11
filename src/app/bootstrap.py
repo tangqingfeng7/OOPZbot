@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import asyncio
 import signal
 
 from app.lifecycle import (
@@ -7,19 +10,15 @@ from app.lifecycle import (
     NeteaseApiRuntime,
     ShutdownCoordinator,
     StartupResourceBuilder,
-    VoiceRuntimeBuilder,
+    TaskSupervisor,
 )
 from core.logger_config import setup_logger
-from oopz.oopz_password_login import (
-    OopzPasswordLoginError,
-    refresh_credentials_from_config_password,
-)
 
 logger = setup_logger("Main")
 
 
 class BotApplication:
-    """负责组装并运行 Bot 应用。"""
+    """在一个 asyncio 事件循环内组装、运行并关闭 Bot。"""
 
     def __init__(self) -> None:
         self._netease_runtime = NeteaseApiRuntime()
@@ -27,20 +26,14 @@ class BotApplication:
         self._context_builder = AppContextBuilder()
         self._shutdown = ShutdownCoordinator()
         self._startup_resources = StartupResourceBuilder()
-        self._voice_runtime = VoiceRuntimeBuilder()
+        self._supervisor = TaskSupervisor()
         self._context: AppContext | None = None
-        self._stop_requested = False
+        self._stop_event = asyncio.Event()
         self._shutdown_in_progress = False
-        self._stop_signal: int | None = None
+        self._stop_signal: signal.Signals | None = None
 
     @staticmethod
     def _warn_if_no_admins() -> None:
-        """未配置管理员时明确告知后果与出路。
-
-        权限判定是 fail-closed 的，空名单下所有管理命令对任何人都不可用；
-        后台默认关闭、密码默认为空，也不能靠后台自救 —— 不提示的话，
-        用户只会看到「无权限」而不知道该改哪里。
-        """
         from config import ADMIN_UIDS
 
         if ADMIN_UIDS:
@@ -51,80 +44,76 @@ class BotApplication:
         logger.warning("=" * 50)
 
     def _install_signal_handlers(self) -> None:
-        def _graceful_stop(signum, _frame):
-            # Python 信号回调可在主线程持有业务锁时插入。这里只做
-            # 不可逆状态写入和控制流中断，不记日志、不 join，也不调用
-            # client.stop()；所有有预算的清理统一由 ShutdownCoordinator 执行。
-            already_requested = self._stop_requested
-            self._stop_requested = True
+        loop = asyncio.get_running_loop()
+
+        def request_stop(sig: signal.Signals) -> None:
             if self._stop_signal is None:
-                self._stop_signal = signum
-            if not already_requested and not self._shutdown_in_progress:
-                raise KeyboardInterrupt
+                self._stop_signal = sig
+            self._stop_event.set()
 
-        signal.signal(signal.SIGTERM, _graceful_stop)
-        signal.signal(signal.SIGINT, _graceful_stop)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, request_stop, sig)
+            except (NotImplementedError, RuntimeError):
+                signal.signal(
+                    sig,
+                    lambda _signum, _frame, value=sig: loop.call_soon_threadsafe(
+                        request_stop,
+                        value,
+                    ),
+                )
 
-    def run(self) -> None:
+    async def run(self) -> None:
         logger.info("=" * 50)
         logger.info("Oopz Bot 正在启动...")
         logger.info("=" * 50)
         self._warn_if_no_admins()
+        self._install_signal_handlers()
 
+        failure_waiter: asyncio.Task | None = None
+        stop_waiter: asyncio.Task | None = None
         try:
-            # 注册第一个 handler 后信号就可能立即到达，因此安装过程
-            # 本身也必须在 finally 的保护范围内。
-            self._install_signal_handlers()
-            self._raise_if_stop_requested()
-            self._netease_runtime.start()
-            self._raise_if_stop_requested()
-            self._refresh_oopz_credentials_from_config()
-            self._raise_if_stop_requested()
-            self._context = self._build_context()
-            self._raise_if_stop_requested()
-            self._background_services.start(self._context)
-            self._raise_if_stop_requested()
-            self._context.client.start()
-        except KeyboardInterrupt:
-            pass
+            await self._startup_resources.build()
+            await self._netease_runtime.start()
+            self._context = await self._context_builder.build(self._supervisor)
+            await self._background_services.start(self._context)
+
+            failure_waiter = asyncio.create_task(
+                self._supervisor.wait_failure(),
+                name="application-failure-waiter",
+            )
+            stop_waiter = asyncio.create_task(
+                self._stop_event.wait(),
+                name="application-stop-waiter",
+            )
+            done, _pending = await asyncio.wait(
+                {failure_waiter, stop_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if failure_waiter in done:
+                raise await failure_waiter
         finally:
-            self.stop()
+            for waiter in (failure_waiter, stop_waiter):
+                if waiter is not None and not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(
+                *(waiter for waiter in (failure_waiter, stop_waiter) if waiter is not None),
+                return_exceptions=True,
+            )
+            await self.stop()
 
         logger.info("Oopz Bot 已停止。")
 
-    def stop(self) -> None:
-        self._stop_requested = True
+    async def stop(self) -> None:
+        self._stop_event.set()
         if self._shutdown_in_progress:
             return
-        # 先公布关停已开始：此后再到达的信号只保留 stop request，
-        # 不再抛 KeyboardInterrupt 打断 Coordinator 的数据库刷盘和资源回收。
         self._shutdown_in_progress = True
         if self._stop_signal is not None:
-            logger.info("收到 %s，正在停止...", signal.Signals(self._stop_signal).name)
-        self._shutdown.stop(
+            logger.info("收到 %s，正在停止...", self._stop_signal.name)
+        await self._shutdown.stop(
             self._context,
             self._netease_runtime,
             self._background_services,
+            self._supervisor,
         )
-
-    def _raise_if_stop_requested(self) -> None:
-        """在启动阶段边界阻止信号后继续启动下一项服务。"""
-        if self._stop_requested:
-            raise KeyboardInterrupt
-
-    def _refresh_oopz_credentials_from_config(self) -> None:
-        try:
-            credentials = refresh_credentials_from_config_password()
-        except OopzPasswordLoginError as exc:
-            logger.warning("OOPZ 账号密码登录刷新失败，继续使用现有凭据: %s", exc)
-            return
-        except Exception as exc:
-            logger.warning("OOPZ 账号密码登录刷新异常，继续使用现有凭据: %s", exc, exc_info=True)
-            return
-        if credentials:
-            logger.info("已通过 OOPZ 账号密码刷新登录凭据")
-
-    def _build_context(self) -> AppContext:
-        resources = self._startup_resources.build()
-        voice = self._voice_runtime.build()
-        return self._context_builder.build(resources.sender, voice=voice)

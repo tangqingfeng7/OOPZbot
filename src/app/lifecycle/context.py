@@ -1,20 +1,21 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from bot.command_handler import CommandHandler
-from oopz.oopz_client import OopzClient
-from oopz.oopz_sender import OopzSender
-from music.voice_client import VoiceClient
+from oopz.sdk_gateway import AsyncOopzGateway
 
 
-@dataclass
+@dataclass(slots=True)
 class AppContext:
-    """保存启动层创建的长生命周期服务。"""
+    """保存单一事件循环中的长生命周期服务。"""
 
-    sender: OopzSender
+    sender: AsyncOopzGateway
     handler: CommandHandler
-    client: OopzClient
-    notifier_callback: Optional[Any] = None
-    onebot_v11: Optional[Any] = None
-    voice: Optional[VoiceClient] = None
-    dispatcher: Optional[Any] = None
+    client: AsyncOopzGateway
+    notifier_callback: Any | None = None
+    onebot_v11: Any | None = None
+    voice: Any | None = None
+    dispatcher: Any | None = None
+    supervisor: Any | None = None

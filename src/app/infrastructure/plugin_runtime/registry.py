@@ -1,6 +1,6 @@
-from typing import Any, Optional
-from core.logger_config import get_logger
+from typing import Any
 
+from core.logger_config import get_logger
 from domain.plugins.base import BotModule, PluginCommandCapabilities, PluginDescriptor
 
 logger = get_logger("PluginRegistry")
@@ -14,7 +14,7 @@ class PluginRegistry:
         self._order: list[str] = []  # 插件调度顺序
         self._builtin: set[str] = set()  # 内置插件名，禁止动态卸载
 
-    def register(self, module: BotModule, *, builtin: bool = False) -> bool:
+    async def register(self, module: BotModule, *, builtin: bool = False) -> bool:
         """
         注册一个插件。
         如果名称已存在，则先卸载旧插件再注册新实例。
@@ -24,7 +24,7 @@ class PluginRegistry:
             logger.warning("PluginRegistry: 拒绝注册无 name 的模块")
             return False
         if name in self._modules:
-            self.unregister(name)
+            await self.unregister(name)
         self._modules[name] = module
         if name not in self._order:
             # 注册顺序直接决定插件分发顺序，保持可预测性。
@@ -33,7 +33,7 @@ class PluginRegistry:
             self._builtin.add(name)
         return True
 
-    def unregister(self, name: str, handler: Any = None) -> bool:
+    async def unregister(self, name: str, handler: Any = None) -> bool:
         """卸载插件并调用 `on_unload()`。"""
         if name not in self._modules:
             return False
@@ -41,17 +41,17 @@ class PluginRegistry:
         self._order = [n for n in self._order if n != name]
         self._builtin.discard(name)
         try:
-            module.on_unload()
+            await module.on_unload()
         except Exception as e:
             logger.exception("PluginRegistry: 模块 %s on_unload 异常: %s", name, e)
         return True
 
-    def stop_all(self) -> None:
+    async def stop_all(self) -> None:
         """按注册的相反顺序卸载全部插件；可重复调用。"""
         for name in tuple(reversed(self._order)):
-            self.unregister(name)
+            await self.unregister(name)
 
-    def get(self, name: str) -> Optional[BotModule]:
+    def get(self, name: str) -> BotModule | None:
         return self._modules.get(name)
 
     def is_builtin(self, name: str) -> bool:
@@ -80,7 +80,7 @@ class PluginRegistry:
             return cls._normalize_command_capabilities(capabilities)
         return PluginCommandCapabilities()
 
-    def describe(self, name: str) -> Optional[PluginDescriptor]:
+    def describe(self, name: str) -> PluginDescriptor | None:
         """返回单个插件的标准描述对象。"""
         module = self._modules.get(name)
         if not module:
@@ -207,7 +207,7 @@ class PluginRegistry:
                 return True
         return False
 
-    def try_dispatch_mention(
+    async def try_dispatch_mention(
         self,
         text: str,
         channel: str,
@@ -232,17 +232,17 @@ class PluginRegistry:
                 continue
             try:
                 # 第一个声明自己已处理的插件会终止后续分发。
-                if module.handle_mention(text, channel, area, user, handler):
+                if await module.handle_mention(text, channel, area, user, handler):
                     return True
             except Exception as e:
                 logger.exception("PluginRegistry: 模块 %s handle_mention 异常: %s", name, e)
         return False
 
-    def try_dispatch_slash(
+    async def try_dispatch_slash(
         self,
         command: str,
-        subcommand: Optional[str],
-        arg: Optional[str],
+        subcommand: str | None,
+        arg: str | None,
         channel: str,
         area: str,
         user: str,
@@ -266,7 +266,7 @@ class PluginRegistry:
                 continue
             try:
                 # 第一个声明自己已处理的插件会终止后续分发。
-                if module.handle_slash(command, subcommand, arg, channel, area, user, handler):
+                if await module.handle_slash(command, subcommand, arg, channel, area, user, handler):
                     return True
             except Exception as e:
                 logger.exception("PluginRegistry: 模块 %s handle_slash 异常: %s", name, e)

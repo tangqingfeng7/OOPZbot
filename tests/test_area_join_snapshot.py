@@ -1,14 +1,14 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from services.area_join_notifier import (
+from services.area_join_notifier import (  # noqa: E402
     OPERATE_LOG_MEMBER_OP_TYPES,
     AreaOperateLogCursor,
     fetch_member_uid_snapshot,
@@ -29,7 +29,7 @@ class FakeSender:
         self._total = total_members
         self._user_count = user_count if user_count is not None else total_members
 
-    def get_area_members(self, area: str, offset_start: int, offset_end: int, quiet: bool = True) -> dict:
+    async def get_area_members(self, area: str, offset_start: int, offset_end: int, quiet: bool = True) -> dict:
         page = [
             {"uid": f"user-{index}"}
             for index in range(offset_start, min(offset_end + 1, self._total))
@@ -37,9 +37,9 @@ class FakeSender:
         return {"members": page, "userCount": self._user_count}
 
 
-class FetchMemberSnapshotTest(unittest.TestCase):
-    def test_small_area_returns_complete_snapshot(self) -> None:
-        uids, rate_limited, truncated = fetch_member_uid_snapshot(FakeSender(150), "area-1")
+class FetchMemberSnapshotTest(unittest.IsolatedAsyncioTestCase):
+    async def test_small_area_returns_complete_snapshot(self) -> None:
+        uids, rate_limited, truncated = await fetch_member_uid_snapshot(FakeSender(150), "area-1")
 
         self.assertIsNotNone(uids)
         assert uids is not None
@@ -47,11 +47,11 @@ class FetchMemberSnapshotTest(unittest.TestCase):
         self.assertFalse(rate_limited)
         self.assertFalse(truncated)
 
-    def test_stops_early_when_user_count_reached(self) -> None:
+    async def test_stops_early_when_user_count_reached(self) -> None:
         sender = FakeSender(300)
-        sender.get_area_members = Mock(side_effect=FakeSender(300).get_area_members)
+        sender.get_area_members = AsyncMock(side_effect=FakeSender(300).get_area_members)
 
-        uids, _, truncated = fetch_member_uid_snapshot(sender, "area-1", member_fetch_max=5000)
+        uids, _, truncated = await fetch_member_uid_snapshot(sender, "area-1", member_fetch_max=5000)
 
         self.assertIsNotNone(uids)
         assert uids is not None
@@ -60,8 +60,8 @@ class FetchMemberSnapshotTest(unittest.TestCase):
         # 300 人 = 3 页，userCount 命中后不应继续翻第 4 页。
         self.assertEqual(sender.get_area_members.call_count, 3)
 
-    def test_over_cap_area_is_marked_truncated(self) -> None:
-        uids, rate_limited, truncated = fetch_member_uid_snapshot(
+    async def test_over_cap_area_is_marked_truncated(self) -> None:
+        uids, rate_limited, truncated = await fetch_member_uid_snapshot(
             FakeSender(1200), "area-1", member_fetch_max=1000
         )
 
@@ -71,28 +71,28 @@ class FetchMemberSnapshotTest(unittest.TestCase):
         self.assertEqual(len(uids), 1000)
         self.assertFalse(rate_limited)
 
-    def test_rate_limit_error_is_reported(self) -> None:
-        sender = Mock()
-        sender.get_area_members = Mock(return_value={"error": "HTTP 429 too many requests"})
+    async def test_rate_limit_error_is_reported(self) -> None:
+        sender = AsyncMock()
+        sender.get_area_members = AsyncMock(return_value={"error": "HTTP 429 too many requests"})
 
-        uids, rate_limited, truncated = fetch_member_uid_snapshot(sender, "area-1")
+        uids, rate_limited, truncated = await fetch_member_uid_snapshot(sender, "area-1")
 
         self.assertIsNone(uids)
         self.assertTrue(rate_limited)
         self.assertFalse(truncated)
 
-    def test_generic_error_is_not_rate_limit(self) -> None:
-        sender = Mock()
-        sender.get_area_members = Mock(return_value={"error": "HTTP 500 boom"})
+    async def test_generic_error_is_not_rate_limit(self) -> None:
+        sender = AsyncMock()
+        sender.get_area_members = AsyncMock(return_value={"error": "HTTP 500 boom"})
 
-        uids, rate_limited, truncated = fetch_member_uid_snapshot(sender, "area-1")
+        uids, rate_limited, truncated = await fetch_member_uid_snapshot(sender, "area-1")
 
         self.assertIsNone(uids)
         self.assertFalse(rate_limited)
         self.assertFalse(truncated)
 
 
-class AreaOperateLogChangeTest(unittest.TestCase):
+class AreaOperateLogChangeTest(unittest.IsolatedAsyncioTestCase):
     def test_parse_join_and_leave_logs(self) -> None:
         changes = parse_area_operate_log_changes(
             "area-1",
@@ -134,13 +134,13 @@ class AreaOperateLogChangeTest(unittest.TestCase):
         self.assertEqual(fresh[0].uid, "user-2")
         self.assertEqual(fresh[0].action, "leave")
 
-    def test_fetch_operate_log_changes_uses_member_op_filters(self) -> None:
+    async def test_fetch_operate_log_changes_uses_member_op_filters(self) -> None:
         sender = Mock()
-        sender.get_area_operate_logs = Mock(
+        sender.get_area_operate_logs = AsyncMock(
             return_value={"logs": [{"optUid": "user-1", "content": "加入域", "createTime": 100}]}
         )
 
-        changes, rate_limited, error = fetch_operate_log_changes(sender, "area-1")
+        changes, rate_limited, error = await fetch_operate_log_changes(sender, "area-1")
 
         self.assertFalse(rate_limited)
         self.assertEqual(error, "")
@@ -153,11 +153,11 @@ class AreaOperateLogChangeTest(unittest.TestCase):
             op_types=OPERATE_LOG_MEMBER_OP_TYPES,
         )
 
-    def test_fetch_operate_log_changes_reports_permission_denied_error(self) -> None:
+    async def test_fetch_operate_log_changes_reports_permission_denied_error(self) -> None:
         sender = Mock()
-        sender.get_area_operate_logs = Mock(return_value={"error": "暂无进行此操作的权限"})
+        sender.get_area_operate_logs = AsyncMock(return_value={"error": "暂无进行此操作的权限"})
 
-        changes, rate_limited, error = fetch_operate_log_changes(sender, "area-1")
+        changes, rate_limited, error = await fetch_operate_log_changes(sender, "area-1")
 
         self.assertIsNone(changes)
         self.assertFalse(rate_limited)

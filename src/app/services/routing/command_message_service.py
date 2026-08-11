@@ -1,10 +1,9 @@
 from dataclasses import dataclass
 
+from app.services.runtime import CommandRuntimeView
 from config import PROFANITY_CONFIG
 from core.constants import Msg
 from core.logger_config import get_logger
-
-from app.services.runtime import CommandRuntimeView
 
 logger = get_logger("CommandMessageService")
 
@@ -73,7 +72,7 @@ class CommandMessageService:
             }
         )
 
-    def handle_profanity(self, ctx: MessageContext) -> bool:
+    async def handle_profanity(self, ctx: MessageContext) -> bool:
         if not PROFANITY_CONFIG.get("enabled"):
             return False
 
@@ -98,7 +97,7 @@ class CommandMessageService:
         # 先跑便宜的关键词检查，再决定是否进入更重的上下文和 AI 检测。
         matched = self._runtime.services.safety.profanity.check_profanity(ctx.content)
         if matched:
-            self._runtime.services.safety.profanity.handle_profanity(
+            await self._runtime.services.safety.profanity.handle_profanity(
                 ctx.user,
                 ctx.channel,
                 ctx.area,
@@ -123,7 +122,7 @@ class CommandMessageService:
             context_match = self._runtime.services.safety.profanity.check_context_profanity(ctx.user)
             if context_match:
                 matched_keyword, involved_messages = context_match
-                self._runtime.services.safety.profanity.handle_profanity(
+                await self._runtime.services.safety.profanity.handle_profanity(
                     ctx.user,
                     ctx.channel,
                     ctx.area,
@@ -139,10 +138,10 @@ class CommandMessageService:
         clean_content = self._runtime.services.safety.profanity.clean_text(ctx.content)
         if len(clean_content) >= min_len:
             logger.info('AI review single message: "%s" (len=%s)', ctx.content[:30], len(clean_content))
-            reason = self._chat.check_profanity(ctx.content)
+            reason = await self._chat.check_profanity(ctx.content)
             if reason:
                 logger.info("AI detected violation: %s -> %s", ctx.content[:30], reason)
-                self._runtime.services.safety.profanity.handle_profanity(
+                await self._runtime.services.safety.profanity.handle_profanity(
                     ctx.user,
                     ctx.channel,
                     ctx.area,
@@ -166,12 +165,12 @@ class CommandMessageService:
             len(user_buffer),
             len(combined_clean),
         )
-        reason = self._chat.check_profanity(combined)
+        reason = await self._chat.check_profanity(combined)
         if not reason:
             return False
 
         logger.info("AI contextual violation: %s -> %s", combined[:40], reason)
-        self._runtime.services.safety.profanity.handle_profanity(
+        await self._runtime.services.safety.profanity.handle_profanity(
             ctx.user,
             ctx.channel,
             ctx.area,
@@ -180,7 +179,7 @@ class CommandMessageService:
         )
         return True
 
-    def reject_unauthorized_command(self, ctx: MessageContext) -> bool:
+    async def reject_unauthorized_command(self, ctx: MessageContext) -> bool:
         if not ctx.is_command(self._bot_mention):
             return False
 
@@ -191,7 +190,7 @@ class CommandMessageService:
             return False
 
         logger.info("Non-admin user %s attempted command: %s", ctx.user, ctx.content[:40])
-        self._sender.send_message(
+        await self._sender.send_message(
             f"{Msg.ERR} 无权限，仅管理员可使用该指令",
             channel=ctx.channel,
             area=ctx.area,

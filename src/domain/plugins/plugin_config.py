@@ -67,7 +67,7 @@ class PluginConfig(Mapping[str, Any]):
         return self.copy()
 
     @classmethod
-    def empty(cls, plugin_name: str, path: str) -> "PluginConfig":
+    def empty(cls, plugin_name: str, path: str) -> PluginConfig:
         return cls(plugin_name=plugin_name, values={}, path=path, exists=False)
 
     @classmethod
@@ -78,7 +78,7 @@ class PluginConfig(Mapping[str, Any]):
         path: str,
         *,
         exists: bool,
-    ) -> "PluginConfig":
+    ) -> PluginConfig:
         return cls(
             plugin_name=plugin_name,
             values=values,
@@ -181,7 +181,7 @@ class PluginConfigSpec:
         return item
 
     @classmethod
-    def empty(cls) -> "PluginConfigSpec":
+    def empty(cls) -> PluginConfigSpec:
         return cls(())
 
 

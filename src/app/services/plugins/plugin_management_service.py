@@ -1,8 +1,7 @@
-from typing import Optional
 
+from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
 from core.constants import Msg
 from domain.plugins.plugin_name import normalize_plugin_name
-from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
 
 from .plugin_capability_formatter import format_plugin_status_lines
 from .plugin_operation_formatter import (
@@ -19,11 +18,11 @@ class PluginManagementService:
         self._plugins = plugins_of(runtime)
 
     @staticmethod
-    def normalize_plugin_name(raw_name: str) -> Optional[str]:
+    def normalize_plugin_name(raw_name: str) -> str | None:
         """规范化插件名，仅允许字母数字下划线。"""
         return normalize_plugin_name(raw_name)
 
-    def show_plugin_list(self, channel: str, area: str) -> None:
+    async def show_plugin_list(self, channel: str, area: str) -> None:
         """展示插件状态：已加载与可加载列表。"""
         loaded = self._plugins.list_descriptors()
         discovered = self._plugins.discover()
@@ -50,54 +49,54 @@ class PluginManagementService:
         lines.append("")
         lines.append("用法:")
         lines.append("  /loadplugin <名>  /unloadplugin <名>")
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def load(self, raw_name: str, channel: str, area: str) -> None:
+    async def load(self, raw_name: str, channel: str, area: str) -> None:
         """动态加载插件。"""
         name = self.normalize_plugin_name(raw_name)
         if not name:
-            self._sender.send_message(
+            await self._sender.send_message(
                 f"{Msg.ERR} 插件名不合法，仅支持字母/数字/下划线",
                 channel=channel,
                 area=area,
             )
             return
-        result = self._plugins.load(name, handler=self._runtime.plugin_host)
-        self._sender.send_message(
+        result = await self._plugins.load(name, handler=self._runtime.plugin_host)
+        await self._sender.send_message(
             format_plugin_operation_message(result),
             channel=channel,
             area=area,
         )
 
-    def unload(self, raw_name: str, channel: str, area: str) -> None:
+    async def unload(self, raw_name: str, channel: str, area: str) -> None:
         """动态卸载插件。"""
         name = self.normalize_plugin_name(raw_name)
         if not name:
-            self._sender.send_message(
+            await self._sender.send_message(
                 f"{Msg.ERR} 插件名不合法，仅支持字母/数字/下划线",
                 channel=channel,
                 area=area,
             )
             return
-        result = self._plugins.unload(name, handler=self._runtime.plugin_host)
-        self._sender.send_message(
+        result = await self._plugins.unload(name, handler=self._runtime.plugin_host)
+        await self._sender.send_message(
             format_plugin_operation_message(result),
             channel=channel,
             area=area,
         )
 
-    def reload_config(self, raw_name: str, channel: str, area: str) -> None:
+    async def reload_config(self, raw_name: str, channel: str, area: str) -> None:
         """热重载插件配置（不重载代码）。"""
         name = self.normalize_plugin_name(raw_name)
         if not name:
-            self._sender.send_message(
+            await self._sender.send_message(
                 f"{Msg.ERR} 插件名不合法，仅支持字母/数字/下划线",
                 channel=channel,
                 area=area,
             )
             return
-        result = self._plugins.reload_config(name, handler=self._runtime.plugin_host)
-        self._sender.send_message(
+        result = await self._plugins.reload_config(name, handler=self._runtime.plugin_host)
+        await self._sender.send_message(
             format_plugin_operation_message(result),
             channel=channel,
             area=area,

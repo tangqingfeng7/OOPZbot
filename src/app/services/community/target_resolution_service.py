@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 
 from core.constants import MENTION_PATTERN, UID_PATTERN
 from oopz.name_resolver import get_resolver
@@ -19,7 +18,7 @@ class TargetResolutionService:
         infrastructure = getattr(self._runtime, "infrastructure", None)
         return getattr(infrastructure, "sender", None)
 
-    def _collect_area_member_uids(self, area: Optional[str]) -> list[str]:
+    async def _collect_area_member_uids(self, area: str | None) -> list[str]:
         """拉取当前域成员 UID 列表，供本地匹配用户名称。"""
         if not area:
             return []
@@ -34,7 +33,7 @@ class TargetResolutionService:
         ordered_uids: list[str] = []
 
         for start in range(0, max_fetch, page_size):
-            data = sender.get_area_members(
+            data = await sender.get_area_members(
                 area=area,
                 offset_start=start,
                 offset_end=start + page_size - 1,
@@ -59,24 +58,24 @@ class TargetResolutionService:
 
         return ordered_uids
 
-    def _resolve_from_area_members(self, name: str, area: Optional[str]) -> Optional[str]:
+    async def _resolve_from_area_members(self, name: str, area: str | None) -> str | None:
         """在当前域内做一次安全的模糊匹配，只接受唯一命中。"""
-        candidates = self.resolve_target_candidates(name, area=area, limit=10)
+        candidates = await self.resolve_target_candidates(name, area=area, limit=10)
         if len(candidates) == 1:
             return candidates[0]["uid"]
         return None
 
-    def resolve_target_candidates(self, name: str, area: Optional[str] = None, limit: int = 5) -> list[dict]:
+    async def resolve_target_candidates(self, name: str, area: str | None = None, limit: int = 5) -> list[dict]:
         """在当前域内返回候选用户列表，用于交互式选择。"""
         if not area:
             return []
 
-        uids = self._collect_area_member_uids(area)
+        uids = await self._collect_area_member_uids(area)
         if not uids:
             return []
 
         resolver = get_resolver()
-        names = resolver.ensure_users(uids) if hasattr(resolver, "ensure_users") else {}
+        names = await resolver.ensure_users(uids) if hasattr(resolver, "ensure_users") else {}
         candidates: list[tuple[str, str]] = []
         keyword = name.lower()
 
@@ -110,7 +109,7 @@ class TargetResolutionService:
         ]
         return contains_matches[:limit]
 
-    def resolve_target(self, text: str, area: Optional[str] = None) -> Optional[str]:
+    async def resolve_target(self, text: str, area: str | None = None) -> str | None:
         """从 @mention、UID 或用户名中解析目标用户 UID。"""
         text = text.strip()
         if not text:
@@ -128,9 +127,9 @@ class TargetResolutionService:
         if uid:
             return uid
 
-        return self._resolve_from_area_members(token, area)
+        return await self._resolve_from_area_members(token, area)
 
-    def parse_mute_args(self, text: str, area: Optional[str] = None) -> tuple[Optional[str], int]:
+    async def parse_mute_args(self, text: str, area: str | None = None) -> tuple[str | None, int]:
         """解析禁言/禁麦参数，返回 `(uid, duration)`。"""
         text = text.strip()
         match = re.match(MENTION_PATTERN + r"\s*(\d+)?", text)
@@ -145,5 +144,5 @@ class TargetResolutionService:
         else:
             name_part, duration = text, 10
 
-        uid = self.resolve_target(name_part, area=area)
+        uid = await self.resolve_target(name_part, area=area)
         return uid, duration

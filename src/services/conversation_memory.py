@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 from core.logger_config import get_logger
 
@@ -26,19 +25,20 @@ class ConversationMemory:
         self._max_rounds = max(0, int(max_rounds))
         self._ttl = max(0, int(ttl_seconds))
 
-    @property
-    def _redis(self):
-        return self._redis_provider()
+    async def _client(self):
+        # provider 是异步的（core.queue_manager.get_redis_client）；每次现取而非
+        # 持有引用，Redis 从内存降级恢复后自动跟随切换。
+        return await self._redis_provider()
 
     def _key(self, user: str, channel: str) -> str:
         return f"{self.REDIS_KEY_PREFIX}:{user}:{channel}"
 
-    def get_history(self, user: str, channel: str) -> list[dict]:
+    async def get_history(self, user: str, channel: str) -> list[dict]:
         """返回对话历史列表 [{"role": "user", "content": ...}, ...]，按时间正序。"""
         if not self._max_rounds:
             return []
         try:
-            raw = self._redis.get(self._key(user, channel))
+            raw = await (await self._client()).get(self._key(user, channel))
             if not raw:
                 return []
             data = json.loads(raw)
@@ -48,12 +48,12 @@ class ConversationMemory:
             logger.debug("读取对话历史失败 (user=%s, ch=%s): %s", user[:8], channel[:8], e)
         return []
 
-    def add_round(self, user: str, channel: str, user_msg: str, assistant_msg: str) -> None:
+    async def add_round(self, user: str, channel: str, user_msg: str, assistant_msg: str) -> None:
         """追加一轮对话（user + assistant），超过 max_rounds 时裁剪最旧的轮次。"""
         if not self._max_rounds:
             return
         key = self._key(user, channel)
-        history = self.get_history(user, channel)
+        history = await self.get_history(user, channel)
         history.append({"role": "user", "content": user_msg})
         history.append({"role": "assistant", "content": assistant_msg})
 
@@ -63,31 +63,33 @@ class ConversationMemory:
 
         try:
             payload = json.dumps(history, ensure_ascii=False)
+            client = await self._client()
             if self._ttl > 0:
-                self._redis.set(key, payload, ex=self._ttl)
+                await client.set(key, payload, ex=self._ttl)
             else:
-                self._redis.set(key, payload)
+                await client.set(key, payload)
         except Exception as e:
             logger.debug("保存对话历史失败 (user=%s, ch=%s): %s", user[:8], channel[:8], e)
 
-    def clear(self, user: str, channel: str) -> bool:
+    async def clear(self, user: str, channel: str) -> bool:
         """清空指定用户+频道的对话历史。"""
         try:
-            return bool(self._redis.delete(self._key(user, channel)))
+            return bool(await (await self._client()).delete(self._key(user, channel)))
         except Exception as e:
             logger.debug("清除对话历史失败: %s", e)
             return False
 
-    def clear_user(self, user: str) -> int:
+    async def clear_user(self, user: str) -> int:
         """清空指定用户在所有频道的历史（使用 SCAN 匹配）。"""
         pattern = f"{self.REDIS_KEY_PREFIX}:{user}:*"
         count = 0
         try:
+            client = await self._client()
             cursor = 0
             while True:
-                cursor, keys = self._redis.scan(cursor, match=pattern, count=100)
+                cursor, keys = await client.scan(cursor, match=pattern, count=100)
                 if keys:
-                    count += self._redis.delete(*keys)
+                    count += await client.delete(*keys)
                 if cursor == 0:
                     break
         except Exception as e:
@@ -95,7 +97,7 @@ class ConversationMemory:
         return count
 
 
-def create_conversation_memory(redis_provider) -> Optional[ConversationMemory]:
+def create_conversation_memory(redis_provider) -> ConversationMemory | None:
     """工厂函数：从 DOUBAO_CONFIG 读取参数创建 ConversationMemory 实例。
 
     redis_provider: 零参可调用（如 core.queue_manager.get_redis_client）。

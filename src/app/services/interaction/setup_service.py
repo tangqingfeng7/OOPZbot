@@ -11,14 +11,19 @@ class SetupService:
     def __init__(self, runtime: CommandRuntimeView):
         self._runtime = runtime
         self._sender = sender_of(runtime)
-        self._plugins = getattr(runtime, "plugins", getattr(runtime.infrastructure, "plugins", None))
+        # 回退要惰性：runtime 可能是只带 plugins 的精简对象，没有 infrastructure。
+        # 这里保留「两边都没有就是 None」的语义，SetupDiagnostics 显式支持插件缺席。
+        plugins = getattr(runtime, "plugins", None)
+        if plugins is None:
+            plugins = getattr(getattr(runtime, "infrastructure", None), "plugins", None)
+        self._plugins = plugins
 
-    def build_report(self) -> dict:
+    async def build_report(self) -> dict:
         diagnostics = SetupDiagnostics(sender=self._sender, plugins=self._plugins)
-        return diagnostics.build_report()
+        return await diagnostics.build_report()
 
-    def show_health_check(self, channel: str, area: str) -> None:
-        report = self.build_report()
+    async def show_health_check(self, channel: str, area: str) -> None:
+        report = await self.build_report()
         summary = report["summary"]
         level_label = {
             "pass": "正常",
@@ -46,7 +51,7 @@ class SetupService:
             "/setup  查看后台首启步骤",
             "后台页面: /admin/setup",
         ]
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
     def _admin_setup_lines(self, user: str) -> list[str]:
         """未配置管理员时的引导。
@@ -75,8 +80,8 @@ class SetupService:
         ]
         return lines
 
-    def show_setup_wizard(self, channel: str, area: str, user: str = "") -> None:
-        report = self.build_report()
+    async def show_setup_wizard(self, channel: str, area: str, user: str = "") -> None:
+        report = await self.build_report()
         lines = ["【首启向导】按顺序完成以下步骤"]
         for index, step in enumerate(report["wizard_steps"], start=1):
             status_text = {
@@ -100,4 +105,4 @@ class SetupService:
             "@bot 体检",
             "/health",
         ]
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)

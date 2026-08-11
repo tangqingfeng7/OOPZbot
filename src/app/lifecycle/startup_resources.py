@@ -1,23 +1,18 @@
+"""启动期数据库准备；网络资源统一由 ``AppContextBuilder`` 创建。"""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from core.database import init_database
-from oopz.oopz_sender import OopzSender
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StartupResources:
-    """保存启动阶段准备好的基础资源。"""
-
-    sender: OopzSender
+    database_ready: bool = True
 
 
 class StartupResourceBuilder:
-    """负责初始化数据库并预热发送端资源。"""
-
-    def build(self) -> StartupResources:
-        init_database()
-
-        sender = OopzSender()
-        sender.populate_names()
-
-        return StartupResources(sender=sender)
+    async def build(self) -> StartupResources:
+        await init_database()
+        return StartupResources()

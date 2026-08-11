@@ -4,7 +4,7 @@ from .context_builder import AppContextBuilder
 from .netease_api_runtime import NeteaseApiRuntime
 from .shutdown_coordinator import ShutdownCoordinator
 from .startup_resources import StartupResourceBuilder, StartupResources
-from .voice_runtime import VoiceRuntimeBuilder
+from .task_supervisor import TaskSupervisor
 
 __all__ = [
     "AppContext",
@@ -14,5 +14,5 @@ __all__ = [
     "ShutdownCoordinator",
     "StartupResourceBuilder",
     "StartupResources",
-    "VoiceRuntimeBuilder",
+    "TaskSupervisor",
 ]

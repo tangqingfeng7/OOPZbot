@@ -8,7 +8,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from oopz.area_events import parse_member_event
+from oopz.area_events import parse_member_event  # noqa: E402
 
 
 def _raw(event: int, body: dict) -> dict:

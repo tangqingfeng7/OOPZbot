@@ -1,8 +1,8 @@
 from collections.abc import Iterable
-from typing import Any, Optional
+from typing import Any
 
 
-def resolve_role_id(roles: Iterable[dict[str, Any]], role_arg: str) -> Optional[Any]:
+def resolve_role_id(roles: Iterable[dict[str, Any]], role_arg: str) -> Any | None:
     candidate = (role_arg or "").strip()
     if not candidate:
         return None

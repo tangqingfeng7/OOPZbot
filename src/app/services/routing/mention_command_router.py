@@ -16,13 +16,13 @@ class MentionCommandRouter:
         self._plugins = plugins_of(runtime)
         self._actions = build_builtin_command_actions(runtime)
 
-    def _dispatch_exact(self, text: str, aliases: tuple[str, ...], callback) -> bool:
+    async def _dispatch_exact(self, text: str, aliases: tuple[str, ...], callback) -> bool:
         if text not in aliases:
             return False
-        callback()
+        await callback()
         return True
 
-    def _dispatch_prefixed_arg(
+    async def _dispatch_prefixed_arg(
         self,
         text: str,
         prefixes: tuple[str, ...],
@@ -36,13 +36,13 @@ class MentionCommandRouter:
                 continue
             arg = text[len(prefix) :].strip()
             if arg:
-                callback(arg)
+                await callback(arg)
             else:
-                self._sender.send_message(usage, channel=channel, area=area)
+                await self._sender.send_message(usage, channel=channel, area=area)
             return True
         return False
 
-    def _dispatch_prefixed_pair(
+    async def _dispatch_prefixed_pair(
         self,
         text: str,
         prefixes: tuple[str, ...],
@@ -56,17 +56,17 @@ class MentionCommandRouter:
                 continue
             rest = text[len(prefix) :].strip().split(None, 1)
             if len(rest) >= 2:
-                callback(rest[0], rest[1])
+                await callback(rest[0], rest[1])
             else:
-                self._sender.send_message(usage, channel=channel, area=area)
+                await self._sender.send_message(usage, channel=channel, area=area)
             return True
         return False
 
-    def _dispatch_prefixed_raw(self, text: str, prefixes: tuple[str, ...], callback) -> bool:
+    async def _dispatch_prefixed_raw(self, text: str, prefixes: tuple[str, ...], callback) -> bool:
         for prefix in prefixes:
             if not text.startswith(prefix):
                 continue
-            callback(text[len(prefix) :].strip())
+            await callback(text[len(prefix) :].strip())
             return True
         return False
 
@@ -166,7 +166,7 @@ class MentionCommandRouter:
         from app.services.interaction.help_catalog import suggest_command_usages
         return bool(suggest_command_usages(text, limit=1))
 
-    def _reject_admin_only(self, text: str, channel: str, area: str, user: str) -> bool:
+    async def _reject_admin_only(self, text: str, channel: str, area: str, user: str) -> bool:
         """第二层权限门：与 slash 侧 dispatch 里的 is_admin 判断对称。
 
         第一层闸门在 CommandMessageService.reject_unauthorized_command，但插件可以用
@@ -179,16 +179,16 @@ class MentionCommandRouter:
             return False
         if self._services.routing.access.is_admin(user):
             return False
-        self._sender.send_message(
+        await self._sender.send_message(
             f"{Msg.ERR} 无权限，仅管理员可使用该指令",
             channel=channel,
             area=area,
         )
         return True
 
-    def dispatch(self, text: str, channel: str, area: str, user: str) -> bool:
+    async def dispatch(self, text: str, channel: str, area: str, user: str) -> bool:
         """分发 @bot 命令。返回 True 表示该消息落入了 AI 聊天（用户消息不应被撤回）。"""
-        if self._plugins.try_dispatch_mention(
+        if await self._plugins.try_dispatch_mention(
             text,
             channel,
             area,
@@ -196,39 +196,39 @@ class MentionCommandRouter:
             self._runtime.plugin_host,
         ):
             return False
-        if self._services.interaction.music.handle_mention(text, channel, area, user):
+        if await self._services.interaction.music.handle_mention(text, channel, area, user):
             return False
 
         # 插件与音乐保持既有优先级；进入内置命令前补一层与 slash 侧对称的管理员门。
         # 必须排在插件之后：否则某个公开插件的合法前缀若恰是管理前缀的延伸
         # （如「插件商店」之于「插件」），会被误杀。
-        if self._reject_admin_only(text, channel, area, user):
+        if await self._reject_admin_only(text, channel, area, user):
             return False
 
         for aliases, callback in self._exact_rules(channel, area, user):
             candidate = text.strip() if "封禁列表" in aliases or "插件列表" in aliases else text
-            if self._dispatch_exact(candidate, aliases, callback):
+            if await self._dispatch_exact(candidate, aliases, callback):
                 return False
 
         for prefixes, callback, usage in self._arg_rules(channel, area, user):
-            if self._dispatch_prefixed_arg(text, prefixes, callback, usage, channel, area):
+            if await self._dispatch_prefixed_arg(text, prefixes, callback, usage, channel, area):
                 return False
 
         for prefixes, callback, usage in self._pair_rules(channel, area):
-            if self._dispatch_prefixed_pair(text, prefixes, callback, usage, channel, area):
+            if await self._dispatch_prefixed_pair(text, prefixes, callback, usage, channel, area):
                 return False
 
         match = re.match(r"撤回\s*(\d+)\s*条", text.strip())
         if match:
-            self._actions.recall.recall_multiple(int(match.group(1)), channel, area)
+            await self._actions.recall.recall_multiple(int(match.group(1)), channel, area)
             return False
 
         for prefixes, callback in self._raw_rules(channel, area, user):
-            if self._dispatch_prefixed_raw(text, prefixes, callback):
+            if await self._dispatch_prefixed_raw(text, prefixes, callback):
                 return False
 
         if self._should_treat_as_unknown_command(text):
-            self._services.interaction.chat.send_unknown_mention_command(
+            await self._services.interaction.chat.send_unknown_mention_command(
                 text,
                 channel,
                 area,
@@ -236,5 +236,5 @@ class MentionCommandRouter:
             )
             return False
 
-        self._services.interaction.chat.handle_mention_fallback(text, channel, area, user=user)
+        await self._services.interaction.chat.handle_mention_fallback(text, channel, area, user=user)
         return True

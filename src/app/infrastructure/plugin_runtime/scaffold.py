@@ -140,11 +140,11 @@ class {class_name}(PluginCommandMixin, BotModule):
             )
         )
 
-    def on_load(self, handler, config: PluginConfig | None = None) -> None:
+    async def on_load(self, handler, config: PluginConfig | None = None) -> None:
         self._handler = handler
         self._config = (config or {{}}).copy()
 
-    def dispatch_command(self, command_text, channel, area, user, handler) -> None:
+    async def dispatch_command(self, command_text, channel, area, user, handler) -> None:
         # TODO: 解析并执行具体命令；mention 前缀与 slash 命令已由 mixin 剥离。
-        self._send(handler, "{plugin_name} 暂未实现命令", channel, area)
+        await self._send(handler, "{plugin_name} 暂未实现命令", channel, area)
 '''

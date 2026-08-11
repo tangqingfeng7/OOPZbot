@@ -1,6 +1,6 @@
+from app.services.runtime import CommandRuntimeView, chat_of, music_of, sender_of
 from core.constants import Msg
 from oopz.name_resolver import NameResolver, get_resolver
-from app.services.runtime import CommandRuntimeView, chat_of, music_of, sender_of
 
 
 class CommonCommandService:
@@ -12,13 +12,13 @@ class CommonCommandService:
         self._music = music_of(runtime)
         self._chat = chat_of(runtime)
 
-    def show_voice_channels(self, channel: str, area: str) -> None:
+    async def show_voice_channels(self, channel: str, area: str) -> None:
         """查看各语音频道的在线成员。"""
         resolver = get_resolver()
 
-        channel_members = self._sender.get_voice_channel_members(area=area)
+        channel_members = await self._sender.get_voice_channel_members(area=area)
         if not channel_members:
-            self._sender.send_message("当前没有语音频道在线成员", channel=channel, area=area)
+            await self._sender.send_message("当前没有语音频道在线成员", channel=channel, area=area)
             return
 
         area_name = resolver.area(area)
@@ -42,19 +42,19 @@ class CommonCommandService:
             total_online += len(members)
 
         if total_online == 0:
-            self._sender.send_message("当前没有语音频道在线成员", channel=channel, area=area)
+            await self._sender.send_message("当前没有语音频道在线成员", channel=channel, area=area)
             return
 
         lines.insert(1, f"共 {total_online} 人在线")
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def enter_channel(self, channel_id: str, channel: str, area: str) -> None:
+    async def enter_channel(self, channel_id: str, channel: str, area: str) -> None:
         """进入指定频道。"""
         resolver = get_resolver()
         channel_name = resolver.channel(channel_id)
-        data = self._music.enter_voice_channel(channel_id, area)
+        data = await self._music.enter_voice_channel(channel_id, area)
         if "error" in data:
-            self._sender.send_message(f"进入频道失败: {data['error']}", channel=channel, area=area)
+            await self._sender.send_message(f"进入频道失败: {data['error']}", channel=channel, area=area)
             return
 
         lines = [f"已进入频道: {channel_name}", "---"]
@@ -75,13 +75,13 @@ class CommonCommandService:
         if voice_mute and voice_mute > 0:
             lines.append("  语音禁言: 是")
 
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def show_daily_speech(self, channel: str, area: str) -> None:
+    async def show_daily_speech(self, channel: str, area: str) -> None:
         """获取并展示每日一句名言。"""
-        data = self._sender.get_daily_speech()
+        data = await self._sender.get_daily_speech()
         if "error" in data:
-            self._sender.send_message(f"获取每日一句失败: {data['error']}", channel=channel, area=area)
+            await self._sender.send_message(f"获取每日一句失败: {data['error']}", channel=channel, area=area)
             return
 
         words = data.get("words", "")
@@ -94,27 +94,27 @@ class CommonCommandService:
         else:
             text = "暂无内容"
 
-        self._sender.send_message(text, channel=channel, area=area)
+        await self._sender.send_message(text, channel=channel, area=area)
 
-    def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
+    async def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
         """调用 AI 生成图片并发送到频道。"""
         names = NameResolver()
         user_name = names.user(user) if user else "未知用户"
 
-        self._sender.send_message(
+        await self._sender.send_message(
             f"{Msg.PAINT} {user_name} 请求生成图片，正在绘制中...",
             channel=channel,
             area=area,
         )
 
-        image_url = self._chat.generate_image(prompt)
+        image_url = await self._chat.generate_image(prompt)
         if not image_url:
-            self._sender.send_message("图片生成失败，请稍后再试", channel=channel, area=area)
+            await self._sender.send_message("图片生成失败，请稍后再试", channel=channel, area=area)
             return
 
-        upload_result = self._sender.upload_file_from_url(image_url)
+        upload_result = await self._sender.upload_file_from_url(image_url)
         if upload_result.get("code") != "success":
-            self._sender.send_message("图片上传失败，请稍后再试", channel=channel, area=area)
+            await self._sender.send_message("图片上传失败，请稍后再试", channel=channel, area=area)
             return
 
         attachment = upload_result["data"]
@@ -123,7 +123,7 @@ class CommonCommandService:
             f"{user_name} 生成的图片\n"
             f"描述: {prompt}"
         )
-        self._sender.send_message(
+        await self._sender.send_message(
             text=text,
             attachments=[attachment],
             channel=channel,

@@ -20,6 +20,9 @@ __all__ = [
     "PluginConfigField",
     "PluginConfigSpec",
     "PluginConfigValidationError",
+    "PluginOperationCode",
+    "PluginOperationResult",
+    "normalize_plugin_name",
     "parse_bool",
     "parse_float",
     "parse_int",
@@ -28,7 +31,4 @@ __all__ = [
     "validate_http_url_list",
     "validate_min",
     "validate_range",
-    "normalize_plugin_name",
-    "PluginOperationCode",
-    "PluginOperationResult",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from domain.plugins.plugin_config import (
     PluginConfig,
@@ -22,14 +22,14 @@ from domain.plugins.plugin_config import (
 # 本模块是插件 SDK 的统一入口：插件只需从 ``domain.plugins.base`` 导入下列符号。
 # 这里显式声明公共面，既固定对外契约，也表明 plugin_config 的再导出是有意为之。
 __all__ = [
-    "PluginMetadata",
-    "PluginCommandCapabilities",
-    "PluginDescriptor",
     "BotModule",
+    "PluginCommandCapabilities",
     "PluginConfig",
     "PluginConfigField",
     "PluginConfigSpec",
     "PluginConfigValidationError",
+    "PluginDescriptor",
+    "PluginMetadata",
     "parse_bool",
     "parse_float",
     "parse_int",
@@ -124,7 +124,7 @@ class BotModule(ABC):
         """返回插件私有模块列表，用于卸载时清理缓存。"""
         return ()
 
-    def handle_mention(
+    async def handle_mention(
         self,
         text: str,
         channel: str,
@@ -135,11 +135,11 @@ class BotModule(ABC):
         """处理 mention 指令，返回是否已处理。"""
         return False
 
-    def handle_slash(
+    async def handle_slash(
         self,
         command: str,
-        subcommand: Optional[str],
-        arg: Optional[str],
+        subcommand: str | None,
+        arg: str | None,
         channel: str,
         area: str,
         user: str,
@@ -148,12 +148,12 @@ class BotModule(ABC):
         """处理 slash 命令，返回是否已处理。"""
         return False
 
-    def on_load(self, handler: Any, config: Optional[PluginConfig] = None) -> None:
+    async def on_load(self, handler: Any, config: PluginConfig | None = None) -> None:
         """插件加载完成后调用。"""
 
-    def on_config_reload(self, handler: Any, config: PluginConfig) -> None:
+    async def on_config_reload(self, handler: Any, config: PluginConfig) -> None:
         """配置热重载时调用。默认行为等同于 on_load，子类可覆盖以实现更精细的重载。"""
-        self.on_load(handler, config)
+        await self.on_load(handler, config)
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         """插件卸载前调用。"""

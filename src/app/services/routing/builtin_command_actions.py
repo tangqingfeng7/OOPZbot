@@ -9,32 +9,32 @@ class CommunityCommandActions:
     def __init__(self, runtime: CommandRuntimeView):
         self._services = runtime.services
 
-    def show_members(self, channel: str, area: str) -> None:
-        self._services.community.member.show_members(channel, area)
+    async def show_members(self, channel: str, area: str) -> None:
+        await self._services.community.member.show_members(channel, area)
 
-    def show_profile(self, channel: str, area: str, user: str) -> None:
-        self._services.community.member.show_profile(channel, area, user)
+    async def show_profile(self, channel: str, area: str, user: str) -> None:
+        await self._services.community.member.show_profile(channel, area, user)
 
-    def show_myinfo(self, channel: str, area: str, user: str) -> None:
-        self._services.community.member.show_myinfo(channel, area, user)
+    async def show_myinfo(self, channel: str, area: str, user: str) -> None:
+        await self._services.community.member.show_myinfo(channel, area, user)
 
-    def show_whois(self, target: str, channel: str, area: str, user: str = "") -> None:
-        self._services.community.member.show_whois(target, channel, area, user)
+    async def show_whois(self, target: str, channel: str, area: str, user: str = "") -> None:
+        await self._services.community.member.show_whois(target, channel, area, user)
 
-    def show_user_roles(self, target: str, channel: str, area: str) -> None:
-        self._services.community.role.show_user_roles(target, channel, area)
+    async def show_user_roles(self, target: str, channel: str, area: str) -> None:
+        await self._services.community.role.show_user_roles(target, channel, area)
 
-    def show_assignable_roles(self, target: str, channel: str, area: str) -> None:
-        self._services.community.role.show_assignable_roles(target, channel, area)
+    async def show_assignable_roles(self, target: str, channel: str, area: str) -> None:
+        await self._services.community.role.show_assignable_roles(target, channel, area)
 
-    def give_role(self, target: str, role_name: str, channel: str, area: str) -> None:
-        self._services.community.role.give_role(target, role_name, channel, area)
+    async def give_role(self, target: str, role_name: str, channel: str, area: str) -> None:
+        await self._services.community.role.give_role(target, role_name, channel, area)
 
-    def remove_role(self, target: str, role_name: str, channel: str, area: str) -> None:
-        self._services.community.role.remove_role(target, role_name, channel, area)
+    async def remove_role(self, target: str, role_name: str, channel: str, area: str) -> None:
+        await self._services.community.role.remove_role(target, role_name, channel, area)
 
-    def search_members(self, keyword: str, channel: str, area: str, user: str = "") -> None:
-        self._services.community.member.search_members(keyword, channel, area, user)
+    async def search_members(self, keyword: str, channel: str, area: str, user: str = "") -> None:
+        await self._services.community.member.search_members(keyword, channel, area, user)
 
 
 class InteractionCommandActions:
@@ -42,47 +42,47 @@ class InteractionCommandActions:
         self._services = runtime.services
         self._sender = sender_of(runtime)
 
-    def show_voice_channels(self, channel: str, area: str) -> None:
-        self._services.interaction.common.show_voice_channels(channel, area)
+    async def show_voice_channels(self, channel: str, area: str) -> None:
+        await self._services.interaction.common.show_voice_channels(channel, area)
 
-    def enter_channel(self, channel_id: str, channel: str, area: str) -> None:
-        self._services.interaction.common.enter_channel(channel_id, channel, area)
+    async def enter_channel(self, channel_id: str, channel: str, area: str) -> None:
+        await self._services.interaction.common.enter_channel(channel_id, channel, area)
 
-    def show_daily_speech(self, channel: str, area: str) -> None:
-        self._services.interaction.common.show_daily_speech(channel, area)
+    async def show_daily_speech(self, channel: str, area: str) -> None:
+        await self._services.interaction.common.show_daily_speech(channel, area)
 
-    def show_help(self, channel: str, area: str, user: str, topic: str = "") -> None:
-        self._services.interaction.help.show_help(channel, area, user, topic)
+    async def show_help(self, channel: str, area: str, user: str, topic: str = "") -> None:
+        await self._services.interaction.help.show_help(channel, area, user, topic)
 
-    def show_health_check(self, channel: str, area: str) -> None:
-        self._services.interaction.setup.show_health_check(channel, area)
+    async def show_health_check(self, channel: str, area: str) -> None:
+        await self._services.interaction.setup.show_health_check(channel, area)
 
-    def show_setup_wizard(self, channel: str, area: str, user: str = "") -> None:
-        self._services.interaction.setup.show_setup_wizard(channel, area, user)
+    async def show_setup_wizard(self, channel: str, area: str, user: str = "") -> None:
+        await self._services.interaction.setup.show_setup_wizard(channel, area, user)
 
-    def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
-        self._services.interaction.common.generate_image(prompt, channel, area, user)
+    async def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
+        await self._services.interaction.common.generate_image(prompt, channel, area, user)
 
-    def clear_ai_memory(self, user: str, channel: str, area: str) -> None:
+    async def clear_ai_memory(self, user: str, channel: str, area: str) -> None:
         """清除用户在当前频道的 AI 对话记忆（mention/slash 共用）。"""
-        cleared = self._services.interaction.chat.clear_memory(user, channel)
+        cleared = await self._services.interaction.chat.clear_memory(user, channel)
         if cleared:
-            self._sender.send_message("对话记忆已清除", channel=channel, area=area)
+            await self._sender.send_message("对话记忆已清除", channel=channel, area=area)
         else:
-            self._sender.send_message("当前没有对话记忆", channel=channel, area=area)
+            await self._sender.send_message("当前没有对话记忆", channel=channel, area=area)
 
-    def handle_pick(self, raw: str, channel: str, area: str, user: str, usage: str) -> None:
+    async def handle_pick(self, raw: str, channel: str, area: str, user: str, usage: str) -> None:
         """选择候选编号：先试点歌候选，再试成员候选（mention/slash 共用）。"""
         token = (raw or "").strip()
         if not token.isdigit():
-            self._sender.send_message(usage, channel=channel, area=area)
+            await self._sender.send_message(usage, channel=channel, area=area)
             return
         index = int(token)
-        if self._services.interaction.music.handle_pick(index, channel, area, user):
+        if await self._services.interaction.music.handle_pick(index, channel, area, user):
             return
-        if self._services.community.member.handle_pick(index, channel, area, user):
+        if await self._services.community.member.handle_pick(index, channel, area, user):
             return
-        self._sender.send_message("当前没有可选择的候选结果，请先搜索或搜歌", channel=channel, area=area)
+        await self._sender.send_message("当前没有可选择的候选结果，请先搜索或搜歌", channel=channel, area=area)
 
 
 class ModerationCommandActions:
@@ -98,95 +98,95 @@ class ModerationCommandActions:
             return parts[0]
         return target
 
-    def _send_target_error(self, raw: str, usage: str, channel: str, area: str) -> None:
+    async def _send_target_error(self, raw: str, usage: str, channel: str, area: str) -> None:
         """参数为空时提示用法，参数有值但解析失败时提示找不到用户。"""
         target = self._normalize_target_text(raw)
         if not target:
-            self._sender.send_message(usage, channel=channel, area=area)
+            await self._sender.send_message(usage, channel=channel, area=area)
             return
-        self._sender.send_message(f"找不到用户: {target}", channel=channel, area=area)
+        await self._sender.send_message(f"找不到用户: {target}", channel=channel, area=area)
 
-    def mute_user(self, raw: str, channel: str, area: str, usage: str) -> None:
-        uid, duration = self._services.community.target_resolution.parse_mute_args(raw, area=area)
+    async def mute_user(self, raw: str, channel: str, area: str, usage: str) -> None:
+        uid, duration = await self._services.community.target_resolution.parse_mute_args(raw, area=area)
         if uid:
-            self._services.safety.moderation.mute_user(uid, duration, channel, area)
+            await self._services.safety.moderation.mute_user(uid, duration, channel, area)
             return
-        self._send_target_error(raw, usage, channel, area)
+        await self._send_target_error(raw, usage, channel, area)
 
-    def unmute_user(self, raw: str, channel: str, area: str, usage: str) -> None:
-        uid = self._services.community.target_resolution.resolve_target(raw, area=area)
+    async def unmute_user(self, raw: str, channel: str, area: str, usage: str) -> None:
+        uid = await self._services.community.target_resolution.resolve_target(raw, area=area)
         if uid:
-            self._services.safety.moderation.unmute_user(uid, channel, area)
+            await self._services.safety.moderation.unmute_user(uid, channel, area)
             return
-        self._send_target_error(raw, usage, channel, area)
+        await self._send_target_error(raw, usage, channel, area)
 
-    def mute_mic(self, raw: str, channel: str, area: str, usage: str) -> None:
-        uid, duration = self._services.community.target_resolution.parse_mute_args(raw, area=area)
+    async def mute_mic(self, raw: str, channel: str, area: str, usage: str) -> None:
+        uid, duration = await self._services.community.target_resolution.parse_mute_args(raw, area=area)
         if uid:
-            self._services.safety.moderation.mute_mic(uid, channel, area, duration)
+            await self._services.safety.moderation.mute_mic(uid, channel, area, duration)
             return
-        self._send_target_error(raw, usage, channel, area)
+        await self._send_target_error(raw, usage, channel, area)
 
-    def unmute_mic(self, raw: str, channel: str, area: str, usage: str) -> None:
-        uid = self._services.community.target_resolution.resolve_target(raw, area=area)
+    async def unmute_mic(self, raw: str, channel: str, area: str, usage: str) -> None:
+        uid = await self._services.community.target_resolution.resolve_target(raw, area=area)
         if uid:
-            self._services.safety.moderation.unmute_mic(uid, channel, area)
+            await self._services.safety.moderation.unmute_mic(uid, channel, area)
             return
-        self._send_target_error(raw, usage, channel, area)
+        await self._send_target_error(raw, usage, channel, area)
 
-    def remove_from_area(self, raw: str, channel: str, area: str, usage: str) -> None:
-        uid = self._services.community.target_resolution.resolve_target(raw, area=area)
+    async def remove_from_area(self, raw: str, channel: str, area: str, usage: str) -> None:
+        uid = await self._services.community.target_resolution.resolve_target(raw, area=area)
         if uid:
-            self._services.safety.moderation.remove_from_area(uid, channel, area)
+            await self._services.safety.moderation.remove_from_area(uid, channel, area)
             return
-        self._send_target_error(raw, usage, channel, area)
+        await self._send_target_error(raw, usage, channel, area)
 
-    def unblock_in_area(self, raw: str, channel: str, area: str, usage: str) -> None:
-        uid = self._services.community.target_resolution.resolve_target(raw, area=area)
+    async def unblock_in_area(self, raw: str, channel: str, area: str, usage: str) -> None:
+        uid = await self._services.community.target_resolution.resolve_target(raw, area=area)
         if uid:
-            self._services.safety.moderation.unblock_in_area(uid, channel, area)
+            await self._services.safety.moderation.unblock_in_area(uid, channel, area)
             return
-        self._send_target_error(raw, usage, channel, area)
+        await self._send_target_error(raw, usage, channel, area)
 
-    def show_block_list(self, channel: str, area: str) -> None:
-        self._services.safety.moderation.show_block_list(channel, area)
+    async def show_block_list(self, channel: str, area: str) -> None:
+        await self._services.safety.moderation.show_block_list(channel, area)
 
 
 class RecallCommandActions:
     def __init__(self, runtime: CommandRuntimeView):
         self._services = runtime.services
 
-    def recall(self, arg: str | None, channel: str, area: str) -> None:
+    async def recall(self, arg: str | None, channel: str, area: str) -> None:
         if arg and arg.isdigit():
-            self._services.safety.recall.recall_multiple(int(arg), channel, area)
+            await self._services.safety.recall.recall_multiple(int(arg), channel, area)
             return
-        self._services.safety.recall.recall_message(arg, channel, area)
+        await self._services.safety.recall.recall_message(arg, channel, area)
 
-    def recall_multiple(self, count: int, channel: str, area: str) -> None:
-        self._services.safety.recall.recall_multiple(count, channel, area)
+    async def recall_multiple(self, count: int, channel: str, area: str) -> None:
+        await self._services.safety.recall.recall_multiple(count, channel, area)
 
-    def configure_auto_recall(self, arg: str, channel: str, area: str) -> None:
-        self._services.safety.recall.configure_auto_recall(arg, channel, area)
+    async def configure_auto_recall(self, arg: str, channel: str, area: str) -> None:
+        await self._services.safety.recall.configure_auto_recall(arg, channel, area)
 
-    def clear_history(self, channel: str, area: str) -> None:
-        self._services.safety.recall.clear_history(channel, area)
+    async def clear_history(self, channel: str, area: str) -> None:
+        await self._services.safety.recall.clear_history(channel, area)
 
 
 class PluginCommandActions:
     def __init__(self, runtime: CommandRuntimeView):
         self._services = runtime.services
 
-    def show_plugin_list(self, channel: str, area: str) -> None:
-        self._services.plugins.management.show_plugin_list(channel, area)
+    async def show_plugin_list(self, channel: str, area: str) -> None:
+        await self._services.plugins.management.show_plugin_list(channel, area)
 
-    def load_plugin(self, name: str, channel: str, area: str) -> None:
-        self._services.plugins.management.load(name, channel, area)
+    async def load_plugin(self, name: str, channel: str, area: str) -> None:
+        await self._services.plugins.management.load(name, channel, area)
 
-    def unload_plugin(self, name: str, channel: str, area: str) -> None:
-        self._services.plugins.management.unload(name, channel, area)
+    async def unload_plugin(self, name: str, channel: str, area: str) -> None:
+        await self._services.plugins.management.unload(name, channel, area)
 
-    def reload_plugin_config(self, name: str, channel: str, area: str) -> None:
-        self._services.plugins.management.reload_config(name, channel, area)
+    async def reload_plugin_config(self, name: str, channel: str, area: str) -> None:
+        await self._services.plugins.management.reload_config(name, channel, area)
 
 
 
@@ -199,40 +199,40 @@ class SchedulerCommandActions:
     # 用户提醒
     # ------------------------------------------------------------------
 
-    def set_reminder(self, raw: str, channel: str, area: str, user: str) -> None:
+    async def set_reminder(self, raw: str, channel: str, area: str, user: str) -> None:
         reminder_svc = self._services.scheduler.reminder
-        reply = reminder_svc.create_reminder(raw, channel, area, user)
-        self._sender.send_message(reply, channel=channel, area=area)
+        reply = await reminder_svc.create_reminder(raw, channel, area, user)
+        await self._sender.send_message(reply, channel=channel, area=area)
 
-    def list_reminders(self, channel: str, area: str, user: str) -> None:
-        pending = ReminderDB.get_user_pending(user)
+    async def list_reminders(self, channel: str, area: str, user: str) -> None:
+        pending = await ReminderDB.get_user_pending(user)
         if not pending:
-            self._sender.send_message("你没有待执行的提醒", channel=channel, area=area)
+            await self._sender.send_message("你没有待执行的提醒", channel=channel, area=area)
             return
         lines = ["【我的待执行提醒】"]
         for r in pending:
             lines.append(f"[{r['id']}] {r['fire_at'][:16]}  {r['message_text'][:50]}")
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def delete_reminder(self, raw: str, channel: str, area: str, user: str) -> None:
+    async def delete_reminder(self, raw: str, channel: str, area: str, user: str) -> None:
         rid = raw.strip()
         if not rid.isdigit():
-            self._sender.send_message("用法: 删除提醒 <ID>\n先用 \"我的提醒\" 查看 ID", channel=channel, area=area)
+            await self._sender.send_message("用法: 删除提醒 <ID>\n先用 \"我的提醒\" 查看 ID", channel=channel, area=area)
             return
-        ok = ReminderDB.delete_user_reminder(int(rid), user)
+        ok = await ReminderDB.delete_user_reminder(int(rid), user)
         if ok:
-            self._sender.send_message(f"已删除提醒 {rid}", channel=channel, area=area)
+            await self._sender.send_message(f"已删除提醒 {rid}", channel=channel, area=area)
         else:
-            self._sender.send_message(f"未找到提醒 {rid}（可能已触发或不属于你）", channel=channel, area=area)
+            await self._sender.send_message(f"未找到提醒 {rid}（可能已触发或不属于你）", channel=channel, area=area)
 
     # ------------------------------------------------------------------
     # 管理员定时消息
     # ------------------------------------------------------------------
 
-    def list_scheduled(self, channel: str, area: str) -> None:
-        tasks = ScheduledMessageDB.get_all()
+    async def list_scheduled(self, channel: str, area: str) -> None:
+        tasks = await ScheduledMessageDB.get_all()
         if not tasks:
-            self._sender.send_message("暂无定时消息", channel=channel, area=area)
+            await self._sender.send_message("暂无定时消息", channel=channel, area=area)
             return
         lines = ["【定时消息列表】"]
         for t in tasks:
@@ -242,21 +242,21 @@ class SchedulerCommandActions:
                 f"[{t['id']}] {t['name']} | {t['cron_hour']:02d}:{t['cron_minute']:02d} "
                 f"| 星期 {wdays} | {status}\n  → {t['message_text'][:50]}"
             )
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def add_scheduled(self, raw: str, channel: str, area: str) -> None:
+    async def add_scheduled(self, raw: str, channel: str, area: str) -> None:
         """格式: HH:MM 内容  或  HH:MM [星期] 内容"""
         import re
         m = re.match(r"(\d{1,2})[:\uff1a](\d{2})\s+(.+)", raw.strip(), re.DOTALL)
         if not m:
-            self._sender.send_message(
+            await self._sender.send_message(
                 "用法: 添加定时消息 08:00 早上好\n或: 添加定时消息 08:00 [1,2,3,4,5] 工作日快乐",
                 channel=channel, area=area,
             )
             return
         hour, minute = int(m.group(1)), int(m.group(2))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            self._sender.send_message(
+            await self._sender.send_message(
                 "时间不合法，小时需 0-23、分钟需 0-59，例如 08:00",
                 channel=channel, area=area,
             )
@@ -270,55 +270,55 @@ class SchedulerCommandActions:
             rest = wm.group(2).strip()
 
         if not rest:
-            self._sender.send_message("请提供消息内容", channel=channel, area=area)
+            await self._sender.send_message("请提供消息内容", channel=channel, area=area)
             return
 
         name = rest[:20]
-        task_id = ScheduledMessageDB.create(
-            name=name,
-            cron_hour=hour,
-            cron_minute=minute,
-            channel_id=channel,
-            area_id=area,
-            message_text=rest,
-            weekdays=weekdays,
+        task_id = await ScheduledMessageDB.create(
+            name,
+            hour,
+            minute,
+            channel,
+            area,
+            rest,
+            weekdays,
         )
-        self._sender.send_message(
+        await self._sender.send_message(
             f"定时消息已创建 (ID: {task_id})\n时间: {hour:02d}:{minute:02d} | 星期: {weekdays}\n内容: {rest[:50]}",
             channel=channel, area=area,
         )
 
-    def delete_scheduled(self, raw: str, channel: str, area: str) -> None:
+    async def delete_scheduled(self, raw: str, channel: str, area: str) -> None:
         task_id = raw.strip()
         if not task_id.isdigit():
-            self._sender.send_message("用法: 删除定时消息 <ID>", channel=channel, area=area)
+            await self._sender.send_message("用法: 删除定时消息 <ID>", channel=channel, area=area)
             return
-        if ScheduledMessageDB.delete(int(task_id)):
-            self._sender.send_message(f"定时消息 {task_id} 已删除", channel=channel, area=area)
+        if await ScheduledMessageDB.delete(int(task_id)):
+            await self._sender.send_message(f"定时消息 {task_id} 已删除", channel=channel, area=area)
         else:
-            self._sender.send_message(f"未找到定时消息 {task_id}", channel=channel, area=area)
+            await self._sender.send_message(f"未找到定时消息 {task_id}", channel=channel, area=area)
 
-    def toggle_scheduled(self, raw: str, channel: str, area: str, enable: bool) -> None:
+    async def toggle_scheduled(self, raw: str, channel: str, area: str, enable: bool) -> None:
         task_id = raw.strip()
         if not task_id.isdigit():
-            self._sender.send_message("用法: 开启/关闭定时消息 <ID>", channel=channel, area=area)
+            await self._sender.send_message("用法: 开启/关闭定时消息 <ID>", channel=channel, area=area)
             return
-        task = ScheduledMessageDB.get_by_id(int(task_id))
+        task = await ScheduledMessageDB.get_by_id(int(task_id))
         if not task:
-            self._sender.send_message(f"未找到定时消息 {task_id}", channel=channel, area=area)
+            await self._sender.send_message(f"未找到定时消息 {task_id}", channel=channel, area=area)
             return
-        ScheduledMessageDB.update(int(task_id), enabled=1 if enable else 0)
+        await ScheduledMessageDB.update(int(task_id), enabled=1 if enable else 0)
         status = "已启用" if enable else "已停用"
-        self._sender.send_message(f"定时消息 {task_id} {status}", channel=channel, area=area)
+        await self._sender.send_message(f"定时消息 {task_id} {status}", channel=channel, area=area)
 
     # ------------------------------------------------------------------
     # 活跃排行 & 频道统计
     # ------------------------------------------------------------------
 
-    def show_ranking(self, channel: str, area: str) -> None:
-        ranking = MessageStatsDB.get_user_ranking(area, days=7, limit=10)
+    async def show_ranking(self, channel: str, area: str) -> None:
+        ranking = await MessageStatsDB.get_user_ranking(area, 7, 10)
         if not ranking:
-            self._sender.send_message("暂无活跃数据", channel=channel, area=area)
+            await self._sender.send_message("暂无活跃数据", channel=channel, area=area)
             return
         resolver = get_resolver()
         lines = ["【近 7 天活跃排行】"]
@@ -326,12 +326,12 @@ class SchedulerCommandActions:
             prefix = f" {i + 1}."
             display_name = resolver.user(r["user_id"])
             lines.append(f"{prefix} {display_name}  —  {r['total']} 条消息")
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def show_channel_stats(self, channel: str, area: str) -> None:
-        daily = MessageStatsDB.get_channel_daily(channel, area, days=7)
+    async def show_channel_stats(self, channel: str, area: str) -> None:
+        daily = await MessageStatsDB.get_channel_daily(channel, area, 7)
         if not daily:
-            self._sender.send_message("暂无频道统计数据", channel=channel, area=area)
+            await self._sender.send_message("暂无频道统计数据", channel=channel, area=area)
             return
         lines = ["【近 7 天频道消息统计】"]
         total = 0
@@ -339,16 +339,16 @@ class SchedulerCommandActions:
             lines.append(f"  {d['date']}  —  {d['total']} 条")
             total += d["total"]
         lines.append(f"合计: {total} 条")
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
     # ------------------------------------------------------------------
     # 播放排行
     # ------------------------------------------------------------------
 
-    def show_music_ranking(self, channel: str, area: str) -> None:
-        songs = SongCache.get_top_songs(limit=10)
+    async def show_music_ranking(self, channel: str, area: str) -> None:
+        songs = await SongCache.get_top_songs(10)
         if not songs:
-            self._sender.send_message("暂无播放记录", channel=channel, area=area)
+            await self._sender.send_message("暂无播放记录", channel=channel, area=area)
             return
         lines = ["【点歌排行榜 Top 10】"]
         for i, s in enumerate(songs):
@@ -356,12 +356,12 @@ class SchedulerCommandActions:
             name = s.get("song_name", "未知")
             count = s.get("play_count", 0)
             lines.append(f" {i + 1}. {name} - {artist}  ({count}次)")
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
-    def show_recent_songs(self, channel: str, area: str) -> None:
-        songs = SongCache.get_recent_songs(limit=10)
+    async def show_recent_songs(self, channel: str, area: str) -> None:
+        songs = await SongCache.get_recent_songs(10)
         if not songs:
-            self._sender.send_message("暂无播放记录", channel=channel, area=area)
+            await self._sender.send_message("暂无播放记录", channel=channel, area=area)
             return
         lines = ["【最近播放】"]
         for i, s in enumerate(songs):
@@ -369,7 +369,7 @@ class SchedulerCommandActions:
             name = s.get("song_name", "未知")
             played = s.get("last_played_at", "")[:16]
             lines.append(f" {i + 1}. {name} - {artist}  ({played})")
-        self._sender.send_message("\n".join(lines), channel=channel, area=area)
+        await self._sender.send_message("\n".join(lines), channel=channel, area=area)
 
 
 @dataclass(frozen=True)

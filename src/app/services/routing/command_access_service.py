@@ -1,10 +1,9 @@
+from app.services.runtime import CommandRuntimeView
 from config import ADMIN_UIDS
 from domain.routing.public_command_rules import (
     is_public_mention_text,
     is_public_slash_command,
 )
-
-from app.services.runtime import CommandRuntimeView
 
 
 class CommandAccessService:

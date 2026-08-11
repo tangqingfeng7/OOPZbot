@@ -102,7 +102,7 @@ class HelpService:
             ]
         return lines
 
-    def show_help(self, channel: str, area: str, user: str = "", topic: str = "") -> None:
+    async def show_help(self, channel: str, area: str, user: str = "", topic: str = "") -> None:
         """发送当前用户可见的帮助命令列表。"""
         is_admin = self._runtime.services.routing.access.is_admin(user)
         plugin_caps = self._plugins.list_command_descriptors(public_only=not is_admin)
@@ -155,7 +155,7 @@ class HelpService:
             "*发送脏话/违规内容将被自动禁言*",
         ]
 
-        self._sender.send_message(
+        await self._sender.send_message(
             "\n".join(lines),
             channel=channel,
             area=area,

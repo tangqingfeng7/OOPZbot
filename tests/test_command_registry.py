@@ -1,8 +1,3 @@
-"""命令注册表派生结果的等价性测试。
-
-锁定「从注册表派生的权限规则」与迁移前的硬编码名单完全一致，确保 2a 阶段零行为变更。
-下方两份 golden 快照是 public_command_rules.py 改为派生之前的原始值。
-"""
 
 import sys
 import unittest
@@ -388,7 +383,7 @@ class CommandSuggestionsConsistencyTest(unittest.TestCase):
         )
 
 
-class MentionAdminGateGuardTest(unittest.TestCase):
+class MentionAdminGateGuardTest(unittest.IsolatedAsyncioTestCase):
     """守卫：注册表里每条 admin=True 的 mention 别名，非管理员都进不了内置动作。
 
     slash 侧本就有 `if is_admin` 的第二层门，mention 侧早先完全没有，
@@ -396,19 +391,21 @@ class MentionAdminGateGuardTest(unittest.TestCase):
     """
 
     def _build_router(self, *, is_admin: bool) -> tuple[Any, Any]:
-        from unittest.mock import Mock
+        from unittest.mock import AsyncMock, Mock
 
         from app.services.routing.mention_command_router import MentionCommandRouter
 
-        runtime = Mock()
+        runtime = AsyncMock()
         runtime.plugins.try_dispatch_mention.return_value = False
         runtime.services.interaction.music.handle_mention.return_value = False
-        runtime.services.routing.access.is_admin.return_value = is_admin
+        # CommandAccessService 是全同步服务，不能用 AsyncMock 的子桩
+        runtime.services.routing.access.is_admin = Mock(return_value=is_admin)
+        runtime.services.routing.access.is_public_command = Mock(return_value=not is_admin)
         router = MentionCommandRouter(runtime)
-        router._actions = Mock()  # 内置动作整体替身：命中即可见，且不会真的执行
+        router._actions = AsyncMock()  # 内置动作整体替身：命中即可见，且不会真的执行
         return router, runtime
 
-    def test_every_admin_mention_alias_is_blocked_for_non_admin(self) -> None:
+    async def test_every_admin_mention_alias_is_blocked_for_non_admin(self) -> None:
         from domain.routing.command_registry import admin_mention_prefixes
 
         aliases = admin_mention_prefixes()
@@ -419,7 +416,7 @@ class MentionAdminGateGuardTest(unittest.TestCase):
                 with self.subTest(text=text):
                     router, runtime = self._build_router(is_admin=False)
 
-                    fell_into_ai_chat = router.dispatch(text, "c", "a", "u")
+                    fell_into_ai_chat = await router.dispatch(text, "c", "a", "u")
 
                     self.assertFalse(fell_into_ai_chat)
                     self.assertEqual(
@@ -428,44 +425,46 @@ class MentionAdminGateGuardTest(unittest.TestCase):
                     runtime.sender.send_message.assert_called_once()
                     self.assertIn("无权限", runtime.sender.send_message.call_args.args[0])
 
-    def test_admin_still_reaches_builtin_actions(self) -> None:
+    async def test_admin_still_reaches_builtin_actions(self) -> None:
         from domain.routing.command_registry import admin_mention_prefixes
 
         alias = sorted(admin_mention_prefixes())[0]
         router, runtime = self._build_router(is_admin=True)
 
-        router.dispatch(f"{alias} 目标", "c", "a", "u")
+        await router.dispatch(f"{alias} 目标", "c", "a", "u")
 
         # 管理员不该收到拒绝消息
         for call in runtime.sender.send_message.call_args_list:
             self.assertNotIn("无权限", call.args[0] if call.args else "")
 
-    def test_public_mention_is_untouched_by_the_gate(self) -> None:
+    async def test_public_mention_is_untouched_by_the_gate(self) -> None:
         router, runtime = self._build_router(is_admin=False)
 
-        router.dispatch("帮助", "c", "a", "u")
+        await router.dispatch("帮助", "c", "a", "u")
 
         for call in runtime.sender.send_message.call_args_list:
             self.assertNotIn("无权限", call.args[0] if call.args else "")
 
 
-class SlashAdminGateGuardTest(unittest.TestCase):
+class SlashAdminGateGuardTest(unittest.IsolatedAsyncioTestCase):
     """插件未处理命令后，所有内置管理员 slash 都必须再次校验身份。"""
 
     def _build_router(self, *, is_admin: bool) -> tuple[Any, Any]:
-        from unittest.mock import Mock
+        from unittest.mock import AsyncMock, Mock
 
         from app.services.routing.slash_command_router import SlashCommandRouter
 
-        runtime = Mock()
+        runtime = AsyncMock()
         runtime.plugins.try_dispatch_slash.return_value = False
         runtime.services.interaction.music.handle_slash.return_value = False
-        runtime.services.routing.access.is_admin.return_value = is_admin
+        # CommandAccessService 是全同步服务，不能用 AsyncMock 的子桩
+        runtime.services.routing.access.is_admin = Mock(return_value=is_admin)
+        runtime.services.routing.access.is_public_command = Mock(return_value=not is_admin)
         router = SlashCommandRouter(runtime)
-        router._actions = Mock()
+        router._actions = AsyncMock()
         return router, runtime
 
-    def test_every_admin_slash_alias_is_blocked_for_non_admin(self) -> None:
+    async def test_every_admin_slash_alias_is_blocked_for_non_admin(self) -> None:
         from domain.routing.command_registry import admin_slash_commands
 
         aliases = admin_slash_commands()
@@ -475,7 +474,7 @@ class SlashAdminGateGuardTest(unittest.TestCase):
             with self.subTest(alias=alias):
                 router, runtime = self._build_router(is_admin=False)
 
-                router.dispatch(f"{alias} 目标", "c", "a", "u")
+                await router.dispatch(f"{alias} 目标", "c", "a", "u")
 
                 self.assertEqual(
                     router._actions.mock_calls,
@@ -485,25 +484,25 @@ class SlashAdminGateGuardTest(unittest.TestCase):
                 runtime.sender.send_message.assert_called_once()
                 self.assertIn("无权限", runtime.sender.send_message.call_args.args[0])
 
-    def test_public_plugin_collision_cannot_fall_through_to_builtin(self) -> None:
+    async def test_public_plugin_collision_cannot_fall_through_to_builtin(self) -> None:
         router, runtime = self._build_router(is_admin=False)
 
-        router.dispatch("/ban 目标", "c", "a", "u")
+        await router.dispatch("/ban 目标", "c", "a", "u")
 
         runtime.plugins.try_dispatch_slash.assert_called_once()
         router._actions.moderation.remove_from_area.assert_not_called()
 
-    def test_public_slash_is_untouched_by_the_gate(self) -> None:
+    async def test_public_slash_is_untouched_by_the_gate(self) -> None:
         router, runtime = self._build_router(is_admin=False)
 
-        router.dispatch("/members", "c", "a", "u")
+        await router.dispatch("/members", "c", "a", "u")
 
         router._actions.community.show_members.assert_called_once_with("c", "a")
         for call in runtime.sender.send_message.call_args_list:
             self.assertNotIn("无权限", call.args[0] if call.args else "")
 
 
-class SlashRouterIdentityIsolationTest(unittest.TestCase):
+class SlashRouterIdentityIsolationTest(unittest.IsolatedAsyncioTestCase):
     """守卫：slash 路由不得把调用者身份挂在实例字段上。
 
     router 在 registry 里是单例，而 MessageDispatcher 有 4 个 worker 按
@@ -513,20 +512,23 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
     """
 
     def _router(self):
-        from unittest.mock import Mock
+        from unittest.mock import AsyncMock, Mock
 
         from app.services.routing.slash_command_router import SlashCommandRouter
 
-        runtime = Mock()
+        runtime = AsyncMock()
         runtime.plugins.try_dispatch_slash.return_value = False
         runtime.services.interaction.music.handle_slash.return_value = False
-        runtime.services.routing.access.is_admin.return_value = False
+        # CommandAccessService 是全同步服务
+        runtime.services.routing.access.is_admin = Mock(return_value=False)
+        runtime.services.routing.access.is_public_command = Mock(return_value=True)
         router = SlashCommandRouter(runtime)
-        actions = Mock()
+        # 内置动作会被 await，替身必须是异步的
+        actions = AsyncMock()
         router._actions = actions
         return router, actions
 
-    def test_dispatch_hands_the_caller_identity_to_the_action(self) -> None:
+    async def test_dispatch_hands_the_caller_identity_to_the_action(self) -> None:
         """端到端：走真实 dispatch，断言动作收到的是这次调用的 user。
 
         这是修复的实际接线点。只测 _arg_rules 的闭包绑定抓不到它 —— 把
@@ -535,13 +537,13 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         """
         router, actions = self._router()
 
-        router.dispatch("/whois 张三", "chan-A", "area-1", "user-A")
+        await router.dispatch("/whois 张三", "chan-A", "area-1", "user-A")
 
         actions.community.show_whois.assert_called_once_with(
             "张三", "chan-A", "area-1", "user-A"
         )
 
-    def test_a_concurrent_dispatch_does_not_pollute_this_one(self) -> None:
+    async def test_a_concurrent_dispatch_does_not_pollute_this_one(self) -> None:
         """另一个 worker 在本次分发中途插入时，本次仍须按自己的身份执行。
 
         真实竞态是 4 个 worker 并行跑同一个 router 单例；单线程等价复现是可重入 ——
@@ -553,15 +555,15 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
         router, actions = self._router()
         reentered = []
 
-        def _interleave(*_args, **_kwargs):
+        async def _interleave(*_args, **_kwargs):
             if not reentered:
                 reentered.append(True)
-                router.dispatch("/whois 乙", "chan-B", "area-2", "user-B")
+                await router.dispatch("/whois 乙", "chan-B", "area-2", "user-B")
             return False
 
         router._services.interaction.music.handle_slash.side_effect = _interleave
 
-        router.dispatch("/whois 甲", "chan-A", "area-1", "user-A")
+        await router.dispatch("/whois 甲", "chan-A", "area-1", "user-A")
 
         self.assertTrue(reentered, "夹层调用没被触发，用例失去意义")
         self.assertIn(
@@ -570,11 +572,11 @@ class SlashRouterIdentityIsolationTest(unittest.TestCase):
             "本次分发被另一次调用的身份污染了",
         )
 
-    def test_help_topic_gate_receives_the_dispatching_user(self) -> None:
+    async def test_help_topic_gate_receives_the_dispatching_user(self) -> None:
         """/help <主题> 是主题级 fail-closed 的判定入口，喂进去的 user 必须干净。"""
         router, actions = self._router()
 
-        router.dispatch("/help 管理", "chan-B", "area-1", "plain-uid")
+        await router.dispatch("/help 管理", "chan-B", "area-1", "plain-uid")
 
         actions.interaction.show_help.assert_called_once_with(
             "chan-B", "area-1", "plain-uid", "管理"

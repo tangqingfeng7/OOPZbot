@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterator, Protocol
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any, Protocol
 
-from app.infrastructure import BotInfrastructure, PluginHost
-
+from app.infrastructure import (
+    BotInfrastructure,
+    ChatGateway,
+    MusicGateway,
+    PluginHost,
+    PluginRuntime,
+    SenderGateway,
+)
 
 if TYPE_CHECKING:
     from app.services.registry import CommandServiceRegistry
@@ -58,7 +65,7 @@ class ServiceRegistryProxy:
     def __init__(self) -> None:
         self._target: CommandServiceRegistry | None = None
 
-    def bind(self, target: "CommandServiceRegistry") -> None:
+    def bind(self, target: CommandServiceRegistry) -> None:
         self._target = target
 
     def __getattr__(self, name: str):
@@ -132,25 +139,34 @@ class CommandRuntime:
     def recent_messages(self) -> RecentMessageStore:
         return self._recent_messages
 
-    def bind_services(self, services: "CommandServiceRegistry") -> None:
+    def bind_services(self, services: CommandServiceRegistry) -> None:
         self.services.bind(services)
 
     def bind_plugin_host(self, plugin_host: PluginHost) -> None:
         self._plugin_host = plugin_host
 
 
-def sender_of(runtime_view):
-    # 兼容测试桩和精简运行时对象。
-    return getattr(runtime_view, "sender", runtime_view.infrastructure.sender)
+_MISSING = object()
 
 
-def chat_of(runtime_view):
-    return getattr(runtime_view, "chat", runtime_view.infrastructure.chat)
+def _view_attr(runtime_view, name: str) -> Any:
+    value = getattr(runtime_view, name, _MISSING)
+    if value is _MISSING:
+        return getattr(runtime_view.infrastructure, name)
+    return value
 
 
-def music_of(runtime_view):
-    return getattr(runtime_view, "music", runtime_view.infrastructure.music)
+def sender_of(runtime_view) -> SenderGateway:
+    return _view_attr(runtime_view, "sender")
 
 
-def plugins_of(runtime_view):
-    return getattr(runtime_view, "plugins", runtime_view.infrastructure.plugins)
+def chat_of(runtime_view) -> ChatGateway:
+    return _view_attr(runtime_view, "chat")
+
+
+def music_of(runtime_view) -> MusicGateway:
+    return _view_attr(runtime_view, "music")
+
+
+def plugins_of(runtime_view) -> PluginRuntime:
+    return _view_attr(runtime_view, "plugins")

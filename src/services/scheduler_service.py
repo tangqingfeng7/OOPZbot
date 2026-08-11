@@ -6,10 +6,10 @@ ReminderService         — 用户 @bot 提醒 创建的一次性延迟提醒
 
 from __future__ import annotations
 
+import asyncio
 import re
-import threading
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
 from core.constants import build_mention
 from core.database import (
@@ -33,57 +33,74 @@ _MAX_RELATIVE_MINUTES = 400 * 24 * 60
 # ---------------------------------------------------------------------------
 
 class ScheduledMessageService:
-    """守护线程轮询 scheduled_messages 表，到点发送消息。"""
+    """可取消任务轮询 scheduled_messages 表，到点发送消息。"""
 
     def __init__(self, sender: Any, interval: int = 30) -> None:
         self._sender = sender
         self._interval = max(10, interval)
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
 
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+    def start(self, supervisor=None) -> None:
+        if self._task is not None and not self._task.done():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._loop, name="ScheduledMessageService", daemon=True,
+        coroutine = self._loop()
+        self._task = (
+            supervisor.create(coroutine, name="scheduled-message-service")
+            if supervisor is not None
+            else asyncio.create_task(coroutine, name="scheduled-message-service")
         )
-        self._thread.start()
         logger.info("ScheduledMessageService 已启动 (间隔 %ds)", self._interval)
 
-    def stop(self, timeout: float = 3.0) -> None:
+    async def stop(self, timeout: float = 3.0) -> None:
         self._stop_event.set()
-        t = self._thread
-        if t and t.is_alive():
-            t.join(timeout=max(0.0, timeout))
-        if t and t.is_alive():
-            logger.warning("服务停止超时: ScheduledMessageService，线程仍未退出")
-        else:
-            self._thread = None
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            logger.warning("服务停止超时: ScheduledMessageService，任务已取消")
 
-    def _loop(self) -> None:
-        while not self._stop_event.wait(self._interval):
+    async def _loop(self) -> None:
+        while True:
             try:
-                self._tick()
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._interval)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("ScheduledMessageService: tick error")
 
-    def _tick(self) -> None:
+    async def _tick(self) -> None:
         now = datetime.now(CN_TZ)
         today = now.strftime("%Y-%m-%d")
         weekday = now.weekday()  # 0=Monday
-        tasks = ScheduledMessageDB.get_due_tasks(now.hour, now.minute, weekday, today)
+        tasks = await ScheduledMessageDB.get_due_tasks(
+            now.hour,
+            now.minute,
+            weekday,
+            today,
+        )
         for task in tasks:
             if self._stop_event.is_set():
                 return
             try:
-                self._sender.send_message(
+                await self._sender.send_message(
                     task["message_text"],
                     channel=task["channel_id"],
                     area=task["area_id"],
                 )
                 logger.info("定时消息已发送: [%s] %s", task["name"], task["message_text"][:40])
-                ScheduledMessageDB.mark_fired(task["id"], today)
+                await ScheduledMessageDB.mark_fired(task["id"], today)
             except Exception:
                 logger.exception("定时消息发送失败: id=%s", task["id"])
 
@@ -93,47 +110,59 @@ class ScheduledMessageService:
 # ---------------------------------------------------------------------------
 
 class ReminderService:
-    """守护线程轮询 reminders 表，到期发送提醒。"""
+    """可取消任务轮询 reminders 表，到期发送提醒。"""
 
     def __init__(self, sender: Any, interval: int = 15, max_per_user: int = 5, max_delay_hours: int = 72) -> None:
         self._sender = sender
         self._interval = max(5, interval)
         self._max_per_user = max_per_user
         self._max_delay_hours = max_delay_hours
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
         self._cleanup_counter = 0
 
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+    def start(self, supervisor=None) -> None:
+        if self._task is not None and not self._task.done():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._loop, name="ReminderService", daemon=True,
+        coroutine = self._loop()
+        self._task = (
+            supervisor.create(coroutine, name="reminder-service")
+            if supervisor is not None
+            else asyncio.create_task(coroutine, name="reminder-service")
         )
-        self._thread.start()
         logger.info("ReminderService 已启动 (间隔 %ds)", self._interval)
 
-    def stop(self, timeout: float = 3.0) -> None:
+    async def stop(self, timeout: float = 3.0) -> None:
         self._stop_event.set()
-        t = self._thread
-        if t and t.is_alive():
-            t.join(timeout=max(0.0, timeout))
-        if t and t.is_alive():
-            logger.warning("服务停止超时: ReminderService，线程仍未退出")
-        else:
-            self._thread = None
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            logger.warning("服务停止超时: ReminderService，任务已取消")
 
-    def _loop(self) -> None:
-        while not self._stop_event.wait(self._interval):
+    async def _loop(self) -> None:
+        while True:
             try:
-                self._tick()
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._interval)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("ReminderService: tick error")
 
-    def _tick(self) -> None:
+    async def _tick(self) -> None:
         now_str = cn_now()
-        pending = ReminderDB.get_pending(now_str)
+        pending = await ReminderDB.get_pending(now_str)
         for r in pending:
             if self._stop_event.is_set():
                 return
@@ -147,21 +176,21 @@ class ReminderService:
                     "botType": "",
                     "offset": -1,
                 }]
-                self._sender.send_message(
+                await self._sender.send_message(
                     text,
                     channel=r["channel_id"],
                     area=r["area_id"],
                     mentionList=mention_list,
                 )
                 logger.info("提醒已发送: user=%s, text=%s", uid, r["message_text"][:40])
-                ReminderDB.mark_fired(r["id"])
+                await ReminderDB.mark_fired(r["id"])
             except Exception:
                 logger.exception("提醒发送失败: id=%s", r["id"])
 
         self._cleanup_counter += 1
         if self._cleanup_counter >= 240:  # ~1 hour at 15s interval
             self._cleanup_counter = 0
-            cleaned = ReminderDB.cleanup_old(7)
+            cleaned = await ReminderDB.cleanup_old(7)
             if cleaned:
                 logger.info("已清理过期提醒: %d 条", cleaned)
 
@@ -169,7 +198,7 @@ class ReminderService:
     # 提醒创建（由命令调用）
     # ------------------------------------------------------------------
 
-    def create_reminder(
+    async def create_reminder(
         self,
         raw_text: str,
         channel: str,
@@ -197,17 +226,23 @@ class ReminderService:
         if fire_at > max_future:
             return f"提醒时间不能超过 {self._max_delay_hours} 小时"
 
-        pending_count = ReminderDB.count_user_pending(user)
+        pending_count = await ReminderDB.count_user_pending(user)
         if pending_count >= self._max_per_user:
             return f"你最多只能有 {self._max_per_user} 个待执行提醒"
 
         fire_at_str = fire_at.strftime("%Y-%m-%d %H:%M:%S")
-        ReminderDB.create(user, channel, area, content, fire_at_str)
+        await ReminderDB.create(
+            user,
+            channel,
+            area,
+            content,
+            fire_at_str,
+        )
         display_time = fire_at.strftime("%m-%d %H:%M")
         return f"已设置提醒\n时间: {display_time}\n内容: {content}"
 
     @staticmethod
-    def _parse_reminder_text(raw: str) -> tuple[Optional[datetime], str]:
+    def _parse_reminder_text(raw: str) -> tuple[datetime | None, str]:
         """解析 '30分钟后 内容' / '2小时后 内容' / '明天08:00 内容'。"""
         raw = raw.strip()
         now = datetime.now(CN_TZ)
@@ -241,7 +276,7 @@ class ReminderService:
         return None, ""
 
     @staticmethod
-    def _at_clock(base: datetime, hour: int, minute: int) -> Optional[datetime]:
+    def _at_clock(base: datetime, hour: int, minute: int) -> datetime | None:
         """把 ``base`` 调整到当天的 ``hour:minute``，时分越界则返回 None。"""
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             return None

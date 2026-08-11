@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -69,12 +69,18 @@ class MessageContextTest(unittest.TestCase):
         self.assertEqual(ctx.mention_text("(met)bot(met)"), "help")
 
 
-class CommandMessageServiceTest(unittest.TestCase):
+class CommandMessageServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.chat = Mock()
+        self.chat.ai_reply = AsyncMock()
+        self.chat.check_profanity = AsyncMock()
+        self.chat.close = AsyncMock()
+        self.chat.generate_image = AsyncMock()
         self.access = Mock()
         self.profanity = Mock()
+        # 只有 handle_profanity 是协程，检测与缓冲区都是同步的
+        self.profanity.handle_profanity = AsyncMock()
         self.command = Mock()
         self.runtime = _runtime(
             sender=self.sender,
@@ -114,7 +120,7 @@ class CommandMessageServiceTest(unittest.TestCase):
         self.assertEqual(recent_messages[0]["messageId"], "id-5")
         self.assertEqual(recent_messages[-1]["messageId"], "id-54")
 
-    def test_handle_profanity_short_circuits_on_direct_keyword_match(self) -> None:
+    async def test_handle_profanity_short_circuits_on_direct_keyword_match(self) -> None:
         import app.services.routing.command_message_service as module
         from app.services.routing.command_message_service import MessageContext
 
@@ -131,7 +137,7 @@ class CommandMessageServiceTest(unittest.TestCase):
         self.profanity.check_profanity.return_value = "bad"
 
         with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": False}):
-            result = service.handle_profanity(ctx)
+            result = await service.handle_profanity(ctx)
 
         self.assertTrue(result)
         self.profanity.handle_profanity.assert_called_once_with(
@@ -142,7 +148,7 @@ class CommandMessageServiceTest(unittest.TestCase):
             [{"message_id": "msg-1", "channel": "channel", "area": "area", "timestamp": "ts-1"}],
         )
 
-    def test_handle_profanity_can_use_ai_context_detection(self) -> None:
+    async def test_handle_profanity_can_use_ai_context_detection(self) -> None:
         import app.services.routing.command_message_service as module
         from app.services.routing.command_message_service import MessageContext
 
@@ -173,7 +179,7 @@ class CommandMessageServiceTest(unittest.TestCase):
             "ai_min_length": 2,
         }
         with patch.object(module, "PROFANITY_CONFIG", config):
-            result = service.handle_profanity(ctx)
+            result = await service.handle_profanity(ctx)
 
         self.assertTrue(result)
         self.profanity.push_user_buffer.assert_called_once_with(
@@ -192,7 +198,7 @@ class CommandMessageServiceTest(unittest.TestCase):
             list(self.profanity.get_user_buffer.return_value),
         )
 
-    def test_reject_unauthorized_command_sends_denial_message(self) -> None:
+    async def test_reject_unauthorized_command_sends_denial_message(self) -> None:
         from app.services.routing.command_message_service import MessageContext
 
         service = self._build_service()
@@ -208,19 +214,30 @@ class CommandMessageServiceTest(unittest.TestCase):
         self.access.is_admin.return_value = False
         self.access.is_public_command.return_value = False
 
-        result = service.reject_unauthorized_command(ctx)
+        result = await service.reject_unauthorized_command(ctx)
 
         self.assertTrue(result)
         self.sender.send_message.assert_called_once()
         self.assertIn("[x]", self.sender.send_message.call_args.args[0])
 
 
-class CommandRouterTest(unittest.TestCase):
+class CommandRouterTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.mention = Mock()
+        self.mention.dispatch = AsyncMock(return_value=False)
         self.slash = Mock()
+        self.slash.dispatch = AsyncMock(return_value=True)
         self.chat = Mock()
+        self.chat.handle_plain_chat = AsyncMock(return_value=True)
+        self.chat.ai_reply = AsyncMock()
+        self.chat.check_profanity = AsyncMock()
+        self.chat.close = AsyncMock()
+        self.chat.generate_image = AsyncMock()
         self.recall_scheduler = Mock()
+        self.recall_scheduler.cancel_all = AsyncMock()
+        self.recall_scheduler.schedule_recall = AsyncMock()
+        self.recall_scheduler.schedule_user_message_recall = AsyncMock()
+        self.recall_scheduler.stop = AsyncMock()
         self.runtime = _runtime(
             bot_mention="(met)bot(met)",
             services=SimpleNamespace(
@@ -235,7 +252,7 @@ class CommandRouterTest(unittest.TestCase):
 
         return CommandRouter(self.runtime)
 
-    def test_route_mention_dispatches_and_schedules_recall(self) -> None:
+    async def test_route_mention_dispatches_and_schedules_recall(self) -> None:
         from app.services.routing.command_message_service import MessageContext
 
         router = self._build_router()
@@ -249,7 +266,7 @@ class CommandRouterTest(unittest.TestCase):
             timestamp="ts-1",
         )
 
-        router.route(ctx)
+        await router.route(ctx)
 
         self.mention.dispatch.assert_called_once_with("help", "channel", "area", "user-1")
         self.recall_scheduler.schedule_user_message_recall.assert_called_once_with(
@@ -259,7 +276,7 @@ class CommandRouterTest(unittest.TestCase):
             "ts-1",
         )
 
-    def test_route_slash_dispatches_and_schedules_recall(self) -> None:
+    async def test_route_slash_dispatches_and_schedules_recall(self) -> None:
         from app.services.routing.command_message_service import MessageContext
 
         router = self._build_router()
@@ -273,7 +290,7 @@ class CommandRouterTest(unittest.TestCase):
             timestamp="ts-1",
         )
 
-        router.route(ctx)
+        await router.route(ctx)
 
         self.slash.dispatch.assert_called_once_with("/help", "channel", "area", "user-1")
         self.recall_scheduler.schedule_user_message_recall.assert_called_once_with(
@@ -283,7 +300,7 @@ class CommandRouterTest(unittest.TestCase):
             "ts-1",
         )
 
-    def test_route_plain_chat_delegates_to_chat_service(self) -> None:
+    async def test_route_plain_chat_delegates_to_chat_service(self) -> None:
         from app.services.routing.command_message_service import MessageContext
 
         router = self._build_router()
@@ -297,22 +314,22 @@ class CommandRouterTest(unittest.TestCase):
             timestamp="ts-1",
         )
 
-        router.route(ctx)
+        await router.route(ctx)
 
         self.chat.handle_plain_chat.assert_called_once_with("plain chat", "channel", "area")
         self.recall_scheduler.schedule_user_message_recall.assert_not_called()
 
 
-class MentionCommandRouterTest(unittest.TestCase):
-    def test_unknown_command_prefers_hint_over_ai_fallback(self) -> None:
+class MentionCommandRouterTest(unittest.IsolatedAsyncioTestCase):
+    async def test_unknown_command_prefers_hint_over_ai_fallback(self) -> None:
         from app.services.routing.mention_command_router import MentionCommandRouter
 
         sender = Mock()
         plugins = Mock()
-        plugins.try_dispatch_mention.return_value = False
-        chat = Mock()
+        plugins.try_dispatch_mention = AsyncMock(return_value=False)
+        chat = AsyncMock()
         music = Mock()
-        music.handle_mention.return_value = False
+        music.handle_mention = AsyncMock(return_value=False)
         help_service = Mock()
         help_service.suggest_commands.return_value = ["@bot 播放<歌名>"]
 
@@ -331,7 +348,7 @@ class MentionCommandRouterTest(unittest.TestCase):
         )
 
         router = MentionCommandRouter(runtime)
-        router.dispatch("播发 稻香", "channel", "area", "user-1")
+        await router.dispatch("播发 稻香", "channel", "area", "user-1")
 
         chat.send_unknown_mention_command.assert_called_once()
         chat.handle_mention_fallback.assert_not_called()

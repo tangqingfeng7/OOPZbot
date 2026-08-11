@@ -1,8 +1,10 @@
+"""可取消的 asyncio 自动撤回调度器。"""
+
+from __future__ import annotations
+
+import asyncio
 import heapq
-import threading
-import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from app.services.runtime import CommandRuntimeView, sender_of
 from config import AUTO_RECALL_CONFIG
@@ -22,52 +24,45 @@ class _ScheduledRecall:
 
 
 class MessageRecallScheduler:
-    """负责自动撤回判定和异步调度。"""
+    """用单个 asyncio task 管理所有延迟撤回。"""
 
     def __init__(self, runtime: CommandRuntimeView):
         self._sender = sender_of(runtime)
-        self._lock = threading.Lock()
-        self._condition = threading.Condition(self._lock)
         self._pending: list[_ScheduledRecall] = []
-        self._worker: threading.Thread | None = None
+        self._worker: asyncio.Task[None] | None = None
+        self._wake = asyncio.Event()
         self._sequence = 0
         self._stopped = False
 
     @staticmethod
-    def should_skip_auto_recall(command_type: str) -> Optional[bool]:
-        """检查指定命令类型是否应跳过自动撤回。"""
+    def should_skip_auto_recall(command_type: str) -> bool | None:
         if AUTO_RECALL_CONFIG.get("enabled"):
             exclude = AUTO_RECALL_CONFIG.get("exclude_commands", [])
             if command_type in exclude:
                 return False
         return None
 
-    def schedule_user_message_recall(
+    async def schedule_user_message_recall(
         self,
         message_id: str,
         channel: str,
         area: str,
         timestamp: str = "",
-    ) -> None:
-        """在自动撤回开启时延迟撤回用户指令消息。"""
-        if not message_id:
-            return
-        if not AUTO_RECALL_CONFIG.get("enabled"):
-            return
-
-        delay = AUTO_RECALL_CONFIG.get("delay", 30)
+    ) -> bool:
+        if not message_id or not AUTO_RECALL_CONFIG.get("enabled"):
+            return False
+        delay = float(AUTO_RECALL_CONFIG.get("delay", 30) or 0)
         if delay <= 0:
-            return
-
-        self.schedule_recall(
+            return False
+        return await self.schedule_recall(
             message_id,
             channel,
             area,
             timestamp,
-            delay=float(delay),
+            delay=delay,
         )
 
-    def schedule_recall(
+    async def schedule_recall(
         self,
         message_id: str,
         channel: str,
@@ -76,58 +71,56 @@ class MessageRecallScheduler:
         *,
         delay: float,
     ) -> bool:
-        """将一条撤回任务交给共享 worker；停止后拒绝新任务。"""
-        if not message_id or delay <= 0:
+        if not message_id or delay <= 0 or self._stopped:
+            return False
+        max_pending = self._max_pending()
+        if len(self._pending) >= max_pending:
+            logger.warning(
+                "自动撤回待处理任务已满 (%d)，跳过 message_id=%s",
+                max_pending,
+                str(message_id)[:16],
+            )
             return False
 
-        with self._lock:
-            if self._stopped:
-                return False
-            max_pending = self._max_pending()
-            if len(self._pending) >= max_pending:
-                logger.warning(
-                    "自动撤回待处理任务已满 (%d)，跳过 message_id=%s",
-                    max_pending,
-                    str(message_id)[:16],
-                )
-                return False
+        loop = asyncio.get_running_loop()
+        self._sequence += 1
+        heapq.heappush(
+            self._pending,
+            _ScheduledRecall(
+                due_at=loop.time() + float(delay),
+                sequence=self._sequence,
+                message_id=message_id,
+                channel=channel,
+                area=area,
+                timestamp=timestamp,
+            ),
+        )
+        self._ensure_worker()
+        self._wake.set()
+        return True
 
-            self._sequence += 1
-            heapq.heappush(
-                self._pending,
-                _ScheduledRecall(
-                    due_at=time.monotonic() + delay,
-                    sequence=self._sequence,
-                    message_id=message_id,
-                    channel=channel,
-                    area=area,
-                    timestamp=timestamp,
-                ),
-            )
-            self._ensure_worker_locked()
-            self._condition.notify()
-            return True
-
-    def cancel_all(self) -> int:
-        """取消所有待执行的撤回任务，返回取消数量。"""
-        with self._lock:
-            count = len(self._pending)
-            self._pending.clear()
-            self._condition.notify()
+    async def cancel_all(self) -> int:
+        count = len(self._pending)
+        self._pending.clear()
+        self._wake.set()
         return count
 
-    def stop(self, timeout: float = 3.0) -> int:
-        """停止后台调度线程，并取消所有待执行任务。"""
-        with self._lock:
-            count = len(self._pending)
-            self._pending.clear()
-            self._stopped = True
-            self._condition.notify_all()
-            worker = self._worker
-        if worker and worker.is_alive():
-            worker.join(timeout=max(0.0, timeout))
-        if worker and worker.is_alive():
-            logger.warning("服务停止超时: MessageRecallScheduler，线程仍未退出")
+    async def stop(self, timeout: float = 3.0) -> int:
+        count = len(self._pending)
+        self._pending.clear()
+        self._stopped = True
+        self._wake.set()
+        worker = self._worker
+        if worker is None:
+            return count
+        try:
+            await asyncio.wait_for(worker, timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            logger.warning("服务停止超时: MessageRecallScheduler，任务已取消")
+        finally:
+            self._worker = None
         return count
 
     @staticmethod
@@ -137,37 +130,44 @@ class MessageRecallScheduler:
         except (TypeError, ValueError):
             return 1000
 
-    def _ensure_worker_locked(self) -> None:
-        if self._worker and self._worker.is_alive():
+    def _ensure_worker(self) -> None:
+        if self._worker is not None and not self._worker.done():
             return
-        self._worker = threading.Thread(
-            target=self._worker_loop,
-            name="MessageRecallScheduler",
-            daemon=True,
-        )
-        self._worker.start()
+        self._worker = asyncio.create_task(self._worker_loop(), name="MessageRecallScheduler")
 
-    def _worker_loop(self) -> None:
-        while True:
-            with self._lock:
-                while not self._stopped and not self._pending:
-                    self._condition.wait()
-                if self._stopped:
-                    return
+    async def _worker_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        while not self._stopped:
+            if not self._pending:
+                self._wake.clear()
+                await self._wake.wait()
+                continue
 
-                job = self._pending[0]
-                wait_seconds = job.due_at - time.monotonic()
-                if wait_seconds > 0:
-                    self._condition.wait(timeout=wait_seconds)
+            job = self._pending[0]
+            wait_seconds = max(0.0, job.due_at - loop.time())
+            if wait_seconds > 0:
+                self._wake.clear()
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=wait_seconds)
                     continue
-                heapq.heappop(self._pending)
+                except asyncio.TimeoutError:
+                    pass
 
+            if self._stopped or not self._pending:
+                continue
+            job = heapq.heappop(self._pending)
             try:
-                self._sender.recall_message(
+                await self._sender.recall_message(
                     message_id=job.message_id,
                     area=job.area,
                     channel=job.channel,
                     timestamp=job.timestamp,
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.warning("自动撤回执行失败: message_id=%s", str(job.message_id)[:16], exc_info=True)
+                logger.warning(
+                    "自动撤回执行失败: message_id=%s",
+                    str(job.message_id)[:16],
+                    exc_info=True,
+                )

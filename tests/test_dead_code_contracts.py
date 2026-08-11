@@ -29,21 +29,26 @@ class DeadCodeCleanupContractsTest(unittest.TestCase):
         self.assertNotIn("webintosh-assets", source)
         self.assertNotIn("Webintosh", source)
 
-    def test_agora_page_only_exports_browser_methods_used_by_python(self) -> None:
-        page = _read("src/web/assets/agora_player.html")
-        removed_methods = (
-            "agoraPlayLocal",
-            "agoraGetCurrentTime",
-            "agoraSendIdentity",
-            "agoraVoiceDebug",
-        )
-        for method in removed_methods:
-            with self.subTest(method=method):
-                self.assertNotIn(method, page)
+    def test_agora_page_exports_every_method_python_calls(self) -> None:
+        """语音页已随 SDK 内置，浏览器桥两侧必须对齐。
 
-        for method in ("agoraPlayAudio", "agoraSetVoiceIdentity", "agoraState"):
-            with self.subTest(required_method=method):
-                self.assertIn(method, page)
+        原来的清单是「这些已删方法不要回来」，页面搬进 SDK 后这个方向不再由本仓库
+        决定；真正会在运行时炸的是反向缺口——Python 调了页面没导出的方法。
+        """
+        import re
+
+        page = _read("src/oopz_sdk/assets/voice/agora_player.html")
+        bridge = _read("src/oopz_sdk/transport/voice_browser.py")
+
+        exported = set(re.findall(r"window\.(agora[A-Za-z]+)\s*=", page))
+        # 只取被当作函数调用的名字，属性访问（如 agoraUid）不在导出契约内
+        called = set(re.findall(r"(agora[A-Za-z]+)\s*\(", bridge))
+
+        self.assertEqual(
+            called - exported,
+            set(),
+            "Python 调用了语音页未导出的方法",
+        )
 
     def test_plugin_runtime_accessor_comes_from_shared_runtime_module(self) -> None:
         source = _read("src/web/admin/plugins.py")
@@ -52,12 +57,20 @@ class DeadCodeCleanupContractsTest(unittest.TestCase):
         self.assertNotIn("def _get_plugin_runtime", source)
         self.assertIn("def _get_plugin_host", source)
 
-    def test_music_keeps_new_bypass_construction_guards(self) -> None:
+    def test_music_keeps_bypass_construction_guards(self) -> None:
+        """封面预取要容忍绕过 __init__ 构造的实例。
+
+        改成 asyncio 之后不再需要锁，状态收敛到 `_cover_prefetch` 一个字典，
+        守卫也随之只剩这一处；但守卫本身不能丢——测试与部分运行路径会用
+        `__new__` 造实例，缺属性时必须安静跳过而不是抛 AttributeError。
+        """
         source = _read("src/music/music.py")
 
-        self.assertGreaterEqual(
-            source.count('hasattr(self, "_cover_prefetch_lock")'),
-            2,
+        self.assertIn('hasattr(self, "_cover_prefetch")', source)
+        self.assertNotIn(
+            "_cover_prefetch_lock",
+            source,
+            "asyncio 下不应再出现线程锁残留",
         )
 
 

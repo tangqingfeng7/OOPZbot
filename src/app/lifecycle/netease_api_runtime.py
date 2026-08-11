@@ -1,13 +1,16 @@
-import atexit
+"""与应用事件循环共存的网易云 API 子进程运行时。"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
 import os
 import shutil
 import subprocess
 import sys
-import threading
 from pathlib import Path
-from typing import Optional
 
-import requests
+import aiohttp
 
 from config import NETEASE_CLOUD
 from core.http_constants import HTTP_TIMEOUT_HEALTH
@@ -18,34 +21,39 @@ logger = setup_logger("NeteaseApiRuntime")
 
 class NeteaseApiRuntime:
     def __init__(self) -> None:
-        self._process: Optional[subprocess.Popen] = None
-        self._stop_event = threading.Event()
+        self._process: asyncio.subprocess.Process | None = None
+        self._stop_event = asyncio.Event()
 
     @staticmethod
     def _project_root() -> Path:
         from core.paths import PROJECT_ROOT_PATH
+
         return PROJECT_ROOT_PATH
 
     @classmethod
     def _resolve_api_dir(cls, raw_path: str) -> Path:
         return cls._project_root() / raw_path.strip()
 
-    def start(self) -> None:
+    async def start(self) -> None:
         self._stop_event.clear()
-        path = NETEASE_CLOUD.get("auto_start_path", "")
-        if not path or not path.strip():
+        path = str(NETEASE_CLOUD.get("auto_start_path", "") or "")
+        if not path.strip():
             return
 
         api_dir = self._resolve_api_dir(path)
-        app_js = api_dir / "app.js"
-        if not app_js.is_file():
+        if not (api_dir / "app.js").is_file():
             logger.info("网易云 API 目录不存在，跳过启动: %s", api_dir)
             return
 
-        node_cmd = self._find_node_binary()
         env = os.environ.copy()
-        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                     "http_proxy", "https_proxy", "all_proxy"):
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
             env.pop(key, None)
         local_bin = os.path.expanduser("~/.local/bin")
         if local_bin and local_bin not in env.get("PATH", ""):
@@ -53,62 +61,78 @@ class NeteaseApiRuntime:
 
         logger.info("正在启动网易云 API: %s", api_dir)
         try:
-            self._process = subprocess.Popen(
-                [node_cmd, "app.js"],
+            self._process = await asyncio.create_subprocess_exec(
+                self._find_node_binary(),
+                "app.js",
                 cwd=str(api_dir),
                 env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    if sys.platform == "win32"
+                    else 0
+                ),
             )
         except Exception as exc:
             logger.warning("启动网易云 API 失败: %s", exc)
+            self._process = None
             return
 
-        atexit.register(self.stop)
-        self._wait_until_ready()
+        await self._wait_until_ready()
 
-    def stop(self, timeout: float = 5.0) -> None:
+    async def stop(self, timeout: float = 5.0) -> None:
         self._stop_event.set()
-        if not self._process or self._process.poll() is not None:
+        process = self._process
+        self._process = None
+        if process is None or process.returncode is not None:
             return
-
-        self._process.terminate()
+        process.terminate()
         try:
-            self._process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
+            await asyncio.wait_for(process.wait(), timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+        except ProcessLookupError:
+            pass
         except Exception as exc:
             logger.warning("停止网易云 API 时出现异常: %s", exc)
         finally:
             logger.info("网易云 API 已停止。")
 
-    def _find_node_binary(self) -> str:
+    @staticmethod
+    def _find_node_binary() -> str:
         node_cmd = shutil.which("node")
         if node_cmd:
             return node_cmd
-
         for candidate in (os.path.expanduser("~/.local/bin/node"), "/usr/bin/node"):
             if candidate and os.path.isfile(candidate):
                 return candidate
         return "node"
 
-    def _wait_until_ready(self) -> None:
-        base_url = NETEASE_CLOUD.get("base_url", "http://localhost:3000").rstrip("/")
-        url = f"{base_url}/"
-
-        for _ in range(30):
-            if self._stop_event.wait(0.5):
-                return
-            if self._process and self._process.poll() is not None:
-                logger.warning("网易云 API 子进程已退出 (code=%s)，放弃等待。", self._process.returncode)
-                return
-            try:
-                response = requests.get(url, timeout=HTTP_TIMEOUT_HEALTH)
-            except requests.RequestException:
-                continue
-            if response.status_code < 500:
-                logger.info("网易云 API 已就绪。")
-                return
-
+    async def _wait_until_ready(self) -> None:
+        base_url = str(
+            NETEASE_CLOUD.get("base_url", "http://localhost:3000")
+        ).rstrip("/")
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_HEALTH)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+            for _ in range(30):
+                if self._stop_event.is_set():
+                    return
+                process = self._process
+                if process is not None and process.returncode is not None:
+                    logger.warning(
+                        "网易云 API 子进程已退出 (code=%s)，放弃等待。",
+                        process.returncode,
+                    )
+                    return
+                try:
+                    async with session.get(f"{base_url}/") as response:
+                        if response.status < 500:
+                            logger.info("网易云 API 已就绪。")
+                            return
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    pass
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=0.5)
         logger.warning("网易云 API 启动超时，音乐功能可能不可用。")

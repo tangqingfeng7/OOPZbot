@@ -1,8 +1,8 @@
 import ast
 import py_compile
+import tempfile
 import unittest
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -64,9 +64,17 @@ class ArchitectureSmokeTest(unittest.TestCase):
             SRC_ROOT / "app" / "infrastructure" / "__init__.py",
             SRC_ROOT / "app" / "infrastructure" / "runtime.py",
         ]
-        for target in targets:
-            with self.subTest(path=target):
-                py_compile.compile(str(target), doraise=True)
+        # 字节码写到临时目录：本用例只关心「能不能编译」，没必要往源码树里
+        # 塞 __pycache__。源码树只读时（例如在容器镜像里跑，src 属 root）
+        # 默认行为会直接 PermissionError。
+        with tempfile.TemporaryDirectory() as cache_dir:
+            for index, target in enumerate(targets):
+                with self.subTest(path=target):
+                    py_compile.compile(
+                        str(target),
+                        cfile=str(Path(cache_dir) / f"{index}.pyc"),
+                        doraise=True,
+                    )
 
 
 if __name__ == "__main__":

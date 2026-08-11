@@ -1,4 +1,3 @@
-from typing import Optional
 
 from app.services.runtime import CommandRuntimeView, sender_of
 
@@ -10,10 +9,10 @@ class MessageLookupService:
         self._runtime = runtime
         self._sender = sender_of(runtime)
 
-    def resolve_timestamp(self, message_id: str, channel: str, area: str) -> Optional[str]:
+    async def resolve_timestamp(self, message_id: str, channel: str, area: str) -> str | None:
         """从内存记录或远程 API 查找消息时间戳。"""
         for message in reversed(self._runtime.recent_messages):
             if message.get("messageId") == message_id and message.get("timestamp"):
                 return message["timestamp"]
 
-        return self._sender.find_message_timestamp(message_id, area=area, channel=channel)
+        return await self._sender.find_message_timestamp(message_id, area=area, channel=channel)

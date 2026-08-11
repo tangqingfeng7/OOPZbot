@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime
 from typing import Any, ClassVar, cast
 
-import requests
+import aiohttp
 
 import config as runtime_config
 import web.web_player_config as web_cfg
@@ -29,24 +30,28 @@ class SetupDiagnostics:
     def __init__(self, *, sender=None, plugins=None):
         self._sender = sender
         self._plugins = plugins
-        self._session = requests.Session()
+        self._session: aiohttp.ClientSession | None = None
 
-    def build_report(self) -> dict[str, Any]:
-        checks = [
-            self._check_runtime_storage(),
-            self._check_admin_password(),
-            self._check_web_player(),
-            self._check_redis(),
-            self._check_database(),
-            self._check_oopz_config(),
-            self._check_joined_areas(),
-            self._check_default_area_channel(),
-            self._check_netease_api(),
-            self._check_netease_cookie(),
-            self._check_ai_chat(),
-            self._check_ai_image(),
-            self._check_plugins(),
-        ]
+    async def build_report(self) -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_PROBE)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            self._session = session
+            checks = [
+                self._check_runtime_storage(),
+                self._check_admin_password(),
+                self._check_web_player(),
+                await self._check_redis(),
+                self._check_database(),
+                self._check_oopz_config(),
+                await self._check_joined_areas(),
+                self._check_default_area_channel(),
+                await self._check_netease_api(),
+                self._check_netease_cookie(),
+                self._check_ai_chat(),
+                self._check_ai_image(),
+                await self._check_plugins(),
+            ]
+        self._session = None
         summary = self._summarize(checks)
         wizard_steps = self._build_wizard_steps(checks)
         overall = "fail" if summary["fail"] else ("warn" if summary["warn"] else "pass")
@@ -96,14 +101,16 @@ class SetupDiagnostics:
             "current": current,
         }
 
-    def _probe_http(self, url: str) -> tuple[bool, str]:
+    async def _probe_http(self, url: str) -> tuple[bool, str]:
         if not url:
             return False, "未配置地址"
         try:
-            response = self._session.get(url, timeout=HTTP_TIMEOUT_PROBE, allow_redirects=True)
-            if response.status_code < 500:
-                return True, f"HTTP {response.status_code}"
-            return False, f"HTTP {response.status_code}"
+            if self._session is None:
+                raise RuntimeError("诊断 HTTP 会话尚未初始化")
+            async with self._session.get(url, allow_redirects=True) as response:
+                if response.status < 500:
+                    return True, f"HTTP {response.status}"
+                return False, f"HTTP {response.status}"
         except Exception as exc:
             return False, str(exc)
 
@@ -218,12 +225,11 @@ class SetupDiagnostics:
             current=base_url,
         )
 
-    def _check_redis(self) -> dict[str, Any]:
+    async def _check_redis(self) -> dict[str, Any]:
         try:
-            client = get_redis_client()
-            client.ping()
-            admin_client = cast(RedisAdminClient, client)
-            dbsize = admin_client.dbsize()
+            client = await get_redis_client()
+            await client.ping()
+            dbsize = await cast(RedisAdminClient, client).dbsize()
             return self._make_check(
                 check_id="redis",
                 group="runtime",
@@ -305,7 +311,7 @@ class SetupDiagnostics:
             blocking=True,
         )
 
-    def _check_joined_areas(self) -> dict[str, Any]:
+    async def _check_joined_areas(self) -> dict[str, Any]:
         if self._sender is None:
             return self._make_check(
                 check_id="joined_areas",
@@ -317,7 +323,7 @@ class SetupDiagnostics:
                 page="/admin/areas",
             )
         try:
-            areas = self._sender.get_joined_areas(quiet=True) or []
+            areas = await self._sender.get_joined_areas(quiet=True) or []
             if areas:
                 first = areas[0]
                 name = first.get("name") or first.get("id") or "未知域"
@@ -388,7 +394,7 @@ class SetupDiagnostics:
             page="/admin/config",
         )
 
-    def _check_netease_api(self) -> dict[str, Any]:
+    async def _check_netease_api(self) -> dict[str, Any]:
         netease = getattr(runtime_config, "NETEASE_CLOUD", {})
         base_url = str(netease.get("base_url", "") or "").rstrip("/")
         if not base_url:
@@ -402,7 +408,7 @@ class SetupDiagnostics:
                 action="配置 NETEASE_CLOUD.base_url",
                 page="/admin/config",
             )
-        ok, detail = self._probe_http(base_url + "/")
+        ok, detail = await self._probe_http(base_url + "/")
         if ok:
             return self._make_check(
                 check_id="netease_api",
@@ -539,7 +545,7 @@ class SetupDiagnostics:
             page="/admin/config",
         )
 
-    def _check_plugins(self) -> dict[str, Any]:
+    async def _check_plugins(self) -> dict[str, Any]:
         if self._plugins is None:
             return self._make_check(
                 check_id="plugins",
@@ -551,7 +557,7 @@ class SetupDiagnostics:
                 page="/admin/plugins",
             )
         try:
-            discovered = self._plugins.discover()
+            discovered = await asyncio.to_thread(self._plugins.discover)
             loaded = self._plugins.list_descriptors()
             return self._make_check(
                 check_id="plugins",

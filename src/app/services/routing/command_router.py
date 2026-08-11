@@ -9,48 +9,48 @@ class CommandRouter:
         self._services = runtime.services
         self._bot_mention = runtime.bot_mention
 
-    def route(self, ctx: MessageContext) -> None:
+    async def route(self, ctx: MessageContext) -> None:
         if ctx.is_mention_command(self._bot_mention):
-            self._route_mention(ctx)
+            await self._route_mention(ctx)
             return
 
         if ctx.is_slash_command():
-            self._route_slash(ctx)
+            await self._route_slash(ctx)
             return
 
-        self._route_chat(ctx)
+        await self._route_chat(ctx)
 
-    def _route_mention(self, ctx: MessageContext) -> None:
+    async def _route_mention(self, ctx: MessageContext) -> None:
         text = ctx.mention_text(self._bot_mention)
         is_ai_chat = False
         if text:
             # 仅在路由器显式返回 True 时，才把本次消息视为 AI 对话兜底。
             # 这样测试桩或普通命令处理返回的真值对象不会误伤撤回链路。
-            is_ai_chat = self._services.routing.mention.dispatch(
+            is_ai_chat = await self._services.routing.mention.dispatch(
                 text,
                 ctx.channel,
                 ctx.area,
                 ctx.user,
             ) is True
         if not is_ai_chat:
-            self._services.safety.recall_scheduler.schedule_user_message_recall(
+            await self._services.safety.recall_scheduler.schedule_user_message_recall(
                 ctx.message_id,
                 ctx.channel,
                 ctx.area,
                 ctx.timestamp,
             )
 
-    def _route_slash(self, ctx: MessageContext) -> None:
-        self._services.routing.slash.dispatch(ctx.content, ctx.channel, ctx.area, ctx.user)
-        self._services.safety.recall_scheduler.schedule_user_message_recall(
+    async def _route_slash(self, ctx: MessageContext) -> None:
+        await self._services.routing.slash.dispatch(ctx.content, ctx.channel, ctx.area, ctx.user)
+        await self._services.safety.recall_scheduler.schedule_user_message_recall(
             ctx.message_id,
             ctx.channel,
             ctx.area,
             ctx.timestamp,
         )
 
-    def _route_chat(self, ctx: MessageContext) -> None:
-        self._services.interaction.chat.handle_plain_chat(
+    async def _route_chat(self, ctx: MessageContext) -> None:
+        await self._services.interaction.chat.handle_plain_chat(
             ctx.content,
             ctx.channel,
             ctx.area,

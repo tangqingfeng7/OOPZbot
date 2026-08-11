@@ -1,95 +1,113 @@
+from __future__ import annotations
+
 from app.lifecycle.context import AppContext
+from app.lifecycle.task_supervisor import TaskSupervisor
 from bot.command_handler import CommandHandler
 from core.logger_config import get_logger
 from core.message_dispatcher import MessageDispatcher
-from onebot_v11 import OneBotV11Service, get_onebot_v11_config
-from oopz.oopz_client import OopzClient
-from oopz.oopz_sender import OopzSender, SensitiveContentError
-from services.area_join_notifier import start_area_join_notifier
+from music.sdk_voice import SdkVoiceController
+from onebot_v11.config import get_onebot_v11_config
+from onebot_v11.sdk_integration import OneBotV11Supplement, find_sdk_onebot_v11
+from oopz.errors import SensitiveContentError
+from oopz.name_resolver import get_resolver
+from oopz.sdk_gateway import AsyncOopzGateway
+from services.area_join_notifier import AreaJoinNotifier, start_area_join_notifier
 
 logger = get_logger("AppContext")
 
 
-def build_ws_credential_refresher(sender: OopzSender):
-    """给 OopzClient 用的凭据刷新回调：账号密码重登并同步发送端签名私钥。"""
-
-    def _refresh():
-        from oopz.oopz_password_login import (
-            OopzPasswordLoginError,
-            load_private_key_from_pem,
-            refresh_credentials_from_config_password,
-        )
-
-        try:
-            credentials = refresh_credentials_from_config_password(save=True)
-        except OopzPasswordLoginError as exc:
-            logger.warning("WS 凭据自动刷新失败: %s", exc)
-            return None
-        except Exception:
-            logger.warning("WS 凭据自动刷新异常", exc_info=True)
-            return None
-        if not credentials:
-            logger.warning("未配置 login_phone/login_password，无法自动刷新 WS 凭据")
-            return None
-        pem = str(credentials.get("private_key_pem") or "").strip()
-        if pem:
-            try:
-                sender.signer.private_key = load_private_key_from_pem(pem)
-            except Exception:
-                logger.warning("WS 凭据刷新后更新发送端签名私钥失败", exc_info=True)
-        return credentials
-
-    return _refresh
-
-
 class AppContextBuilder:
-    """负责组装启动期使用的应用上下文。"""
+    """在当前事件循环组装 SDK 网关、命令分发和补充服务。"""
 
-    def build(self, sender: OopzSender, voice=None) -> AppContext:
-        handler = CommandHandler(sender, voice_client=voice)
-        sender.bind_auto_recall_scheduler(
-            handler.services.safety.recall_scheduler
-        )
-        onebot_config = get_onebot_v11_config()
-        onebot_v11 = OneBotV11Service(sender, onebot_config) if onebot_config.enabled else None
-        notifier_callback = start_area_join_notifier(
-            sender=sender,
-            on_member_change=onebot_v11.emit_member_change if onebot_v11 else None,
-        )
-
-        # WS 接收线程只负责解析入队；命令处理（AI 请求、音乐搜索等慢操作）
-        # 由分发器的工作线程执行。按 area:channel 分片，保证单频道内顺序。
+    async def build(self, supervisor: TaskSupervisor) -> AppContext:
         dispatcher = MessageDispatcher(workers=4, maxsize=512)
         dispatcher.start()
 
-        def _handle_chat_task(msg_data: dict) -> None:
-            try:
-                handler.handle_message(msg_data)
-            except SensitiveContentError:
-                logger.debug("回复被平台风控拦截，已忽略（发送层已记录）")
+        # 两个回调在网关创建时就要传入，届时处理器与通知器尚未组装完成；闭包按引用
+        # 读取下面的局部变量，因此启动期的事件会命中 None 分支而不是空指针。
+        gateway: AsyncOopzGateway | None = None
+        handler: CommandHandler | None = None
+        notifier: AreaJoinNotifier | None = None
 
-        def _dispatch_chat(msg_data: dict) -> None:
-            key = f"{msg_data.get('area') or ''}:{msg_data.get('channel') or ''}"
-            dispatcher.submit(key, _handle_chat_task, msg_data)
-
-        def _dispatch_other_event(event: int, data: dict) -> None:
-            if notifier_callback is None:
+        async def dispatch_chat(message: dict) -> None:
+            current = handler
+            if current is None:
+                logger.warning("命令处理器尚未就绪，忽略一条启动期消息")
                 return
-            dispatcher.submit("__other_events__", notifier_callback, event, data)
+            key = f"{message.get('area') or ''}:{message.get('channel') or ''}"
 
-        client = OopzClient(
-            on_chat_message=_dispatch_chat,
-            on_other_event=_dispatch_other_event if notifier_callback else None,
-            on_raw_event=onebot_v11.emit_raw_event if onebot_v11 else None,
-            credential_refresher=build_ws_credential_refresher(sender),
-        )
+            async def handle() -> None:
+                try:
+                    await current.handle_message(message)
+                except SensitiveContentError:
+                    logger.debug("回复被平台风控拦截，已忽略（发送层已记录）")
 
-        return AppContext(
-            sender=sender,
-            handler=handler,
-            client=client,
-            notifier_callback=notifier_callback,
-            onebot_v11=onebot_v11,
-            voice=voice,
-            dispatcher=dispatcher,
-        )
+            dispatcher.submit(key, handle)
+
+        async def dispatch_other_event(event: int, data: dict) -> None:
+            current = notifier
+            if current is not None:
+                dispatcher.submit("__other_events__", current, event, data)
+
+        try:
+            gateway = await AsyncOopzGateway.create(
+                on_chat_message=dispatch_chat,
+                on_other_event=dispatch_other_event,
+            )
+            voice = SdkVoiceController(
+                gateway.bot.voice,
+                proxy_value=gateway._proxy_value,
+                supervisor=supervisor,
+            )
+            handler = CommandHandler(
+                gateway,
+                voice_client=voice,
+                supervisor=supervisor,
+            )
+            await get_resolver().bind_gateway(gateway)
+            await handler.start()
+            gateway.bind_auto_recall_scheduler(
+                handler.services.safety.recall_scheduler
+            )
+            await gateway.start(supervisor)
+            await gateway.populate_names()
+
+            onebot_adapter = find_sdk_onebot_v11(gateway.bot)
+            onebot_v11 = (
+                OneBotV11Supplement(
+                    onebot_adapter,
+                    gateway,
+                    get_onebot_v11_config(),
+                )
+                if onebot_adapter is not None
+                else None
+            )
+            if onebot_v11 is not None:
+                onebot_v11.start(supervisor)
+
+            async def on_member_change(action: str, area: str, uid: str) -> None:
+                if onebot_v11 is not None:
+                    await onebot_v11.emit_member_change(action, area, uid)
+
+            notifier = start_area_join_notifier(
+                sender=gateway,
+                on_member_change=on_member_change,
+                supervisor=supervisor,
+            )
+            return AppContext(
+                sender=gateway,
+                handler=handler,
+                client=gateway,
+                notifier_callback=notifier,
+                onebot_v11=onebot_v11,
+                voice=voice,
+                dispatcher=dispatcher,
+                supervisor=supervisor,
+            )
+        except BaseException:
+            if handler is not None:
+                await handler.infrastructure.plugins.stop(timeout=2.0)
+            if gateway is not None:
+                await gateway.stop()
+            await dispatcher.stop(timeout=2.0)
+            raise

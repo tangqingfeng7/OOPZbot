@@ -1,5 +1,6 @@
 """程序入口。"""
 
+import asyncio
 import os
 import sys
 
@@ -15,7 +16,7 @@ from app.runtime import apply_runtime_overrides, validate_runtime_config
 def main() -> None:
     apply_runtime_overrides()
     validate_runtime_config()
-    BotApplication().run()
+    asyncio.run(BotApplication().run())
 
 
 if __name__ == "__main__":

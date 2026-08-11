@@ -1,17 +1,20 @@
 import re
 import time
-from typing import Optional
 
+from app.services.runtime import CommandRuntimeView, sender_of
 from config import PROFANITY_CONFIG
 from core.constants import Msg
+from core.logger_config import get_logger
 from domain.safety.profanity_rules import (
     actual_mute_duration as resolve_mute_duration,
+)
+from domain.safety.profanity_rules import (
     format_duration as format_mute_duration,
+)
+from domain.safety.profanity_rules import (
     match_context_keyword,
     match_keyword,
 )
-from core.logger_config import get_logger
-from app.services.runtime import CommandRuntimeView, sender_of
 
 logger = get_logger("ProfanityGuardService")
 
@@ -51,7 +54,7 @@ class ProfanityGuardService:
         text = text.translate(cls._CHAR_NORMALIZE)
         return text.lower()
 
-    def check_profanity(self, content: str) -> Optional[str]:
+    def check_profanity(self, content: str) -> str | None:
         """检测单条消息是否命中违禁词。"""
         text = self.clean_text(content)
         return match_keyword(text, self._keywords)
@@ -121,7 +124,7 @@ class ProfanityGuardService:
             return 0
         return int(count)
 
-    def check_context_profanity(self, user: str) -> Optional[tuple[str, list[dict]]]:
+    def check_context_profanity(self, user: str) -> tuple[str, list[dict]] | None:
         """检测用户上下文拼接后是否命中违禁词。"""
         buffer = self._user_msg_buffer.get(user, [])
         cleaned_messages = [self.clean_text(item["content"]) for item in buffer]
@@ -146,7 +149,7 @@ class ProfanityGuardService:
         """将分钟数格式化为更易读的时长。"""
         return format_mute_duration(minutes)
 
-    def handle_profanity(
+    async def handle_profanity(
         self,
         user: str,
         channel: str,
@@ -167,7 +170,7 @@ class ProfanityGuardService:
                 message_id = message.get("message_id")
                 if not message_id:
                     continue
-                self._sender.recall_message(
+                await self._sender.recall_message(
                     message_id,
                     area=message.get("area", area),
                     channel=message.get("channel", channel),
@@ -179,7 +182,7 @@ class ProfanityGuardService:
             count = self._active_warning_count(user, now) + 1
             self._warnings[user] = (count, now)
             if count < 2:
-                self._sender.send_message(
+                await self._sender.send_message(
                     f"{Msg.WARN} {name} 请文明发言，再犯将被禁言 {display}",
                     channel=channel,
                     area=area,
@@ -187,17 +190,17 @@ class ProfanityGuardService:
                 return
             self._warnings[user] = (0, now)
 
-        result = self._sender.mute_user(user, area=area, duration=duration)
+        result = await self._sender.mute_user(user, area=area, duration=duration)
         if "error" in result:
             logger.warning("自动禁言 %s 失败: %s", name, result["error"])
-            self._sender.send_message(
+            await self._sender.send_message(
                 f"{Msg.WARN} {name} 发送违规内容，自动禁言失败",
                 channel=channel,
                 area=area,
             )
         else:
             logger.info("自动禁言: %s 触发关键词 [%s]（%s条消息），禁言 %s", name, matched, len(messages), display)
-            self._sender.send_message(
+            await self._sender.send_message(
                 f"{Msg.WARN} {name} 因发送违规内容被自动禁言 {display}",
                 channel=channel,
                 area=area,

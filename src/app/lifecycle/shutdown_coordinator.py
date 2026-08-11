@@ -1,130 +1,126 @@
-import threading
-import time
+"""应用级异步、有界且幂等的关停顺序。"""
+
+from __future__ import annotations
+
+import asyncio
 
 from app.lifecycle.background_services import BackgroundServiceRunner
 from app.lifecycle.context import AppContext
 from app.lifecycle.netease_api_runtime import NeteaseApiRuntime
+from app.lifecycle.task_supervisor import TaskSupervisor
 from core.logger_config import setup_logger
 
 logger = setup_logger("ShutdownCoordinator")
 
 
 class ShutdownCoordinator:
-    """负责关闭应用运行时资源。"""
-
     TOTAL_BUDGET_SECONDS = 20.0
     DISPATCHER_DRAIN_SECONDS = 8.0
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
         self._stopped = False
 
-    def stop(
+    async def stop(
         self,
         context: AppContext | None,
         netease_runtime: NeteaseApiRuntime,
         background_services: BackgroundServiceRunner | None = None,
+        supervisor: TaskSupervisor | None = None,
     ) -> None:
-        """按依赖顺序在 20 秒总预算内幂等关停。"""
-        with self._lock:
+        async with self._lock:
             if self._stopped:
                 return
             self._stopped = True
 
-        started_at = time.monotonic()
+        try:
+            await asyncio.wait_for(
+                self._stop_in_order(
+                    context,
+                    netease_runtime,
+                    background_services,
+                    supervisor,
+                ),
+                timeout=self.TOTAL_BUDGET_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("应用关停已用尽 %.0f 秒总预算", self.TOTAL_BUDGET_SECONDS)
+
+    async def _stop_in_order(
+        self,
+        context: AppContext | None,
+        netease_runtime: NeteaseApiRuntime,
+        background_services: BackgroundServiceRunner | None,
+        supervisor: TaskSupervisor | None,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
         deadline = started_at + self.TOTAL_BUDGET_SECONDS
 
         def remaining(cap: float | None = None) -> float:
-            value = max(0.0, deadline - time.monotonic())
+            value = max(0.0, deadline - loop.time())
             return min(value, cap) if cap is not None else value
 
-        def attempt(name: str, callback) -> None:
+        async def attempt(name: str, awaitable) -> None:
             try:
-                callback()
+                await awaitable
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.warning("停止 %s 时出现异常: %s", name, exc)
 
-        # 1. 先关闭所有入口，确保 dispatcher 不再持续收到新任务。
         if background_services is not None:
-            attempt(
+            await attempt(
                 "外部入口",
-                lambda: background_services.stop_ingress(timeout=remaining()),
+                background_services.stop_ingress(timeout=remaining(5.0)),
             )
-        elif context:
-            attempt("Oopz", lambda: context.client.stop(timeout=remaining()))
-            onebot_v11 = context.onebot_v11
-            if onebot_v11:
-                attempt("OneBot v11", lambda: onebot_v11.stop(timeout=remaining()))
 
-        # 2. 再停止所有轮询、监听与调度生产者。
+        if context is not None:
+            await attempt("Oopz-SDK", context.client.stop())
+
         if background_services is not None:
-            attempt(
+            await attempt(
                 "后台生产者",
-                lambda: background_services.stop_producers(timeout=remaining()),
+                background_services.stop_producers(timeout=remaining(5.0)),
             )
-        elif context:
-            music = context.handler.infrastructure.music
-            attempt("音乐后台服务", lambda: music.stop(timeout=remaining()))
-            notifier = context.notifier_callback
-            if notifier and hasattr(notifier, "stop"):
-                attempt("区域通知", lambda: notifier.stop(timeout=remaining()))
-            scheduler = context.handler.services.scheduler
-            attempt("定时消息", lambda: scheduler.scheduled.stop(timeout=remaining()))
-            attempt("提醒", lambda: scheduler.reminder.stop(timeout=remaining()))
-            attempt(
-                "自动撤回",
-                lambda: context.handler.services.safety.recall_scheduler.stop(timeout=remaining()),
-            )
-        # 3. 网易云、sender 与插件注册表仍存活时，给已接收消息最多 8 秒完成
-        # 业务处理。插件必须留到 dispatcher 排空后再卸载，否则已经入队的
-        # 插件命令会因 registry 被提前清空而静默丢失。
-        dispatcher_fully_stopped = True
-        if context and context.dispatcher:
-            dispatcher = context.dispatcher
+
+        dispatcher_stopped = True
+        if context is not None and context.dispatcher is not None:
             try:
-                dispatcher_fully_stopped = (
-                    dispatcher.stop(timeout=remaining(self.DISPATCHER_DRAIN_SECONDS)) is True
+                dispatcher_stopped = await context.dispatcher.stop(
+                    timeout=remaining(self.DISPATCHER_DRAIN_SECONDS)
                 )
             except Exception as exc:
-                dispatcher_fully_stopped = False
+                dispatcher_stopped = False
                 logger.warning("停止消息分发器时出现异常: %s", exc)
 
-        # 4. 已入队命令处理完成后再卸载插件，并隔离卸载异常/超时。
-        # 如果 dispatcher 仍有 in-flight worker，不能在其回调执行期间并发
-        # 清空插件 registry；此时跳过卸载，daemon worker 由进程退出兜底。
-        if not dispatcher_fully_stopped:
-            logger.warning(
-                "消息分发器未在预算内完全停止，跳过插件卸载，避免与仍在执行的插件命令并发"
-            )
+        if not dispatcher_stopped:
+            logger.warning("消息分发器未完全停止，跳过插件卸载以避免并发清空注册表")
         elif background_services is not None:
-            attempt(
+            await attempt(
                 "插件",
-                lambda: background_services.stop_plugins(timeout=remaining()),
-            )
-        elif context:
-            attempt(
-                "插件",
-                lambda: context.handler.infrastructure.plugins.stop(timeout=remaining()),
+                background_services.stop_plugins(timeout=remaining(5.0)),
             )
 
-        # 5. 刷新数据库缓冲。
-        def _flush_database() -> None:
-            from core.database import MessageStatsDB
+        if context is not None:
+            await attempt("AI HTTP 会话", context.handler.infrastructure.chat.close())
+            from oopz.name_resolver import get_resolver
 
-            MessageStatsDB.stop(timeout=remaining())
+            await attempt("名称缓存", get_resolver().close())
 
-        attempt("消息统计缓冲区", _flush_database)
+        from core.database import MessageStatsDB
 
-        # 6. 所有可能依赖网易云的任务完成后再停止子进程。
-        attempt("网易云 API", lambda: netease_runtime.stop(timeout=remaining()))
+        await attempt(
+            "消息统计缓冲区",
+            MessageStatsDB.stop(remaining(3.0)),
+        )
+        await attempt("网易云 API", netease_runtime.stop(timeout=remaining(5.0)))
 
-        # 7. 最后销毁语音客户端。
-        if context and context.voice:
-            voice = context.voice
-            attempt("语音客户端", lambda: voice.destroy(timeout=remaining()))
+        effective_supervisor = supervisor or (context.supervisor if context else None)
+        if effective_supervisor is not None:
+            await attempt(
+                "后台任务",
+                effective_supervisor.close(timeout=remaining()),
+            )
 
-        elapsed = time.monotonic() - started_at
-        if elapsed >= self.TOTAL_BUDGET_SECONDS:
-            logger.warning("应用关停已用尽 %.0f 秒总预算", self.TOTAL_BUDGET_SECONDS)
-        else:
-            logger.info("应用运行时已按顺序停止（%.2fs）", elapsed)
+        logger.info("应用运行时已按顺序停止（%.2fs）", loop.time() - started_at)

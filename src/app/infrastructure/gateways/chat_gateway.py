@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from services.chat import ChatHandler
@@ -27,17 +27,20 @@ class ChatGateway:
     def img_enabled(self) -> bool:
         return bool(self._chat.img_enabled)
 
-    def try_reply(self, content: str) -> Optional[str]:
+    def try_reply(self, content: str) -> str | None:
         return self._chat.try_reply(content)
 
-    def ai_reply(self, content: str, history: list[dict] | None = None) -> Optional[str]:
-        return self._chat.ai_reply(content, history=history)
+    async def ai_reply(self, content: str, history: list[dict] | None = None) -> str | None:
+        return await self._chat.ai_reply(content, history=history)
 
-    def generate_image(self, prompt: str) -> Optional[str]:
-        return self._chat.generate_image(prompt)
+    async def generate_image(self, prompt: str) -> str | None:
+        return await self._chat.generate_image(prompt)
 
-    def check_profanity(self, content: str) -> Optional[str]:
-        return self._chat.check_profanity(content)
+    async def check_profanity(self, content: str) -> str | None:
+        return await self._chat.check_profanity(content)
+
+    async def close(self) -> None:
+        await self._chat.close()
 
     def add_keyword(self, keyword: str, reply: str):
         self._chat.add_keyword(keyword, reply)

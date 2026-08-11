@@ -1,5 +1,4 @@
-"""P1 缺陷的回归测试（todo.md「P1 · 确定性 Bug」）。"""
-
+import asyncio
 import json
 import sys
 import unittest
@@ -7,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest import mock
+from unittest.mock import AsyncMock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -46,37 +46,41 @@ class AreaKeyTest(unittest.TestCase):
         self.assertEqual(area_key("chat:memory", "A1"), "chat:A1:memory")
 
 
-class StatisticsPlatformCountTest(unittest.TestCase):
+class StatisticsPlatformCountTest(unittest.IsolatedAsyncioTestCase):
     """每日首条记录曾出现 total_plays=1 但该平台计数为 2。"""
 
-    def test_first_write_of_the_day_counts_once(self) -> None:
+    async def test_first_write_of_the_day_counts_once(self) -> None:
         import core.database as database
 
         rows: dict[str, str] = {}
         captured: list[tuple] = []
 
+        def _cursor(row):
+            return SimpleNamespace(
+                fetchone=AsyncMock(return_value=row),
+                close=AsyncMock(),
+            )
+
         class _Conn:
-            def execute(self, sql, params=()):
+            async def execute(self, sql, params=()):
                 captured.append((sql, params))
                 if sql.strip().startswith("INSERT"):
                     rows["platform_breakdown"] = params[3]
                 elif sql.strip().startswith("SELECT"):
-                    return SimpleNamespace(
-                        fetchone=lambda: {"platform_breakdown": rows["platform_breakdown"]}
-                    )
+                    return _cursor({"platform_breakdown": rows["platform_breakdown"]})
                 elif sql.strip().startswith("UPDATE"):
                     rows["platform_breakdown"] = params[0]
-                return SimpleNamespace(fetchone=lambda: None)
+                return _cursor(None)
 
         class _Ctx:
-            def __enter__(self):
+            async def __aenter__(self):
                 return _Conn()
 
-            def __exit__(self, *a):
+            async def __aexit__(self, *a):
                 return False
 
         with mock.patch.object(database, "db_connection", lambda: _Ctx()):
-            database.Statistics.update_today("netease", cache_hit=False)
+            await database.Statistics.update_today("netease", cache_hit=False)
 
         breakdown = json.loads(rows["platform_breakdown"])
         self.assertEqual(breakdown, {"netease": 1})
@@ -126,23 +130,72 @@ class ProfanityWarningExpiryTest(unittest.TestCase):
         self.assertEqual(service._active_warning_count("u", 10_000.0), 1)
 
 
-class EditUserRoleLockTest(unittest.TestCase):
-    """editUserRole 是「读-改-写」且服务端全量覆盖，并发会互相覆盖。"""
+class EditUserRoleLockTest(unittest.IsolatedAsyncioTestCase):
+    """editUserRole 是「读-改-写」且服务端全量覆盖，并发会互相覆盖。
 
-    def test_same_user_shares_a_lock(self) -> None:
-        from oopz.oopz_api import _user_role_lock
+    锁已从旧的 `oopz.oopz_api` 模块级字典挪到网关实例的 `_role_locks`，
+    按 (域, 目标 uid) 分桶，语义不变。
+    """
 
-        self.assertIs(_user_role_lock("area-1", "u1"), _user_role_lock("area-1", "u1"))
+    def _gateway(self):
+        import oopz.sdk_gateway as module
 
-    def test_different_users_do_not_share_a_lock(self) -> None:
-        from oopz.oopz_api import _user_role_lock
+        gateway = module.AsyncOopzGateway.__new__(module.AsyncOopzGateway)
+        gateway._role_locks = {}
+        gateway.bot = AsyncMock()
+        gateway.bot.areas.edit_user_role = AsyncMock(return_value={"status": True})
+        gateway._default_area = lambda area=None: area or "area-default"
+        return gateway
 
-        self.assertIsNot(_user_role_lock("area-1", "u1"), _user_role_lock("area-1", "u2"))
+    async def _lock_for(self, gateway, area: str, uid: str):
+        await gateway.edit_user_role(uid, 1, True, area=area)
+        return gateway._role_locks[(area, uid)]
 
-    def test_different_areas_do_not_share_a_lock(self) -> None:
-        from oopz.oopz_api import _user_role_lock
+    async def test_same_user_shares_a_lock(self) -> None:
+        gateway = self._gateway()
+        first = await self._lock_for(gateway, "area-1", "u1")
+        second = await self._lock_for(gateway, "area-1", "u1")
+        self.assertIs(first, second)
 
-        self.assertIsNot(_user_role_lock("area-1", "u1"), _user_role_lock("area-2", "u1"))
+    async def test_different_users_do_not_share_a_lock(self) -> None:
+        gateway = self._gateway()
+        self.assertIsNot(
+            await self._lock_for(gateway, "area-1", "u1"),
+            await self._lock_for(gateway, "area-1", "u2"),
+        )
+
+    async def test_different_areas_do_not_share_a_lock(self) -> None:
+        gateway = self._gateway()
+        self.assertIsNot(
+            await self._lock_for(gateway, "area-1", "u1"),
+            await self._lock_for(gateway, "area-2", "u1"),
+        )
+
+    async def test_same_user_edits_are_serialized(self) -> None:
+        """同一用户的两次改动必须串行，否则后写会覆盖前写。"""
+        gateway = self._gateway()
+        inside = asyncio.Event()
+        release = asyncio.Event()
+        order: list[str] = []
+
+        async def slow_edit(*_args):
+            order.append("enter")
+            inside.set()
+            await asyncio.wait_for(release.wait(), timeout=2)
+            order.append("exit")
+            return {"status": True}
+
+        gateway.bot.areas.edit_user_role = AsyncMock(side_effect=slow_edit)
+
+        first = asyncio.create_task(gateway.edit_user_role("u1", 1, True, area="area-1"))
+        await asyncio.wait_for(inside.wait(), timeout=1)
+        second = asyncio.create_task(gateway.edit_user_role("u1", 2, True, area="area-1"))
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(order, ["enter"], "第一次尚未完成，第二次不得进入临界区")
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
+        self.assertEqual(order, ["enter", "exit", "enter", "exit"])
 
 
 if __name__ == "__main__":

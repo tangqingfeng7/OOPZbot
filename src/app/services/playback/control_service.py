@@ -8,7 +8,7 @@ HTTP 路由、管理后台和测试都通过这一层提交播放命令与队列
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 from core.queue_manager import (
@@ -54,11 +54,15 @@ class PlaybackControlService:
         self,
         redis_client: PlaybackCommandStore,
         *,
-        redis_provider: Callable[[], PlaybackCommandStore] | None = None,
+        redis_provider: Callable[[], Awaitable[PlaybackCommandStore]] | None = None,
         platform_resolver: Callable[[str], Any] | None = None,
         default_volume: int = 50,
     ) -> None:
-        self._redis_provider = redis_provider or (lambda: redis_client)
+        async def _fixed_client() -> PlaybackCommandStore:
+            return redis_client
+
+        # provider 统一为异步：未显式提供时退化为返回构造时传入的客户端。
+        self._redis_provider = redis_provider or _fixed_client
         self._platform_resolver = platform_resolver
         self._default_volume = max(0, min(100, int(default_volume)))
 
@@ -67,7 +71,7 @@ class PlaybackControlService:
         normalized = str(value or "").strip()
         return AreaId(normalized) if normalized else None
 
-    def control(
+    async def control(
         self,
         *,
         action: str,
@@ -76,11 +80,11 @@ class PlaybackControlService:
     ) -> dict[str, object]:
         """提交一项播放控制；只有音量允许不带域。"""
         normalized_action = str(action or "").strip()
-        redis_client = self._redis_provider()
+        redis_client = await self._redis_provider()
         if normalized_action == "volume":
             volume = self._normalize_volume(payload.get("value"))
-            redis_client.set(VOLUME, str(volume))
-            self._push(
+            await redis_client.set(VOLUME, str(volume))
+            await self._push(
                 GlobalWebCommand("volume", {"value": volume}),
                 redis_client=redis_client,
             )
@@ -94,13 +98,13 @@ class PlaybackControlService:
             return playback_area_unavailable_result()
 
         if normalized_action == "clear":
-            redis_client.delete(area_key(QUEUE, area_id.value))
+            await redis_client.delete(area_key(QUEUE, area_id.value))
             return {"ok": True}
         if normalized_action == "mode":
             mode = payload.get("value") or payload.get("mode")
             if not isinstance(mode, str) or mode not in _VALID_PLAY_MODES:
                 return {"ok": False, "error": f"未知播放模式: {mode}"}
-            redis_client.set(area_key(PLAY_MODE, area_id.value), mode)
+            await redis_client.set(area_key(PLAY_MODE, area_id.value), mode)
             return {"ok": True, "mode": mode}
 
         command_payload: dict[str, object] = {}
@@ -114,10 +118,10 @@ class PlaybackControlService:
             )
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        self._push(command, redis_client=redis_client)
+        await self._push(command, redis_client=redis_client)
         return {"ok": True}
 
-    def mutate_queue(
+    async def mutate_queue(
         self,
         *,
         action: str,
@@ -136,11 +140,11 @@ class PlaybackControlService:
             return playback_area_unavailable_result()
         key = area_key(QUEUE, area_id.value)
         mutation = atomic_queue_remove_at if action == "remove" else atomic_queue_move_to_front
-        if not mutation(self._redis_provider(), key, parsed_index):
+        if not await mutation(await self._redis_provider(), key, parsed_index):
             return {"ok": False, "error": "索引无效"}
         return {"ok": True}
 
-    def add_song(
+    async def add_song(
         self,
         *,
         body: Mapping[str, object],
@@ -165,13 +169,13 @@ class PlaybackControlService:
         duration_ms = body.get("duration", 0)
         duration_text = str(body.get("durationText") or "")
         try:
-            url = platform.get_song_url(
+            url = await platform.get_song_url(
                 song_id,
                 expected_duration_ms=duration_ms or 0,
                 song_name=name,
             )
         except TypeError:
-            url = platform.get_song_url(song_id)
+            url = await platform.get_song_url(song_id)
         if not url:
             detail = (
                 getattr(platform, "last_song_url_error", "")
@@ -197,7 +201,7 @@ class PlaybackControlService:
         # 平台解析可能包含数秒网络请求；期间全局 Redis 可能已从内存降级恢复。
         # 真正提交前再取一次客户端，并让队列与通知使用同一实例，避免把成功
         # 响应对应的数据写进已经退役的 fallback。
-        redis_client = self._redis_provider()
+        redis_client = await self._redis_provider()
         queue_key = area_key(QUEUE, area_id.value)
         # 队列顺序、1-based 位置与通知顺序必须来自同一个原子提交：
         # 真实 Redis 走 Lua，内存 fallback 走单一 Condition 临界区。
@@ -212,7 +216,7 @@ class PlaybackControlService:
                 },
             )
         )
-        queue_length = atomic_enqueue_song_and_notify(
+        queue_length = await atomic_enqueue_song_and_notify(
             redis_client,
             queue_key,
             json.dumps(song_data, ensure_ascii=False),
@@ -222,12 +226,12 @@ class PlaybackControlService:
         return {"ok": True, "position": queue_length, "name": name}
 
     @staticmethod
-    def _push(
+    async def _push(
         command: AreaWebCommand | GlobalWebCommand,
         *,
         redis_client: PlaybackCommandStore,
     ) -> None:
-        redis_client.rpush(WEB_COMMANDS, encode_web_command(command))
+        await redis_client.rpush(WEB_COMMANDS, encode_web_command(command))
 
     def _normalize_volume(self, raw: object) -> int:
         if isinstance(raw, bytes):

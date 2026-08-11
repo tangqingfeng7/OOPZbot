@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -24,6 +24,13 @@ def _runtime(**components: object) -> CommandRuntimeView:
 class CommandAccessServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.plugins = Mock()
+        self.plugins.load = AsyncMock()
+        self.plugins.load_all = AsyncMock()
+        self.plugins.reload_config = AsyncMock()
+        self.plugins.stop = AsyncMock()
+        self.plugins.try_dispatch_mention = AsyncMock()
+        self.plugins.try_dispatch_slash = AsyncMock()
+        self.plugins.unload = AsyncMock()
         # 裸 Mock 的任意方法都返回真值；这两个是「拦截」语义，默认必须为假
         self.plugins.has_admin_only_mention_prefix.return_value = False
         self.plugins.has_admin_only_slash_command.return_value = False
@@ -104,10 +111,10 @@ class CommandAccessServiceTest(unittest.TestCase):
         self.plugins.has_public_slash_command.assert_not_called()
 
 
-class RoleServiceTest(unittest.TestCase):
+class RoleServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
-        self.target_resolution = Mock()
+        self.sender = AsyncMock()
+        self.target_resolution = AsyncMock()
         self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
@@ -115,7 +122,7 @@ class RoleServiceTest(unittest.TestCase):
             ),
         )
 
-    def test_give_role_delegates_edit_when_role_resolves(self) -> None:
+    async def test_give_role_delegates_edit_when_role_resolves(self) -> None:
         from app.services.community.role_service import RoleService
 
         self.target_resolution.resolve_target.return_value = "user-1"
@@ -128,12 +135,12 @@ class RoleServiceTest(unittest.TestCase):
             get_resolver.return_value.user.return_value = "测试用户"
 
             service = RoleService(self.handler)
-            service.give_role("@user", "成员", "channel-1", "area-1")
+            await service.give_role("@user", "成员", "channel-1", "area-1")
 
         self.sender.edit_user_role.assert_called_once_with("user-1", 7, add=True, area="area-1")
         self.sender.send_message.assert_called_once()
 
-    def test_give_role_reports_unknown_role_without_edit(self) -> None:
+    async def test_give_role_reports_unknown_role_without_edit(self) -> None:
         from app.services.community.role_service import RoleService
 
         self.target_resolution.resolve_target.return_value = "user-1"
@@ -145,12 +152,12 @@ class RoleServiceTest(unittest.TestCase):
             get_resolver.return_value.user.return_value = "测试用户"
 
             service = RoleService(self.handler)
-            service.give_role("@user", "不存在", "channel-1", "area-1")
+            await service.give_role("@user", "不存在", "channel-1", "area-1")
 
         self.sender.edit_user_role.assert_not_called()
         self.sender.send_message.assert_called_once()
 
-    def test_remove_role_delegates_edit_when_role_resolves(self) -> None:
+    async def test_remove_role_delegates_edit_when_role_resolves(self) -> None:
         from app.services.community.role_service import RoleService
 
         self.target_resolution.resolve_target.return_value = "user-1"
@@ -163,27 +170,27 @@ class RoleServiceTest(unittest.TestCase):
             get_resolver.return_value.user.return_value = "测试用户"
 
             service = RoleService(self.handler)
-            service.remove_role("@user", "管理员", "channel-1", "area-1")
+            await service.remove_role("@user", "管理员", "channel-1", "area-1")
 
         self.sender.edit_user_role.assert_called_once_with("user-1", 9, add=False, area="area-1")
         self.sender.send_message.assert_called_once()
 
-    def test_show_assignable_roles_reports_missing_target(self) -> None:
+    async def test_show_assignable_roles_reports_missing_target(self) -> None:
         from app.services.community.role_service import RoleService
 
         self.target_resolution.resolve_target.return_value = None
 
         service = RoleService(self.handler)
-        service.show_assignable_roles("@missing", "channel-1", "area-1")
+        await service.show_assignable_roles("@missing", "channel-1", "area-1")
 
         self.sender.get_assignable_roles.assert_not_called()
         self.sender.send_message.assert_called_once()
 
 
-class MemberServiceTest(unittest.TestCase):
+class MemberServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
-        self.target_resolution = Mock()
+        self.sender = AsyncMock()
+        self.target_resolution = AsyncMock()
         self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
@@ -191,18 +198,18 @@ class MemberServiceTest(unittest.TestCase):
             ),
         )
 
-    def test_show_members_stops_on_sender_error(self) -> None:
+    async def test_show_members_stops_on_sender_error(self) -> None:
         from app.services.community.member_service import MemberService
 
         self.sender.get_area_members.return_value = {"error": "网络错误"}
 
         service = MemberService(self.handler)
-        service.show_members("channel-1", "area-1")
+        await service.show_members("channel-1", "area-1")
 
         self.sender.send_message.assert_called_once()
         self.assertIn("失败", self.sender.send_message.call_args.args[0])
 
-    def test_show_members_aggregates_unique_members(self) -> None:
+    async def test_show_members_aggregates_unique_members(self) -> None:
         from app.services.community.member_service import MemberService
 
         self.sender.get_area_members.side_effect = [
@@ -220,35 +227,36 @@ class MemberServiceTest(unittest.TestCase):
             resolver = get_resolver.return_value
             resolver.area.return_value = "测试区域"
             resolver.user.side_effect = lambda uid: {"u1": "用户1", "u2": "用户2"}.get(uid, uid)
+            resolver.ensure_users = AsyncMock(return_value={"u1": "用户1", "u2": "用户2"})
 
             service = MemberService(self.handler)
-            service.show_members("channel-1", "area-1")
+            await service.show_members("channel-1", "area-1")
 
         self.assertEqual(self.sender.get_area_members.call_count, 1)
         message = self.sender.send_message.call_args.args[0]
         self.assertIn("总计 2", message)
         self.assertIn("在线 1", message)
 
-    def test_show_whois_reports_missing_target(self) -> None:
+    async def test_show_whois_reports_missing_target(self) -> None:
         from app.services.community.member_service import MemberService
 
         self.target_resolution.resolve_target.return_value = None
 
         service = MemberService(self.handler)
-        service.show_whois("@missing", "channel-1", "area-1")
+        await service.show_whois("@missing", "channel-1", "area-1")
 
         self.sender.get_person_detail_full.assert_not_called()
         self.sender.send_message.assert_called_once()
 
 
-class TargetResolutionServiceTest(unittest.TestCase):
+class TargetResolutionServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.runtime = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
         )
 
-    def test_resolve_target_returns_unique_prefix_match_in_area(self) -> None:
+    async def test_resolve_target_returns_unique_prefix_match_in_area(self) -> None:
         from app.services.community.target_resolution_service import TargetResolutionService
 
         self.sender.get_area_members.side_effect = [
@@ -259,16 +267,16 @@ class TargetResolutionServiceTest(unittest.TestCase):
         with patch("app.services.community.target_resolution_service.get_resolver") as get_resolver:
             resolver = get_resolver.return_value
             resolver.find_uid_by_name.return_value = None
-            resolver.ensure_users.return_value = {"user-1": "皇帝", "user-2": "小明"}
+            resolver.ensure_users = AsyncMock(return_value={"user-1": "皇帝", "user-2": "小明"})
             resolver.user_cached.side_effect = lambda uid: {"user-1": "皇帝", "user-2": "小明"}.get(uid, "")
 
-            uid = service.resolve_target("皇", area="area-1")
+            uid = await service.resolve_target("皇", area="area-1")
 
         self.assertEqual(uid, "user-1")
         self.sender.get_area_members.assert_called_once_with(area="area-1", offset_start=0, offset_end=99, quiet=True)
         resolver.ensure_users.assert_called_once_with(["user-1", "user-2"])
 
-    def test_resolve_target_rejects_ambiguous_matches_in_area(self) -> None:
+    async def test_resolve_target_rejects_ambiguous_matches_in_area(self) -> None:
         from app.services.community.target_resolution_service import TargetResolutionService
 
         self.sender.get_area_members.side_effect = [
@@ -279,19 +287,19 @@ class TargetResolutionServiceTest(unittest.TestCase):
         with patch("app.services.community.target_resolution_service.get_resolver") as get_resolver:
             resolver = get_resolver.return_value
             resolver.find_uid_by_name.return_value = None
-            resolver.ensure_users.return_value = {"user-1": "皇帝", "user-2": "皇后"}
+            resolver.ensure_users = AsyncMock(return_value={"user-1": "皇帝", "user-2": "皇后"})
             resolver.user_cached.side_effect = lambda uid: {"user-1": "皇帝", "user-2": "皇后"}.get(uid, "")
 
-            uid = service.resolve_target("皇", area="area-1")
+            uid = await service.resolve_target("皇", area="area-1")
 
         self.assertIsNone(uid)
 
 
-class ModerationCommandActionsTest(unittest.TestCase):
+class ModerationCommandActionsTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
-        self.target_resolution = Mock()
-        self.moderation = Mock()
+        self.sender = AsyncMock()
+        self.target_resolution = AsyncMock()
+        self.moderation = AsyncMock()
         self.runtime = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
@@ -300,34 +308,34 @@ class ModerationCommandActionsTest(unittest.TestCase):
             ),
         )
 
-    def test_mute_user_reports_missing_target_instead_of_usage(self) -> None:
+    async def test_mute_user_reports_missing_target_instead_of_usage(self) -> None:
         from app.services.routing.builtin_command_actions import ModerationCommandActions
 
         self.target_resolution.parse_mute_args.return_value = (None, 10)
 
         actions = ModerationCommandActions(self.runtime)
-        actions.mute_user("皇 10", "channel-1", "area-1", "用法: @bot 禁言 谁 10")
+        await actions.mute_user("皇 10", "channel-1", "area-1", "用法: @bot 禁言 谁 10")
 
         self.moderation.mute_user.assert_not_called()
         self.sender.send_message.assert_called_once_with("找不到用户: 皇", channel="channel-1", area="area-1")
 
-    def test_mute_user_still_reports_usage_when_target_is_empty(self) -> None:
+    async def test_mute_user_still_reports_usage_when_target_is_empty(self) -> None:
         from app.services.routing.builtin_command_actions import ModerationCommandActions
 
         self.target_resolution.parse_mute_args.return_value = (None, 10)
 
         actions = ModerationCommandActions(self.runtime)
-        actions.mute_user("   ", "channel-1", "area-1", "用法: @bot 禁言 谁 10")
+        await actions.mute_user("   ", "channel-1", "area-1", "用法: @bot 禁言 谁 10")
 
         self.sender.send_message.assert_called_once_with("用法: @bot 禁言 谁 10", channel="channel-1", area="area-1")
 
 
-class ProfanityGuardServiceTest(unittest.TestCase):
+class ProfanityGuardServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.handler = _runtime(infrastructure=SimpleNamespace(sender=self.sender))
 
-    def test_handle_profanity_warns_before_muting(self) -> None:
+    async def test_handle_profanity_warns_before_muting(self) -> None:
         from app.services.safety.profanity_guard_service import ProfanityGuardService
 
         config = {
@@ -342,7 +350,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
             with patch("oopz.name_resolver.NameResolver") as resolver:
                 resolver.return_value.user.return_value = "测试用户"
 
-                service.handle_profanity(
+                await service.handle_profanity(
                     "user-1",
                     "channel-1",
                     "area-1",
@@ -356,7 +364,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
         self.assertIn("请文明发言", message)
         self.assertIn("5 分钟", message)
 
-    def test_handle_profanity_mutes_and_recalls_on_second_violation(self) -> None:
+    async def test_handle_profanity_mutes_and_recalls_on_second_violation(self) -> None:
         from app.services.safety.profanity_guard_service import ProfanityGuardService
 
         config = {
@@ -373,7 +381,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
             with patch("oopz.name_resolver.NameResolver") as resolver:
                 resolver.return_value.user.return_value = "测试用户"
 
-                service.handle_profanity(
+                await service.handle_profanity(
                     "user-1",
                     "channel-1",
                     "area-1",
@@ -387,7 +395,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
         self.assertIn("自动禁言", message)
         self.assertIn("5 分钟", message)
 
-    def test_handle_profanity_reports_mute_failure(self) -> None:
+    async def test_handle_profanity_reports_mute_failure(self) -> None:
         from app.services.safety.profanity_guard_service import ProfanityGuardService
 
         config = {
@@ -403,7 +411,7 @@ class ProfanityGuardServiceTest(unittest.TestCase):
             with patch("oopz.name_resolver.NameResolver") as resolver:
                 resolver.return_value.user.return_value = "测试用户"
 
-                service.handle_profanity(
+                await service.handle_profanity(
                     "user-1",
                     "channel-1",
                     "area-1",
@@ -416,12 +424,12 @@ class ProfanityGuardServiceTest(unittest.TestCase):
         self.assertIn("自动禁言失败", message)
 
 
-class RecallServiceTest(unittest.TestCase):
+class RecallServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         from app.services.runtime import RecentMessageStore
 
-        self.sender = Mock()
-        self.message_lookup = Mock()
+        self.sender = AsyncMock()
+        self.message_lookup = AsyncMock()
         self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
             services=SimpleNamespace(
@@ -430,16 +438,16 @@ class RecallServiceTest(unittest.TestCase):
             recent_messages=RecentMessageStore(),
         )
 
-    def test_recall_message_reports_empty_recent_messages(self) -> None:
+    async def test_recall_message_reports_empty_recent_messages(self) -> None:
         from app.services.safety.recall_service import RecallService
 
         service = RecallService(self.handler)
-        service.recall_message(None, "channel-1", "area-1")
+        await service.recall_message(None, "channel-1", "area-1")
 
         self.sender.recall_message.assert_not_called()
         self.sender.send_message.assert_called_once()
 
-    def test_recall_message_uses_latest_message_in_same_channel(self) -> None:
+    async def test_recall_message_uses_latest_message_in_same_channel(self) -> None:
         from app.services.safety.recall_service import RecallService
 
         self.handler.recent_messages.replace([
@@ -450,46 +458,47 @@ class RecallServiceTest(unittest.TestCase):
         self.sender.recall_message.return_value = {"ok": True}
 
         service = RecallService(self.handler)
-        service.recall_message("last", "channel-1", "area-1")
+        await service.recall_message("last", "channel-1", "area-1")
 
         self.message_lookup.resolve_timestamp.assert_called_once_with("new", "channel-1", "area-1")
         self.sender.recall_message.assert_called_once_with("new", area="area-1", channel="channel-1", timestamp="resolved-ts")
         self.sender.send_message.assert_called_once()
 
-    def test_recall_multiple_rejects_invalid_count(self) -> None:
+    async def test_recall_multiple_rejects_invalid_count(self) -> None:
         from app.services.safety.recall_service import RecallService
 
         service = RecallService(self.handler)
-        service.recall_multiple(0, "channel-1", "area-1")
+        await service.recall_multiple(0, "channel-1", "area-1")
 
         self.sender.recall_message.assert_not_called()
         self.sender.send_message.assert_called_once()
 
-    def test_configure_auto_recall_can_enable_and_disable(self) -> None:
+    async def test_configure_auto_recall_can_enable_and_disable(self) -> None:
         import app.services.safety.recall_service as module
 
         service = module.RecallService(self.handler)
         config = {"enabled": False, "delay": 30, "exclude_commands": []}
 
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
-            service.configure_auto_recall("开 15", "channel-1", "area-1")
+            await service.configure_auto_recall("开 15", "channel-1", "area-1")
             self.assertTrue(config["enabled"])
             self.assertEqual(config["delay"], 15)
 
-            service.configure_auto_recall("关", "channel-1", "area-1")
+            await service.configure_auto_recall("关", "channel-1", "area-1")
             self.assertFalse(config["enabled"])
 
         self.assertEqual(self.sender.send_message.call_count, 2)
 
 
-class MessageRecallSchedulerTest(unittest.TestCase):
+class MessageRecallSchedulerTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.runtime = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender)
         )
 
-    def test_schedules_recall_on_single_worker(self) -> None:
+    async def test_schedules_recall_on_single_worker(self) -> None:
+        import asyncio
         import time
 
         import app.services.safety.message_recall_scheduler as module
@@ -498,10 +507,11 @@ class MessageRecallSchedulerTest(unittest.TestCase):
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             service = module.MessageRecallScheduler(self.runtime)
             try:
-                service.schedule_user_message_recall("msg-1", "channel-1", "area-1", "ts-1")
+                await service.schedule_user_message_recall("msg-1", "channel-1", "area-1", "ts-1")
+                # 调度器已是 asyncio 的，忙等必须让出循环，否则被等的任务永远跑不到
                 deadline = time.time() + 1.0
                 while time.time() < deadline and not self.sender.recall_message.called:
-                    time.sleep(0.01)
+                    await asyncio.sleep(0.01)
 
                 self.sender.recall_message.assert_called_once_with(
                     message_id="msg-1",
@@ -510,40 +520,40 @@ class MessageRecallSchedulerTest(unittest.TestCase):
                     timestamp="ts-1",
                 )
             finally:
-                service.stop()
+                await service.stop()
 
-    def test_pending_limit_skips_extra_tasks(self) -> None:
+    async def test_pending_limit_skips_extra_tasks(self) -> None:
         import app.services.safety.message_recall_scheduler as module
 
         config = {"enabled": True, "delay": 30, "max_pending": 1, "exclude_commands": []}
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             service = module.MessageRecallScheduler(self.runtime)
             try:
-                service.schedule_user_message_recall("msg-1", "channel-1", "area-1")
-                service.schedule_user_message_recall("msg-2", "channel-1", "area-1")
+                await service.schedule_user_message_recall("msg-1", "channel-1", "area-1")
+                await service.schedule_user_message_recall("msg-2", "channel-1", "area-1")
 
-                self.assertEqual(service.cancel_all(), 1)
+                self.assertEqual(await service.cancel_all(), 1)
                 self.sender.recall_message.assert_not_called()
             finally:
-                service.stop()
+                await service.stop()
 
-    def test_schedule_after_stop_does_not_restart_worker(self) -> None:
+    async def test_schedule_after_stop_does_not_restart_worker(self) -> None:
         import app.services.safety.message_recall_scheduler as module
 
         config = {"enabled": True, "delay": 30, "max_pending": 10, "exclude_commands": []}
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             service = module.MessageRecallScheduler(self.runtime)
-            service.stop()
-            service.schedule_user_message_recall(
+            await service.stop()
+            await service.schedule_user_message_recall(
                 "late-message",
                 "channel-1",
                 "area-1",
             )
 
         self.assertIsNone(service._worker)
-        self.assertEqual(service.cancel_all(), 0)
+        self.assertEqual(await service.cancel_all(), 0)
 
-    def test_explicit_schedule_uses_same_bounded_worker(self) -> None:
+    async def test_explicit_schedule_uses_same_bounded_worker(self) -> None:
         import app.services.safety.message_recall_scheduler as module
 
         config = {"enabled": True, "delay": 30, "max_pending": 1, "exclude_commands": []}
@@ -551,7 +561,7 @@ class MessageRecallSchedulerTest(unittest.TestCase):
             service = module.MessageRecallScheduler(self.runtime)
             try:
                 self.assertTrue(
-                    service.schedule_recall(
+                    await service.schedule_recall(
                         "bot-message",
                         "channel-1",
                         "area-1",
@@ -559,26 +569,26 @@ class MessageRecallSchedulerTest(unittest.TestCase):
                     )
                 )
                 self.assertFalse(
-                    service.schedule_recall(
+                    await service.schedule_recall(
                         "overflow",
                         "channel-1",
                         "area-1",
                         delay=30,
                     )
                 )
-                self.assertEqual(service.cancel_all(), 1)
+                self.assertEqual(await service.cancel_all(), 1)
             finally:
-                service.stop()
+                await service.stop()
 
 
-class ModerationServiceTest(unittest.TestCase):
+class ModerationServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender),
         )
 
-    def test_mute_user_sends_success_message(self) -> None:
+    async def test_mute_user_sends_success_message(self) -> None:
         from app.services.safety.moderation_service import ModerationService
 
         self.sender.mute_user.return_value = {"message": "已禁言 测试用户"}
@@ -587,12 +597,12 @@ class ModerationServiceTest(unittest.TestCase):
             resolver_cls.return_value.user.return_value = "测试用户"
 
             service = ModerationService(self.handler)
-            service.mute_user("user-1", 10, "channel-1", "area-1")
+            await service.mute_user("user-1", 10, "channel-1", "area-1")
 
         self.sender.mute_user.assert_called_once_with("user-1", area="area-1", duration=10)
         self.assertIn("[ok]", self.sender.send_message.call_args.args[0])
 
-    def test_unmute_user_sends_error_message(self) -> None:
+    async def test_unmute_user_sends_error_message(self) -> None:
         from app.services.safety.moderation_service import ModerationService
 
         self.sender.unmute_user.return_value = {"error": "权限不足"}
@@ -601,13 +611,13 @@ class ModerationServiceTest(unittest.TestCase):
             resolver_cls.return_value.user.return_value = "测试用户"
 
             service = ModerationService(self.handler)
-            service.unmute_user("user-1", "channel-1", "area-1")
+            await service.unmute_user("user-1", "channel-1", "area-1")
 
         self.sender.unmute_user.assert_called_once_with("user-1", area="area-1")
         self.assertIn("[x]", self.sender.send_message.call_args.args[0])
         self.assertIn("权限不足", self.sender.send_message.call_args.args[0])
 
-    def test_remove_from_area_delegates_to_sender(self) -> None:
+    async def test_remove_from_area_delegates_to_sender(self) -> None:
         from app.services.safety.moderation_service import ModerationService
 
         self.sender.remove_from_area.return_value = {"message": "已移出域 测试用户"}
@@ -616,12 +626,12 @@ class ModerationServiceTest(unittest.TestCase):
             resolver_cls.return_value.user.return_value = "测试用户"
 
             service = ModerationService(self.handler)
-            service.remove_from_area("user-1", "channel-1", "area-1")
+            await service.remove_from_area("user-1", "channel-1", "area-1")
 
         self.sender.remove_from_area.assert_called_once_with("user-1", area="area-1")
         self.assertIn("[ok]", self.sender.send_message.call_args.args[0])
 
-    def test_show_block_list_reports_empty_list(self) -> None:
+    async def test_show_block_list_reports_empty_list(self) -> None:
         from app.services.safety.moderation_service import ModerationService
 
         self.sender.get_area_blocks.return_value = {"blocks": []}
@@ -630,11 +640,11 @@ class ModerationServiceTest(unittest.TestCase):
             get_resolver.return_value.area.return_value = "测试区域"
 
             service = ModerationService(self.handler)
-            service.show_block_list("channel-1", "area-1")
+            await service.show_block_list("channel-1", "area-1")
 
         self.assertIn("当前无封禁用户", self.sender.send_message.call_args.args[0])
 
-    def test_show_block_list_formats_entries(self) -> None:
+    async def test_show_block_list_formats_entries(self) -> None:
         from app.services.safety.moderation_service import ModerationService
 
         self.sender.get_area_blocks.return_value = {
@@ -650,7 +660,7 @@ class ModerationServiceTest(unittest.TestCase):
             resolver.user.side_effect = lambda uid: {"user-1234567890": "用户甲", "user-abcdef1234": "用户乙"}.get(uid, "")
 
             service = ModerationService(self.handler)
-            service.show_block_list("channel-1", "area-1")
+            await service.show_block_list("channel-1", "area-1")
 
         message = self.sender.send_message.call_args.args[0]
         self.assertIn("测试区域 - 封禁列表", message)
@@ -658,11 +668,11 @@ class ModerationServiceTest(unittest.TestCase):
         self.assertIn("用户乙", message)
 
 
-class HelpServiceTest(unittest.TestCase):
+class HelpServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         from domain.plugins.base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
 
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.chat = SimpleNamespace(
             ai_enabled=True,
             img_enabled=True,
@@ -674,6 +684,13 @@ class HelpServiceTest(unittest.TestCase):
             _img_model="img-model",
         )
         self.plugins = Mock()
+        self.plugins.load = AsyncMock()
+        self.plugins.load_all = AsyncMock()
+        self.plugins.reload_config = AsyncMock()
+        self.plugins.stop = AsyncMock()
+        self.plugins.try_dispatch_mention = AsyncMock()
+        self.plugins.try_dispatch_slash = AsyncMock()
+        self.plugins.unload = AsyncMock()
         self.access = Mock()
         self.plugin_descriptor_cls = PluginDescriptor
         self.plugin_metadata_cls = PluginMetadata
@@ -685,7 +702,7 @@ class HelpServiceTest(unittest.TestCase):
             ),
         )
 
-    def test_show_help_for_normal_user_filters_plugin_caps(self) -> None:
+    async def test_show_help_for_normal_user_filters_plugin_caps(self) -> None:
         from app.services.interaction.help_service import HelpService
 
         self.access.is_admin.return_value = False
@@ -701,7 +718,7 @@ class HelpServiceTest(unittest.TestCase):
         ]
 
         service = HelpService(self.handler)
-        service.show_help("channel-1", "area-1", user="user-1")
+        await service.show_help("channel-1", "area-1", user="user-1")
 
         self.plugins.list_command_descriptors.assert_called_once_with(public_only=True)
         message = self.sender.send_message.call_args.args[0]
@@ -711,14 +728,14 @@ class HelpServiceTest(unittest.TestCase):
         self.assertIn("@bot 测试 / 测试二  |  /demo / /demo2", message)
         self.assertEqual(self.sender.send_message.call_args.kwargs["styleTags"], ["IMPORTANT"])
 
-    def test_show_help_for_admin_includes_admin_sections(self) -> None:
+    async def test_show_help_for_admin_includes_admin_sections(self) -> None:
         from app.services.interaction.help_service import HelpService
 
         self.access.is_admin.return_value = True
         self.plugins.list_command_descriptors.return_value = []
 
         service = HelpService(self.handler)
-        service.show_help("channel-1", "area-1", user="admin-1")
+        await service.show_help("channel-1", "area-1", user="admin-1")
 
         self.plugins.list_command_descriptors.assert_called_once_with(public_only=False)
         message = self.sender.send_message.call_args.args[0]
@@ -726,7 +743,7 @@ class HelpServiceTest(unittest.TestCase):
         self.assertIn("插件扩展", message)
         self.assertIn("管理操作", message)
 
-    def test_show_help_hides_ai_section_when_ai_is_unavailable(self) -> None:
+    async def test_show_help_hides_ai_section_when_ai_is_unavailable(self) -> None:
         from app.services.interaction.help_service import HelpService
 
         self.access.is_admin.return_value = False
@@ -735,31 +752,38 @@ class HelpServiceTest(unittest.TestCase):
         self.chat.img_enabled = False
 
         service = HelpService(self.handler)
-        service.show_help("channel-1", "area-1", user="user-1")
+        await service.show_help("channel-1", "area-1", user="user-1")
 
         message = self.sender.send_message.call_args.args[0]
         self.assertNotIn("AI 功能", message)
 
-    def test_show_help_can_render_topic_view(self) -> None:
+    async def test_show_help_can_render_topic_view(self) -> None:
         from app.services.interaction.help_service import HelpService
 
         self.access.is_admin.return_value = False
         self.plugins.list_command_descriptors.return_value = []
 
         service = HelpService(self.handler)
-        service.show_help("channel-1", "area-1", user="user-1", topic="音乐")
+        await service.show_help("channel-1", "area-1", user="user-1", topic="音乐")
 
         message = self.sender.send_message.call_args.args[0]
         self.assertIn("帮助 - 音乐", message)
         self.assertIn("选歌", message)
 
 
-class PluginManagementServiceTest(unittest.TestCase):
+class PluginManagementServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         from domain.plugins.base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
 
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.plugins = Mock()
+        self.plugins.load = AsyncMock()
+        self.plugins.load_all = AsyncMock()
+        self.plugins.reload_config = AsyncMock()
+        self.plugins.stop = AsyncMock()
+        self.plugins.try_dispatch_mention = AsyncMock()
+        self.plugins.try_dispatch_slash = AsyncMock()
+        self.plugins.unload = AsyncMock()
         self.plugin_descriptor_cls = PluginDescriptor
         self.plugin_metadata_cls = PluginMetadata
         self.plugin_capabilities_cls = PluginCommandCapabilities
@@ -768,7 +792,7 @@ class PluginManagementServiceTest(unittest.TestCase):
             plugin_host=object(),
         )
 
-    def test_show_plugin_list_splits_loaded_and_available(self) -> None:
+    async def test_show_plugin_list_splits_loaded_and_available(self) -> None:
         from app.services.plugins.plugin_management_service import PluginManagementService
 
         self.plugins.list_descriptors.return_value = [
@@ -785,7 +809,7 @@ class PluginManagementServiceTest(unittest.TestCase):
         self.plugins.discover.return_value = ["loaded_a", "extra_b"]
 
         service = PluginManagementService(self.handler)
-        service.show_plugin_list("channel-1", "area-1")
+        await service.show_plugin_list("channel-1", "area-1")
 
         message = self.sender.send_message.call_args.args[0]
         self.assertIn("已加载: 1", message)
@@ -794,18 +818,18 @@ class PluginManagementServiceTest(unittest.TestCase):
         self.assertIn("命令: @bot 测试  |  /demo", message)
         self.assertIn("extra_b", message)
 
-    def test_load_rejects_invalid_plugin_name(self) -> None:
+    async def test_load_rejects_invalid_plugin_name(self) -> None:
         import app.services.plugins.plugin_management_service as module
 
         with patch.object(module, "normalize_plugin_name", return_value=None):
             service = module.PluginManagementService(self.handler)
-            service.load("bad name!", "channel-1", "area-1")
+            await service.load("bad name!", "channel-1", "area-1")
 
         self.plugins.load.assert_not_called()
         self.sender.send_message.assert_called_once()
         self.assertIn("不合法", self.sender.send_message.call_args.args[0])
 
-    def test_load_delegates_to_plugin_runtime(self) -> None:
+    async def test_load_delegates_to_plugin_runtime(self) -> None:
         import app.services.plugins.plugin_management_service as module
         from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
 
@@ -816,12 +840,12 @@ class PluginManagementServiceTest(unittest.TestCase):
         )
         with patch.object(module, "normalize_plugin_name", return_value="demo"):
             service = module.PluginManagementService(self.handler)
-            service.load("demo.py", "channel-1", "area-1")
+            await service.load("demo.py", "channel-1", "area-1")
 
         self.plugins.load.assert_called_once_with("demo", handler=self.handler.plugin_host)
         self.assertEqual(self.sender.send_message.call_args.args[0], "[ok] 已加载: demo")
 
-    def test_unload_delegates_to_plugin_runtime(self) -> None:
+    async def test_unload_delegates_to_plugin_runtime(self) -> None:
         import app.services.plugins.plugin_management_service as module
         from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
 
@@ -832,18 +856,26 @@ class PluginManagementServiceTest(unittest.TestCase):
         )
         with patch.object(module, "normalize_plugin_name", return_value="demo"):
             service = module.PluginManagementService(self.handler)
-            service.unload("demo.py", "channel-1", "area-1")
+            await service.unload("demo.py", "channel-1", "area-1")
 
         self.plugins.unload.assert_called_once_with("demo", handler=self.handler.plugin_host)
         self.assertEqual(self.sender.send_message.call_args.args[0], "[x] 插件未加载: demo")
 
 
-class CommonCommandServiceTest(unittest.TestCase):
+class CommonCommandServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
-        self.music = Mock()
+        self.sender = AsyncMock()
+        self.music = AsyncMock()
         self.chat = Mock()
+        self.chat.ai_reply = AsyncMock()
+        self.chat.check_profanity = AsyncMock()
+        self.chat.close = AsyncMock()
+        self.chat.generate_image = AsyncMock()
         self.recall_scheduler = Mock()
+        self.recall_scheduler.cancel_all = AsyncMock()
+        self.recall_scheduler.schedule_recall = AsyncMock()
+        self.recall_scheduler.schedule_user_message_recall = AsyncMock()
+        self.recall_scheduler.stop = AsyncMock()
         self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, music=self.music, chat=self.chat),
             services=SimpleNamespace(
@@ -851,18 +883,18 @@ class CommonCommandServiceTest(unittest.TestCase):
             ),
         )
 
-    def test_show_voice_channels_reports_empty_state(self) -> None:
+    async def test_show_voice_channels_reports_empty_state(self) -> None:
         from app.services.interaction.common_command_service import CommonCommandService
 
         self.sender.get_voice_channel_members.return_value = {}
 
         service = CommonCommandService(self.handler)
-        service.show_voice_channels("channel-1", "area-1")
+        await service.show_voice_channels("channel-1", "area-1")
 
         self.sender.send_message.assert_called_once()
         self.assertIn("没有语音频道在线成员", self.sender.send_message.call_args.args[0])
 
-    def test_show_voice_channels_formats_online_members(self) -> None:
+    async def test_show_voice_channels_formats_online_members(self) -> None:
         from app.services.interaction.common_command_service import CommonCommandService
 
         self.sender.get_voice_channel_members.return_value = {
@@ -879,14 +911,14 @@ class CommonCommandServiceTest(unittest.TestCase):
             resolver.user.side_effect = lambda uid: {"u1": "用户1", "u2": "机器人2"}.get(uid, uid)
 
             service = CommonCommandService(self.handler)
-            service.show_voice_channels("channel-1", "area-1")
+            await service.show_voice_channels("channel-1", "area-1")
 
         message = self.sender.send_message.call_args.args[0]
         self.assertIn("测试区域 - 语音频道在线", message)
         self.assertIn("共 2 人在线", message)
         self.assertIn("机器人2 [Bot]", message)
 
-    def test_generate_image_reports_failure_when_generation_fails(self) -> None:
+    async def test_generate_image_reports_failure_when_generation_fails(self) -> None:
         from app.services.interaction.common_command_service import CommonCommandService
 
         self.chat.generate_image.return_value = ""
@@ -895,13 +927,13 @@ class CommonCommandServiceTest(unittest.TestCase):
             resolver_cls.return_value.user.return_value = "测试用户"
 
             service = CommonCommandService(self.handler)
-            service.generate_image("一只猫", "channel-1", "area-1", "user-1")
+            await service.generate_image("一只猫", "channel-1", "area-1", "user-1")
 
         self.assertEqual(self.sender.send_message.call_count, 2)
         self.assertIn("正在绘制中", self.sender.send_message.call_args_list[0].args[0])
         self.assertIn("图片生成失败", self.sender.send_message.call_args_list[1].args[0])
 
-    def test_generate_image_sends_attachment_message_on_success(self) -> None:
+    async def test_generate_image_sends_attachment_message_on_success(self) -> None:
         from app.services.interaction.common_command_service import CommonCommandService
 
         self.chat.generate_image.return_value = "https://example.com/demo.png"
@@ -919,7 +951,7 @@ class CommonCommandServiceTest(unittest.TestCase):
             resolver_cls.return_value.user.return_value = "测试用户"
 
             service = CommonCommandService(self.handler)
-            service.generate_image("一只猫", "channel-1", "area-1", "user-1")
+            await service.generate_image("一只猫", "channel-1", "area-1", "user-1")
 
         self.sender.upload_file_from_url.assert_called_once_with("https://example.com/demo.png")
         final_call = self.sender.send_message.call_args_list[-1]
@@ -928,11 +960,19 @@ class CommonCommandServiceTest(unittest.TestCase):
         self.assertTrue(final_call.kwargs["auto_recall"])
 
 
-class ChatInteractionServiceTest(unittest.TestCase):
+class ChatInteractionServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.chat = Mock()
+        self.chat.ai_reply = AsyncMock()
+        self.chat.check_profanity = AsyncMock()
+        self.chat.close = AsyncMock()
+        self.chat.generate_image = AsyncMock()
         self.recall_scheduler = Mock()
+        self.recall_scheduler.cancel_all = AsyncMock()
+        self.recall_scheduler.schedule_recall = AsyncMock()
+        self.recall_scheduler.schedule_user_message_recall = AsyncMock()
+        self.recall_scheduler.stop = AsyncMock()
         self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, chat=self.chat),
             services=SimpleNamespace(
@@ -940,36 +980,36 @@ class ChatInteractionServiceTest(unittest.TestCase):
             ),
         )
 
-    def test_handle_plain_chat_returns_false_when_no_reply(self) -> None:
+    async def test_handle_plain_chat_returns_false_when_no_reply(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
 
         self.chat.try_reply.return_value = ""
 
         service = ChatInteractionService(self.handler)
-        result = service.handle_plain_chat("hello", "channel-1", "area-1")
+        result = await service.handle_plain_chat("hello", "channel-1", "area-1")
 
         self.assertFalse(result)
         self.sender.send_message.assert_not_called()
 
-    def test_handle_plain_chat_sends_reply_when_available(self) -> None:
+    async def test_handle_plain_chat_sends_reply_when_available(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
 
         self.chat.try_reply.return_value = "自动回复"
 
         service = ChatInteractionService(self.handler)
-        result = service.handle_plain_chat("hello", "channel-1", "area-1")
+        result = await service.handle_plain_chat("hello", "channel-1", "area-1")
 
         self.assertTrue(result)
         self.sender.send_message.assert_called_once_with("自动回复", channel="channel-1", area="area-1")
 
-    def test_handle_mention_fallback_uses_ai_reply_when_available(self) -> None:
+    async def test_handle_mention_fallback_uses_ai_reply_when_available(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
 
         self.chat.ai_reply.return_value = "AI 回复"
         self.recall_scheduler.should_skip_auto_recall.return_value = False
 
         service = ChatInteractionService(self.handler)
-        service.handle_mention_fallback("未知问题", "channel-1", "area-1")
+        await service.handle_mention_fallback("未知问题", "channel-1", "area-1")
 
         self.sender.send_message.assert_called_once_with(
             "AI 回复",
@@ -978,140 +1018,140 @@ class ChatInteractionServiceTest(unittest.TestCase):
             auto_recall=False,
         )
 
-    def test_handle_mention_fallback_sends_default_hint_when_ai_fails(self) -> None:
+    async def test_handle_mention_fallback_sends_default_hint_when_ai_fails(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
 
         self.chat.ai_reply.return_value = ""
 
         service = ChatInteractionService(self.handler)
-        service.handle_mention_fallback("未知问题", "channel-1", "area-1")
+        await service.handle_mention_fallback("未知问题", "channel-1", "area-1")
 
         self.sender.send_message.assert_called_once()
         self.assertIn("@bot 帮助", self.sender.send_message.call_args.args[0])
 
-    def test_send_unknown_command_sends_help_hint(self) -> None:
+    async def test_send_unknown_command_sends_help_hint(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
 
         service = ChatInteractionService(self.handler)
-        service.send_unknown_command("/unknown", "channel-1", "area-1")
+        await service.send_unknown_command("/unknown", "channel-1", "area-1")
 
         self.sender.send_message.assert_called_once()
         self.assertIn("/help", self.sender.send_message.call_args.args[0])
 
 
-class MusicCommandServiceTest(unittest.TestCase):
+class MusicCommandServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
-        self.music = Mock()
+        self.sender = AsyncMock()
+        self.music = AsyncMock()
         self.handler = _runtime(
             infrastructure=SimpleNamespace(sender=self.sender, music=self.music),
         )
 
-    def test_handle_mention_play_delegates_with_keyword(self) -> None:
+    async def test_handle_mention_play_delegates_with_keyword(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_mention("播放 稻香", "channel-1", "area-1", "user-1")
+        result = await service.handle_mention("播放 稻香", "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.play_netease.assert_called_once_with("稻香", "channel-1", "area-1", "user-1")
         self.sender.send_message.assert_not_called()
 
-    def test_handle_mention_play_without_keyword_sends_usage(self) -> None:
+    async def test_handle_mention_play_without_keyword_sends_usage(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_mention("播放", "channel-1", "area-1", "user-1")
+        result = await service.handle_mention("播放", "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.play_netease.assert_not_called()
         self.sender.send_message.assert_called_once()
         self.assertIn("请输入歌名", self.sender.send_message.call_args.args[0])
 
-    def test_handle_mention_like_list_parses_page(self) -> None:
+    async def test_handle_mention_like_list_parses_page(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_mention("喜欢列表 3", "channel-1", "area-1", "user-1")
+        result = await service.handle_mention("喜欢列表 3", "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.show_liked_list.assert_called_once_with("channel-1", "area-1", 3)
 
-    def test_handle_mention_returns_false_for_unknown_text(self) -> None:
+    async def test_handle_mention_returns_false_for_unknown_text(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_mention("天气不错", "channel-1", "area-1", "user-1")
+        result = await service.handle_mention("天气不错", "channel-1", "area-1", "user-1")
 
         self.assertFalse(result)
         self.music.play_netease.assert_not_called()
         self.sender.send_message.assert_not_called()
 
-    def test_handle_slash_play_without_keyword_sends_usage(self) -> None:
+    async def test_handle_slash_play_without_keyword_sends_usage(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_slash("/play", None, None, ["/play"], "channel-1", "area-1", "user-1")
+        result = await service.handle_slash("/play", None, None, ["/play"], "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.play_netease.assert_not_called()
         self.sender.send_message.assert_called_once()
         self.assertIn("用法: /bf 歌曲名", self.sender.send_message.call_args.args[0])
 
-    def test_handle_slash_yun_play_delegates_with_arg(self) -> None:
+    async def test_handle_slash_yun_play_delegates_with_arg(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_slash("/yun", "play", "晴天", ["/yun", "play", "晴天"], "channel-1", "area-1", "user-1")
+        result = await service.handle_slash("/yun", "play", "晴天", ["/yun", "play", "晴天"], "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.play_netease.assert_called_once_with("晴天", "channel-1", "area-1", "user-1")
 
-    def test_handle_slash_like_list_defaults_to_first_page_when_arg_invalid(self) -> None:
+    async def test_handle_slash_like_list_defaults_to_first_page_when_arg_invalid(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_slash("/like", "list", "abc", ["/like", "list", "abc"], "channel-1", "area-1", "user-1")
+        result = await service.handle_slash("/like", "list", "abc", ["/like", "list", "abc"], "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.show_liked_list.assert_called_once_with("channel-1", "area-1", 1)
 
-    def test_handle_slash_like_play_reports_invalid_index(self) -> None:
+    async def test_handle_slash_like_play_reports_invalid_index(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_slash("/like", "play", "abc", ["/like", "play", "abc"], "channel-1", "area-1", "user-1")
+        result = await service.handle_slash("/like", "play", "abc", ["/like", "play", "abc"], "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.play_liked_by_index.assert_not_called()
         self.sender.send_message.assert_called_once()
         self.assertIn("/like play <编号>", self.sender.send_message.call_args.args[0])
 
-    def test_handle_slash_like_count_is_clamped(self) -> None:
+    async def test_handle_slash_like_count_is_clamped(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_slash("/like", "99", None, ["/like", "99"], "channel-1", "area-1", "user-1")
+        result = await service.handle_slash("/like", "99", None, ["/like", "99"], "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.play_liked.assert_called_once_with("channel-1", "area-1", "user-1", 20)
 
-    def test_handle_slash_returns_false_for_non_music_command(self) -> None:
+    async def test_handle_slash_returns_false_for_non_music_command(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         service = MusicCommandService(self.handler)
-        result = service.handle_slash("/members", None, None, ["/members"], "channel-1", "area-1", "user-1")
+        result = await service.handle_slash("/members", None, None, ["/members"], "channel-1", "area-1", "user-1")
 
         self.assertFalse(result)
         self.music.play_liked.assert_not_called()
         self.sender.send_message.assert_not_called()
 
 
-class MusicCommandInteractiveSelectionTest(unittest.TestCase):
+class MusicCommandInteractiveSelectionTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.selection = Mock()
-        self.music = Mock()
+        self.music = AsyncMock()
         self.music.supports_interactive_selection = True
         self.music.search_best_candidate.return_value = None
         self.handler = _runtime(
@@ -1121,7 +1161,7 @@ class MusicCommandInteractiveSelectionTest(unittest.TestCase):
             ),
         )
 
-    def test_search_candidates_stores_song_choices(self) -> None:
+    async def test_search_candidates_stores_song_choices(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         self.music.search_candidates.return_value = [
@@ -1130,14 +1170,14 @@ class MusicCommandInteractiveSelectionTest(unittest.TestCase):
         ]
 
         service = MusicCommandService(self.handler)
-        service.search_candidates("稻香", "channel-1", "area-1", "user-1")
+        await service.search_candidates("稻香", "channel-1", "area-1", "user-1")
 
         self.selection.store.assert_called_once()
         message = self.sender.send_message.call_args.args[0]
         self.assertIn("搜歌", message)
         self.assertIn("选择", message)
 
-    def test_handle_pick_plays_selected_song(self) -> None:
+    async def test_handle_pick_plays_selected_song(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         self.selection.pick.return_value = (
@@ -1146,7 +1186,7 @@ class MusicCommandInteractiveSelectionTest(unittest.TestCase):
         )
 
         service = MusicCommandService(self.handler)
-        result = service.handle_pick(1, "channel-1", "area-1", "user-1")
+        result = await service.handle_pick(1, "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.play_song_choice.assert_called_once_with(
@@ -1157,7 +1197,7 @@ class MusicCommandInteractiveSelectionTest(unittest.TestCase):
         )
         self.selection.clear.assert_called_once_with("user-1", "channel-1", "area-1")
 
-    def test_handle_slash_play_uses_fast_match_before_candidate_search(self) -> None:
+    async def test_handle_slash_play_uses_fast_match_before_candidate_search(self) -> None:
         from app.services.interaction.music_command_service import MusicCommandService
 
         self.music.search_best_candidate.return_value = {
@@ -1168,7 +1208,7 @@ class MusicCommandInteractiveSelectionTest(unittest.TestCase):
         }
 
         service = MusicCommandService(self.handler)
-        result = service.handle_slash("/bf", None, None, ["/bf", "稻香"], "channel-1", "area-1", "user-1")
+        result = await service.handle_slash("/bf", None, None, ["/bf", "稻香"], "channel-1", "area-1", "user-1")
 
         self.assertTrue(result)
         self.music.search_best_candidate.assert_called_once_with("稻香", "netease")
@@ -1181,10 +1221,17 @@ class MusicCommandInteractiveSelectionTest(unittest.TestCase):
         self.music.search_candidates.assert_not_called()
 
 
-class SetupServiceTest(unittest.TestCase):
+class SetupServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.sender = Mock()
+        self.sender = AsyncMock()
         self.plugins = Mock()
+        self.plugins.load = AsyncMock()
+        self.plugins.load_all = AsyncMock()
+        self.plugins.reload_config = AsyncMock()
+        self.plugins.stop = AsyncMock()
+        self.plugins.try_dispatch_mention = AsyncMock()
+        self.plugins.try_dispatch_slash = AsyncMock()
+        self.plugins.unload = AsyncMock()
         self.access = Mock()
         self.access.has_configured_admins.return_value = True
         self.handler = _runtime(
@@ -1193,7 +1240,7 @@ class SetupServiceTest(unittest.TestCase):
             services=SimpleNamespace(routing=SimpleNamespace(access=self.access)),
         )
 
-    def test_show_health_check_reports_failures_and_next_steps(self) -> None:
+    async def test_show_health_check_reports_failures_and_next_steps(self) -> None:
         from app.services.interaction.setup_service import SetupService
 
         service = SetupService(self.handler)
@@ -1207,7 +1254,7 @@ class SetupServiceTest(unittest.TestCase):
             "wizard_steps": [],
         }
         with patch.object(service, "build_report", return_value=fake_report):
-            service.show_health_check("channel-1", "area-1")
+            await service.show_health_check("channel-1", "area-1")
 
         self.sender.send_message.assert_called_once()
         message = self.sender.send_message.call_args.args[0]
@@ -1216,7 +1263,7 @@ class SetupServiceTest(unittest.TestCase):
         self.assertIn("@bot 首启向导", message)
         self.assertIn("/admin/setup", message)
 
-    def test_show_setup_wizard_formats_steps(self) -> None:
+    async def test_show_setup_wizard_formats_steps(self) -> None:
         from app.services.interaction.setup_service import SetupService
 
         service = SetupService(self.handler)
@@ -1241,7 +1288,7 @@ class SetupServiceTest(unittest.TestCase):
             ]
         }
         with patch.object(service, "build_report", return_value=fake_report):
-            service.show_setup_wizard("channel-1", "area-1")
+            await service.show_setup_wizard("channel-1", "area-1")
 
         self.sender.send_message.assert_called_once()
         message = self.sender.send_message.call_args.args[0]
@@ -1252,35 +1299,35 @@ class SetupServiceTest(unittest.TestCase):
         # 已配置管理员时不该出现引导段
         self.assertNotIn("尚未配置管理员", message)
 
-    def _wizard_message(self, user: str) -> str:
+    async def _wizard_message(self, user: str) -> str:
         from app.services.interaction.setup_service import SetupService
 
         service = SetupService(self.handler)
         with patch.object(service, "build_report", return_value={"wizard_steps": []}):
-            service.show_setup_wizard("channel-1", "area-1", user)
+            await service.show_setup_wizard("channel-1", "area-1", user)
         return self.sender.send_message.call_args.args[0]
 
-    def test_wizard_echoes_caller_uid_when_no_admins_configured(self) -> None:
+    async def test_wizard_echoes_caller_uid_when_no_admins_configured(self) -> None:
         # 权限是 fail-closed 的，空名单下所有管理命令不可用；
         # 向导必须回显 UID，否则用户拿不到填进 ADMIN_UIDS 的值
         self.access.has_configured_admins.return_value = False
 
-        message = self._wizard_message("uid-abc123")
+        message = await self._wizard_message("uid-abc123")
 
         self.assertIn("尚未配置管理员", message)
         self.assertIn("uid-abc123", message)
         self.assertIn("ADMIN_UIDS", message)
 
-    def test_wizard_falls_back_when_caller_uid_unknown(self) -> None:
+    async def test_wizard_falls_back_when_caller_uid_unknown(self) -> None:
         self.access.has_configured_admins.return_value = False
 
-        message = self._wizard_message("")
+        message = await self._wizard_message("")
 
         self.assertIn("尚未配置管理员", message)
         self.assertIn("个人信息", message)
 
 
-class ProfanitySelfLockTest(unittest.TestCase):
+class ProfanitySelfLockTest(unittest.IsolatedAsyncioTestCase):
     """未配置管理员时必须全员免检，否则服主自己会被自动禁言且无法解禁。"""
 
     def _service(self, *, has_admins: bool):
@@ -1291,9 +1338,11 @@ class ProfanitySelfLockTest(unittest.TestCase):
         access.is_admin.return_value = False
         runtime = Mock()
         runtime.services.routing.access = access
+        # 权限判定是同步的，脏话检测本身是异步的，两者的桩不能混用
+        runtime.services.safety.profanity.handle_profanity = AsyncMock(return_value=False)
         return CommandMessageService(runtime), access
 
-    def test_empty_admin_list_skips_profanity_for_everyone(self) -> None:
+    async def test_empty_admin_list_skips_profanity_for_everyone(self) -> None:
         import app.services.routing.command_message_service as module
         from app.services.routing.command_message_service import MessageContext
 
@@ -1309,9 +1358,9 @@ class ProfanitySelfLockTest(unittest.TestCase):
         )
 
         with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):
-            self.assertFalse(service.handle_profanity(ctx))
+            self.assertFalse(await service.handle_profanity(ctx))
 
-    def test_configured_admin_list_still_checks_non_admins(self) -> None:
+    async def test_configured_admin_list_still_checks_non_admins(self) -> None:
         import app.services.routing.command_message_service as module
         from app.services.routing.command_message_service import MessageContext
 
@@ -1327,7 +1376,7 @@ class ProfanitySelfLockTest(unittest.TestCase):
         )
 
         with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):
-            service.handle_profanity(ctx)
+            await service.handle_profanity(ctx)
 
         # 名单已配置时不再全员免检，必须逐个判定身份
         access.is_admin.assert_called_with("someone")

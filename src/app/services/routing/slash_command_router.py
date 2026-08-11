@@ -17,13 +17,13 @@ class SlashCommandRouter:
     def _rest(self, parts: list[str]) -> str:
         return " ".join(parts[1:]).strip()
 
-    def _dispatch_exact(self, command: str, aliases: tuple[str, ...], callback) -> bool:
+    async def _dispatch_exact(self, command: str, aliases: tuple[str, ...], callback) -> bool:
         if command not in aliases:
             return False
-        callback()
+        await callback()
         return True
 
-    def _dispatch_required_arg(
+    async def _dispatch_required_arg(
         self,
         command: str,
         aliases: tuple[str, ...],
@@ -36,12 +36,12 @@ class SlashCommandRouter:
         if command not in aliases:
             return False
         if raw:
-            callback(raw)
+            await callback(raw)
         else:
-            self._sender.send_message(usage, channel=channel, area=area)
+            await self._sender.send_message(usage, channel=channel, area=area)
         return True
 
-    def _dispatch_required_pair(
+    async def _dispatch_required_pair(
         self,
         command: str,
         aliases: tuple[str, ...],
@@ -56,9 +56,9 @@ class SlashCommandRouter:
         if len(parts) >= 3:
             role_arg = " ".join(parts[2:]).strip()
             if role_arg:
-                callback(parts[1], role_arg)
+                await callback(parts[1], role_arg)
                 return True
-        self._sender.send_message(usage, channel=channel, area=area)
+        await self._sender.send_message(usage, channel=channel, area=area)
         return True
 
     def _admin_rules(self, channel: str, area: str):
@@ -129,7 +129,7 @@ class SlashCommandRouter:
             ),
         )
 
-    def _reject_admin_only(
+    async def _reject_admin_only(
         self,
         command: str,
         channel: str,
@@ -141,14 +141,14 @@ class SlashCommandRouter:
             return False
         if self._services.routing.access.is_admin(user):
             return False
-        self._sender.send_message(
+        await self._sender.send_message(
             f"{Msg.ERR} 无权限，仅管理员可使用该指令",
             channel=channel,
             area=area,
         )
         return True
 
-    def dispatch(self, content: str, channel: str, area: str, user: str) -> None:
+    async def dispatch(self, content: str, channel: str, area: str, user: str) -> None:
         parts = content.split()
         if not parts:
             return
@@ -158,7 +158,7 @@ class SlashCommandRouter:
         arg = " ".join(parts[2:]) if len(parts) > 2 else None
         raw = self._rest(parts)
 
-        if self._plugins.try_dispatch_slash(
+        if await self._plugins.try_dispatch_slash(
             command,
             subcommand,
             arg,
@@ -171,46 +171,46 @@ class SlashCommandRouter:
 
         # 第一层消息闸门可能因公开插件声明与内置管理别名碰撞而放行；插件返回
         # False 后，所有内置命令必须统一经过注册表派生的第二层权限门。
-        if self._reject_admin_only(command, channel, area, user):
+        if await self._reject_admin_only(command, channel, area, user):
             return
 
         if self._services.routing.access.is_admin(user):
             for aliases, callback, usage in self._admin_rules(channel, area):
-                if usage is None and self._dispatch_exact(command, aliases, callback):
+                if usage is None and await self._dispatch_exact(command, aliases, callback):
                     return
-                if usage is not None and self._dispatch_required_arg(command, aliases, raw, callback, usage, channel, area):
+                if usage is not None and await self._dispatch_required_arg(command, aliases, raw, callback, usage, channel, area):
                     return
 
-        if not raw and self._dispatch_exact(command, slash_of("help"), lambda: self._actions.interaction.show_help(channel, area, user)):
+        if not raw and await self._dispatch_exact(command, slash_of("help"), lambda: self._actions.interaction.show_help(channel, area, user)):
             return
-        if self._services.interaction.music.handle_slash(command, subcommand, arg, parts, channel, area, user):
+        if await self._services.interaction.music.handle_slash(command, subcommand, arg, parts, channel, area, user):
             return
 
         for aliases, callback in self._exact_rules(channel, area, user, raw):
-            if self._dispatch_exact(command, aliases, callback):
+            if await self._dispatch_exact(command, aliases, callback):
                 return
 
         for aliases, callback, usage in self._arg_rules(channel, area, user):
-            if self._dispatch_required_arg(command, aliases, raw, callback, usage, channel, area):
+            if await self._dispatch_required_arg(command, aliases, raw, callback, usage, channel, area):
                 return
 
         for aliases, callback, usage in self._pair_rules(channel, area):
-            if self._dispatch_required_pair(command, aliases, parts, callback, usage, channel, area):
+            if await self._dispatch_required_pair(command, aliases, parts, callback, usage, channel, area):
                 return
 
         if command in slash_of("clear_history") and subcommand == "history":
-            self._actions.recall.clear_history(channel, area)
+            await self._actions.recall.clear_history(channel, area)
             return
 
         if command in slash_of("remind"):
             if subcommand == "list":
-                self._actions.scheduler.list_reminders(channel, area, user)
+                await self._actions.scheduler.list_reminders(channel, area, user)
             elif subcommand == "del" and arg:
-                self._actions.scheduler.delete_reminder(arg, channel, area, user)
+                await self._actions.scheduler.delete_reminder(arg, channel, area, user)
             elif raw:
-                self._actions.scheduler.set_reminder(raw, channel, area, user)
+                await self._actions.scheduler.set_reminder(raw, channel, area, user)
             else:
-                self._sender.send_message(
+                await self._sender.send_message(
                     "用法:\n/remind 30分钟后 提醒内容\n/remind list  查看我的提醒\n/remind del <ID>  删除提醒",
                     channel=channel, area=area,
                 )
@@ -218,38 +218,38 @@ class SlashCommandRouter:
 
         if command in slash_of("schedule"):
             if subcommand == "list" or not subcommand:
-                self._actions.scheduler.list_scheduled(channel, area)
+                await self._actions.scheduler.list_scheduled(channel, area)
             elif subcommand == "add":
                 if arg:
-                    self._actions.scheduler.add_scheduled(arg, channel, area)
+                    await self._actions.scheduler.add_scheduled(arg, channel, area)
                 else:
-                    self._sender.send_message("用法: /schedule add 08:00 早上好", channel=channel, area=area)
+                    await self._sender.send_message("用法: /schedule add 08:00 早上好", channel=channel, area=area)
             elif subcommand == "del":
                 if arg:
-                    self._actions.scheduler.delete_scheduled(arg, channel, area)
+                    await self._actions.scheduler.delete_scheduled(arg, channel, area)
                 else:
-                    self._sender.send_message("用法: /schedule del <ID>", channel=channel, area=area)
+                    await self._sender.send_message("用法: /schedule del <ID>", channel=channel, area=area)
             elif subcommand == "on":
                 if arg:
-                    self._actions.scheduler.toggle_scheduled(arg, channel, area, True)
+                    await self._actions.scheduler.toggle_scheduled(arg, channel, area, True)
                 else:
-                    self._sender.send_message("用法: /schedule on <ID>", channel=channel, area=area)
+                    await self._sender.send_message("用法: /schedule on <ID>", channel=channel, area=area)
             elif subcommand == "off":
                 if arg:
-                    self._actions.scheduler.toggle_scheduled(arg, channel, area, False)
+                    await self._actions.scheduler.toggle_scheduled(arg, channel, area, False)
                 else:
-                    self._sender.send_message("用法: /schedule off <ID>", channel=channel, area=area)
+                    await self._sender.send_message("用法: /schedule off <ID>", channel=channel, area=area)
             else:
-                self._sender.send_message(
+                await self._sender.send_message(
                     "用法: /schedule list | add | del | on | off", channel=channel, area=area,
                 )
             return
 
         if command in slash_of("clear_ai_memory"):
-            self._actions.interaction.clear_ai_memory(user, channel, area)
+            await self._actions.interaction.clear_ai_memory(user, channel, area)
             return
 
-        self._services.interaction.chat.send_unknown_command(
+        await self._services.interaction.chat.send_unknown_command(
             command,
             channel,
             area,

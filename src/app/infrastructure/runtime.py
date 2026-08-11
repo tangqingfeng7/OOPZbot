@@ -1,7 +1,6 @@
+import asyncio
 import json
 import os
-import threading
-import time
 from dataclasses import dataclass
 
 from core.constants import PLUGINS_DIR_NAME
@@ -9,7 +8,7 @@ from core.logger_config import get_logger
 from core.paths import DATA_DIR
 from domain.plugins.base import PluginDescriptor
 from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
-from oopz.oopz_sender import OopzSender
+from oopz.sdk_gateway import AsyncOopzGateway
 from services.chat import ChatHandler
 
 from .gateways import ChatGateway, SenderGateway
@@ -28,9 +27,10 @@ logger = get_logger("PluginRuntime")
 class MusicGateway:
     """延迟创建音乐处理器，隔离命令层对具体实现的直接依赖。"""
 
-    def __init__(self, sender: SenderGateway, voice_client=None):
+    def __init__(self, sender: SenderGateway, voice_client=None, supervisor=None):
         self._sender = sender
         self._voice_client = voice_client
+        self._supervisor = supervisor
         self._handler = None
 
     @property
@@ -39,7 +39,11 @@ class MusicGateway:
             # 只有真正用到音乐命令时才导入并创建处理器。
             from music.music import MusicHandler
 
-            self._handler = MusicHandler(self._sender.raw, voice=self._voice_client)
+            self._handler = MusicHandler(
+                self._sender.raw,
+                voice=self._voice_client,
+                supervisor=self._supervisor,
+            )
         return self._handler
 
     def __getattr__(self, name: str):
@@ -65,8 +69,6 @@ class PluginRuntime:
         self._plugins_dir = plugins_dir
         self._registry = PluginRegistry()
         self._state_path = os.fspath(state_path) if state_path else _DEFAULT_PLUGIN_STATE_PATH
-        self._stop_lock = threading.Lock()
-        self._stop_thread: threading.Thread | None = None
 
     @property
     def registry(self) -> PluginRegistry:
@@ -94,7 +96,7 @@ class PluginRuntime:
     def has_admin_only_slash_command(self, command: str) -> bool:
         return self._registry.has_admin_only_slash_command(command)
 
-    def try_dispatch_mention(
+    async def try_dispatch_mention(
         self,
         text: str,
         channel: str,
@@ -102,9 +104,9 @@ class PluginRuntime:
         user: str,
         handler,
     ) -> bool:
-        return self._registry.try_dispatch_mention(text, channel, area, user, handler)
+        return await self._registry.try_dispatch_mention(text, channel, area, user, handler)
 
-    def try_dispatch_slash(
+    async def try_dispatch_slash(
         self,
         command: str,
         subcommand: str | None,
@@ -114,7 +116,7 @@ class PluginRuntime:
         user: str,
         handler,
     ) -> bool:
-        return self._registry.try_dispatch_slash(command, subcommand, arg, channel, area, user, handler)
+        return await self._registry.try_dispatch_slash(command, subcommand, arg, channel, area, user, handler)
 
     def discover(self) -> list[str]:
         return discover_plugins(self._plugins_dir)
@@ -122,7 +124,7 @@ class PluginRuntime:
     def enabled_plugin_names(self) -> list[str]:
         return [descriptor.name for descriptor in self.list_descriptors()]
 
-    def _read_enabled_plugins(self) -> list[str] | None:
+    def _read_enabled_plugins_sync(self) -> list[str] | None:
         if not os.path.isfile(self._state_path):
             return None
         try:
@@ -135,7 +137,7 @@ class PluginRuntime:
             return [str(name) for name in enabled if str(name).strip()]
         return None
 
-    def _persist_enabled_plugins(self) -> str | None:
+    def _persist_enabled_plugins_sync(self) -> str | None:
         try:
             directory = os.path.dirname(self._state_path)
             if directory:
@@ -146,11 +148,11 @@ class PluginRuntime:
         except Exception as exc:
             return str(exc)
 
-    def load(self, plugin_name: str, handler=None) -> PluginOperationResult:
-        result = load_plugin(self._registry, plugin_name, self._plugins_dir, handler=handler)
+    async def load(self, plugin_name: str, handler=None) -> PluginOperationResult:
+        result = await load_plugin(self._registry, plugin_name, self._plugins_dir, handler=handler)
         if not result.ok:
             return result
-        error = self._persist_enabled_plugins()
+        error = await asyncio.to_thread(self._persist_enabled_plugins_sync)
         if error:
             return PluginOperationResult.failure(
                 f"持久化失败: {error}",
@@ -159,11 +161,11 @@ class PluginRuntime:
             )
         return result
 
-    def unload(self, plugin_name: str, handler=None) -> PluginOperationResult:
-        result = unload_plugin(self._registry, plugin_name, handler=handler)
+    async def unload(self, plugin_name: str, handler=None) -> PluginOperationResult:
+        result = await unload_plugin(self._registry, plugin_name, handler=handler)
         if not result.ok:
             return result
-        error = self._persist_enabled_plugins()
+        error = await asyncio.to_thread(self._persist_enabled_plugins_sync)
         if error:
             return PluginOperationResult.failure(
                 f"持久化失败: {error}",
@@ -172,39 +174,28 @@ class PluginRuntime:
             )
         return result
 
-    def reload_config(self, plugin_name: str, handler=None) -> PluginOperationResult:
-        return reload_plugin_config(self._registry, plugin_name, handler=handler)
+    async def reload_config(self, plugin_name: str, handler=None) -> PluginOperationResult:
+        return await reload_plugin_config(self._registry, plugin_name, handler=handler)
 
-    def stop(self, timeout: float = 5.0) -> None:
+    async def stop(self, timeout: float = 5.0) -> None:
         """在调用方预算内停止全部插件，不改写下次启用状态。"""
-        deadline = time.monotonic() + max(0.0, timeout)
-        with self._stop_lock:
-            stop_thread = self._stop_thread
-            if stop_thread is None or not stop_thread.is_alive():
-                if not self._registry.list_descriptors():
-                    return
-                stop_thread = threading.Thread(
-                    target=self._registry.stop_all,
-                    name="PluginShutdown",
-                    daemon=True,
-                )
-                self._stop_thread = stop_thread
-                stop_thread.start()
+        if not self._registry.list_descriptors():
+            return
+        try:
+            await asyncio.wait_for(self._registry.stop_all(), timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            logger.warning("服务停止超时: PluginShutdown，插件仍在停止")
 
-        stop_thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        if stop_thread.is_alive():
-            logger.warning("服务停止超时: PluginShutdown，插件仍在后台停止")
-
-    def load_all(self, handler=None) -> list[str]:
-        discovered = self.discover()
-        enabled = self._read_enabled_plugins()
+    async def load_all(self, handler=None) -> list[str]:
+        discovered = await asyncio.to_thread(self.discover)
+        enabled = await asyncio.to_thread(self._read_enabled_plugins_sync)
         to_load = [name for name in discovered if enabled is None or name in enabled]
         loaded: list[str] = []
         for name in to_load:
-            result = load_plugin(self._registry, name, self._plugins_dir, handler=handler)
+            result = await load_plugin(self._registry, name, self._plugins_dir, handler=handler)
             if result.ok:
                 loaded.append(name)
-        self._persist_enabled_plugins()
+        await asyncio.to_thread(self._persist_enabled_plugins_sync)
         return loaded
 
 
@@ -242,13 +233,13 @@ class BotInfrastructure:
     plugins: PluginRuntime
 
 
-def build_bot_infrastructure(sender: OopzSender, voice_client=None) -> BotInfrastructure:
+def build_bot_infrastructure(sender: AsyncOopzGateway, voice_client=None, supervisor=None) -> BotInfrastructure:
     """构建命令处理链路需要的基础设施对象。"""
     sender_gateway = SenderGateway(sender)
     return BotInfrastructure(
         sender=sender_gateway,
         # ChatHandler 足够轻量，可以在运行时初始化时直接创建。
         chat=ChatGateway(ChatHandler()),
-        music=MusicGateway(sender_gateway, voice_client=voice_client),
+        music=MusicGateway(sender_gateway, voice_client=voice_client, supervisor=supervisor),
         plugins=PluginRuntime(),
     )

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
 from typing import Any
 
+from core.logger_config import get_logger
 from domain.plugins.plugin_config import PluginConfig, PluginConfigValidationError
 from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
-from core.logger_config import get_logger
 
 from .module_tools import (
     PROJECT_ROOT,
@@ -44,7 +45,7 @@ def load_plugin_config(
         return PluginConfig.empty(plugin_name, path)
 
     try:
-        with open(path, "r", encoding="utf-8") as file:
+        with open(path, encoding="utf-8") as file:
             raw = json.load(file)
     except Exception as exc:
         logger.warning("PluginLoader: 读取配置 %s 失败: %s", path, exc)
@@ -75,7 +76,16 @@ def discover_plugins(plugins_dir: str) -> list[str]:
     return discover_plugin_names(plugins_dir, _PROJECT_ROOT)
 
 
-def load_plugin(
+def _validate_async_plugin(plugin_class: type) -> str | None:
+    """同步插件会阻塞主事件循环，因此在实例化前明确拒绝。"""
+    required = ("handle_mention", "handle_slash", "on_load", "on_config_reload", "on_unload")
+    invalid = [name for name in required if not inspect.iscoroutinefunction(getattr(plugin_class, name, None))]
+    if invalid:
+        return "插件仅支持 async def，以下方法仍为同步实现: " + ", ".join(invalid)
+    return None
+
+
+async def load_plugin(
     registry: PluginRegistry,
     plugin_name: str,
     plugins_dir: str = "plugins",
@@ -130,10 +140,19 @@ def load_plugin(
             code=PluginOperationCode.INVALID_MODULE,
         )
 
+    async_error = _validate_async_plugin(plugin_class)
+    if async_error:
+        sys.modules.pop(module_name, None)
+        return PluginOperationResult.failure(
+            async_error,
+            plugin_name=plugin_name,
+            code=PluginOperationCode.INVALID_MODULE,
+        )
+
     try:
         instance = plugin_class()
         config = instance.config_spec.apply(load_plugin_config(plugin_name))
-        if not registry.register(instance, builtin=False):
+        if not await registry.register(instance, builtin=False):
             sys.modules.pop(module_name, None)
             return PluginOperationResult.failure(
                 f"注册失败: {plugin_name}",
@@ -142,10 +161,10 @@ def load_plugin(
             )
         if handler:
             try:
-                instance.on_load(handler, config)
+                await instance.on_load(handler, config)
             except PluginConfigValidationError as exc:
                 logger.warning("PluginLoader: %s 配置校验失败: %s", plugin_name, exc)
-                registry.unregister(plugin_name)
+                await registry.unregister(plugin_name)
                 sys.modules.pop(module_name, None)
                 for mod_name in tuple(getattr(instance, "private_modules", ()) or ()):
                     if isinstance(mod_name, str) and mod_name:
@@ -157,7 +176,7 @@ def load_plugin(
                 )
             except Exception as exc:
                 logger.exception("PluginLoader: %s on_load 异常", plugin_name)
-                registry.unregister(plugin_name)
+                await registry.unregister(plugin_name)
                 sys.modules.pop(module_name, None)
                 for mod_name in tuple(getattr(instance, "private_modules", ()) or ()):
                     if isinstance(mod_name, str) and mod_name:
@@ -190,7 +209,7 @@ def load_plugin(
         )
 
 
-def reload_plugin_config(
+async def reload_plugin_config(
     registry: PluginRegistry,
     plugin_name: str,
     handler: Any = None,
@@ -221,7 +240,7 @@ def reload_plugin_config(
         )
 
     try:
-        module.on_config_reload(handler, config)
+        await module.on_config_reload(handler, config)
     except PluginConfigValidationError as exc:
         return PluginOperationResult.failure(
             f"热重载配置校验失败: {exc}",
@@ -243,7 +262,7 @@ def reload_plugin_config(
     )
 
 
-def unload_plugin(
+async def unload_plugin(
     registry: PluginRegistry,
     plugin_name: str,
     handler: Any = None,
@@ -265,7 +284,7 @@ def unload_plugin(
         )
 
     private_modules = tuple(getattr(module, "private_modules", ()) or ())
-    registry.unregister(plugin_name, handler)
+    await registry.unregister(plugin_name, handler)
     sys.modules.pop(f"plugins.{plugin_name}", None)
     for mod_name in private_modules:
         if isinstance(mod_name, str) and mod_name:
@@ -277,7 +296,7 @@ def unload_plugin(
     )
 
 
-def load_plugins_dir(
+async def load_plugins_dir(
     registry: PluginRegistry,
     plugins_dir: str = "plugins",
     handler: Any = None,
@@ -285,7 +304,7 @@ def load_plugins_dir(
     """扫描目录并加载所有可用插件。"""
     loaded: list[str] = []
     for name in discover_plugins(plugins_dir):
-        result = load_plugin(registry, name, plugins_dir, handler)
+        result = await load_plugin(registry, name, plugins_dir, handler)
         if result.ok:
             loaded.append(name)
         else:
