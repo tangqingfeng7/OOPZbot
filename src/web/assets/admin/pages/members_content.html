@@ -2,7 +2,8 @@
         <article class="surface-card">
           <div class="action-row" style="flex-wrap:wrap">
             <span id="membersState" class="micro-status is-warning">等待同步</span>
-            <select id="areaPicker" class="m-area-select" data-change="area-change">
+            <div id="areaTabs" class="area-tabs" role="tablist"></div>
+            <select id="areaPicker" class="m-area-select" data-change="area-change" hidden>
               <option value="">加载中...</option>
             </select>
             <input id="memberSearch" type="text" class="input" placeholder="搜索成员..." style="width:180px" data-enter="refresh-members">

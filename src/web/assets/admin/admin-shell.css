@@ -1935,3 +1935,96 @@ a:not(.nav-link):not(.index-link):hover {
   cursor: pointer; font-size: .8125rem; transition: all .15s;
 }
 .kw-add-btn:hover { border-color: rgba(255,255,255,.4); color: #ccc; }
+
+/* ---- 域切换标签页 ---- */
+/* 取代原来的下拉：域通常只有几个，平铺出来一眼可见、点一下就切。
+   域多到放不下时横向滚动，并隐藏滚动条保持观感。 */
+.area-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px;
+  scroll-behavior: smooth;
+}
+
+.area-tabs::-webkit-scrollbar { display: none; }
+
+/* 可拖动滚动时给出光标提示；拖动过程中禁止选中文字，否则会拖出蓝色选区 */
+/* 真实域可拖动排序；"全部域" 钉在最前不参与 */
+.area-tab[draggable="true"] { cursor: grab; }
+.area-tab[draggable="true"]:active { cursor: grabbing; }
+
+/* 拖动中的那个标签淡出，让插入位置看得清楚 */
+.area-tab.is-ghost {
+  opacity: .35;
+  border-style: dashed;
+}
+
+.area-tab--all { cursor: pointer; }
+
+
+.area-tab {
+  flex: 0 0 auto;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--admin-muted, #999);
+  font-size: .8125rem;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+
+.area-tab:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ddd;
+}
+
+.area-tab.is-active {
+  background: rgba(255, 190, 80, 0.16);
+  border-color: rgba(255, 190, 80, 0.45);
+  color: #ffce7a;
+  font-weight: 600;
+}
+
+.area-tabs-empty {
+  color: var(--admin-muted, #999);
+  font-size: .8125rem;
+  padding: 6px 4px;
+}
+
+/* 跨域成员列表里标注来源域 */
+.m-area-chip {
+  display: inline-block;
+  margin-left: 6px;
+  margin-top: 2px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 190, 80, 0.3);
+  background: rgba(255, 190, 80, 0.1);
+  color: #ffce7a;
+  font-size: 10px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.m-area-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.m-area-pick__item {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+}

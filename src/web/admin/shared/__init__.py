@@ -49,6 +49,7 @@ from ._area import (
     _playback_area_unavailable_payload,
     _require_music_area,
     _resolve_area,
+    _resolve_area_async,
     _resolved_area_cache,
 )
 from ._bilibili import (
@@ -91,11 +92,7 @@ from ._oopz import (
     _apply_oopz_config_updates,
     _oopz_login_lock,
     _oopz_runtime_updates,
-    _refresh_oopz_name_resolver,
     _refresh_oopz_runtime,
-    _refresh_oopz_sender_private_key,
-    _refresh_oopz_websocket,
-    _reload_private_key_module,
 )
 from ._pages import (
     _ADMIN_PAGES,
@@ -129,6 +126,7 @@ from ._snapshots import (
     _tail_file,
     _top_songs_from_play_history,
 )
+from ._ttl_cache import TtlCache
 
 try:
     import requests
@@ -169,6 +167,7 @@ __all__ = [
     "SetupDiagnostics",
     "SongCache",
     "Statistics",
+    "TtlCache",
     "_add_song_to_queue",
     "_admin_enabled",
     "_apply_oopz_config_updates",
@@ -217,16 +216,13 @@ __all__ = [
     "_overview_payload",
     "_playback_area_unavailable_payload",
     "_queue_snapshot",
-    "_refresh_oopz_name_resolver",
     "_refresh_oopz_runtime",
-    "_refresh_oopz_sender_private_key",
-    "_refresh_oopz_websocket",
-    "_reload_private_key_module",
     "_render_admin_page",
     "_render_topbar_actions",
     "_require_music_area",
     "_require_sender",
     "_resolve_area",
+    "_resolve_area_async",
     "_resolved_area_cache",
     "_set_admin_session_token",
     "_set_liked_ids_cache",

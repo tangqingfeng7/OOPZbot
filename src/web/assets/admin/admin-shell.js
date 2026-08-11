@@ -625,6 +625,57 @@
     }
   }
 
+  // 跨域视图下同一个人可能属于多个域，管理操作必须先问清楚打到哪个域。
+  // 返回选中的 areaId，取消则返回空串。
+  function pickArea(areas) {
+    return new Promise((resolve) => {
+      const els = _modalEls();
+      if (!els.dialog || !els.footer) {
+        resolve("");
+        return;
+      }
+      let settled = false;
+      const done = (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        closeModal();
+        resolve(value);
+      };
+      const body = document.createElement("div");
+      body.className = "m-area-pick";
+      areas.forEach((a) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-ghost m-area-pick__item";
+        btn.textContent = a.areaName || a.areaId;
+        btn.addEventListener("click", () => done(a.areaId));
+        body.appendChild(btn);
+      });
+      openModal(
+        "选择域",
+        '<div class="m-confirm-text">该成员同时在多个域，请选择本次操作生效的域：</div>',
+        null,
+        () => {
+          if (!settled) {
+            settled = true;
+            resolve("");
+          }
+        }
+      );
+      if (els.body) {
+        els.body.appendChild(body);
+      }
+      els.footer.innerHTML = "";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-ghost";
+      cancelBtn.textContent = "取消";
+      cancelBtn.addEventListener("click", () => done(""));
+      els.footer.appendChild(cancelBtn);
+    });
+  }
+
   function confirm(title, message, options) {
     const opts = options || {};
     return new Promise((resolve) => {
@@ -734,13 +785,156 @@
     _dispatch(trigger, trigger.dataset.enter, event);
   });
 
+  // ---- 域切换标签页 ----
+  // 域一般只有几个，平铺出来一眼可见、点一下就切，比下拉少两次交互。
+  // 滚轮横向滚动（浏览器默认要按住 Shift）；按住标签左右拖动可调整顺序，
+  // 顺序存在浏览器本地，排在最前的域即为下次打开时默认加载的域。
+  // 隐藏的 <select> 仍然保留并保持同步——页面脚本继续用 byId(id).value 读取，
+  // data-change 的回调也照旧触发，改造不需要动各页面的既有逻辑。
+
+  var AREA_ORDER_KEY = "adminAreaOrder";
+
+  function _loadAreaOrder() {
+    try {
+      var raw = window.localStorage.getItem(AREA_ORDER_KEY);
+      var list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function _saveAreaOrder(ids) {
+    try {
+      window.localStorage.setItem(AREA_ORDER_KEY, JSON.stringify(ids));
+    } catch (e) {
+      /* 隐私模式等场景写不了，顺序退化为接口返回的原始顺序 */
+    }
+  }
+
+  // 按保存的顺序重排真实域；"全部域" 恒定钉在最前，不参与排序也不作为默认。
+  function applyAreaOrder(areas) {
+    var saved = _loadAreaOrder();
+    if (!saved.length) return areas;
+    var byId2 = {};
+    areas.forEach(function (a) { byId2[a.id] = a; });
+    var ordered = [];
+    saved.forEach(function (id) {
+      if (byId2[id]) { ordered.push(byId2[id]); delete byId2[id]; }
+    });
+    // 保存顺序里没有的（新加入的域）追加在后面，不丢
+    areas.forEach(function (a) { if (byId2[a.id]) ordered.push(a); });
+    return ordered;
+  }
+
+  function _bindTabsWheel(box) {
+    if (box.dataset.wheelBound === "1") return;
+    box.dataset.wheelBound = "1";
+    box.addEventListener("wheel", function (e) {
+      if (box.scrollWidth <= box.clientWidth) return;
+      var delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!delta) return;
+      e.preventDefault();
+      box.scrollLeft += delta;
+    }, { passive: false });
+  }
+
+  function renderAreaTabs(selectId, containerId, onReorder) {
+    var sel = byId(selectId);
+    var box = byId(containerId);
+    if (!sel || !box) return;
+
+    _bindTabsWheel(box);
+    box.innerHTML = "";
+    var options = Array.prototype.slice.call(sel.options).filter(function (opt) {
+      return opt.value;
+    });
+    if (!options.length) {
+      box.innerHTML = '<span class="area-tabs-empty">无可用域</span>';
+      return;
+    }
+
+    function persistOrder() {
+      var ids = Array.prototype.slice.call(box.querySelectorAll(".area-tab"))
+        .map(function (el) { return el.dataset.value; })
+        .filter(function (v) { return v && v !== "__all__"; });
+      _saveAreaOrder(ids);
+      // 把新顺序同步回隐藏 select，保证「第一个」的语义处处一致
+      var frag = document.createDocumentFragment();
+      var all = sel.querySelector('option[value="__all__"]');
+      if (all) frag.appendChild(all);
+      ids.forEach(function (id) {
+        var opt = sel.querySelector('option[value="' + CSS.escape(id) + '"]');
+        if (opt) frag.appendChild(opt);
+      });
+      sel.appendChild(frag);
+      if (typeof onReorder === "function") onReorder(ids);
+    }
+
+    options.forEach(function (opt) {
+      var isAll = opt.value === "__all__";
+      var tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "area-tab" + (opt.value === sel.value ? " is-active" : "")
+        + (isAll ? " area-tab--all" : "");
+      tab.textContent = opt.textContent || opt.value;
+      tab.title = isAll ? opt.textContent : (opt.textContent || opt.value) + "（可拖动调整顺序）";
+      tab.dataset.value = opt.value;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", opt.value === sel.value ? "true" : "false");
+      if (!isAll) tab.draggable = true;
+
+      tab.addEventListener("click", function () {
+        if (box._suppressClickUntil && Date.now() < box._suppressClickUntil) return;
+        if (sel.value === opt.value) return;
+        sel.value = opt.value;
+        renderAreaTabs(selectId, containerId, onReorder);
+        sel.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+
+      if (!isAll) {
+        tab.addEventListener("dragstart", function (e) {
+          box._dragging = tab;
+          tab.classList.add("is-ghost");
+          try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", opt.value); } catch (err) { /* 忽略 */ }
+        });
+        tab.addEventListener("dragend", function () {
+          tab.classList.remove("is-ghost");
+          box._dragging = null;
+          // 拖完立刻的 click 不该被当成切域
+          box._suppressClickUntil = Date.now() + 250;
+          persistOrder();
+        });
+        tab.addEventListener("dragover", function (e) {
+          e.preventDefault();
+          var dragged = box._dragging;
+          if (!dragged || dragged === tab) return;
+          var rect = tab.getBoundingClientRect();
+          var after = e.clientX > rect.left + rect.width / 2;
+          box.insertBefore(dragged, after ? tab.nextSibling : tab);
+        });
+      }
+      box.appendChild(tab);
+    });
+
+    box.addEventListener("dragover", function (e) { e.preventDefault(); });
+
+    var active = box.querySelector(".area-tab.is-active");
+    if (active && box.scrollWidth > box.clientWidth) {
+      active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
   window.AdminShell = {
     animateNumber,
     animatePanel,
     bootstrapAuth,
     byId,
+    applyAreaOrder,
+    renderAreaTabs,
     closeModal,
     confirm,
+    pickArea,
     copyText,
     escapeHtml,
     flashUpdate,

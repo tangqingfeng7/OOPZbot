@@ -2,7 +2,8 @@
         <article class="surface-card">
           <div class="action-row" style="flex-wrap:wrap">
             <span id="areaState" class="micro-status is-warning">等待同步</span>
-            <select id="areaPicker" class="m-area-select" data-change="area-change">
+            <div id="areaTabs" class="area-tabs" role="tablist"></div>
+            <select id="areaPicker" class="m-area-select" data-change="area-change" hidden>
               <option value="">加载中...</option>
             </select>
             <button class="btn btn-ghost" type="button" data-action="refresh-areas">刷新</button>

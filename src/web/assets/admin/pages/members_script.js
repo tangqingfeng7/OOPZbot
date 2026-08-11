@@ -12,29 +12,64 @@
       { min: 10080, val: "7", unit: "天" },
     ];
 
-    function getArea() { return currentArea; }
+    // uid -> 该成员所属域。跨域列表下每个成员可能来自不同域，
+    // 管理操作必须作用到成员自己的域，不能用 "__all__"。
+    var memberAreaMap = {};
+
+    // 列表 / 查询用：原样返回当前选择，可能是 "__all__"（跨域聚合）。
+    function getArea() {
+      return currentArea;
+    }
+
+    // 管理操作用：必须落到某个真实域。跨域列表里成员可能同时属于多个域，
+    // 这时静默挑一个会禁错/踢错域，所以交给使用者确认。
+    async function getMemberArea(uid) {
+      if (currentArea !== "__all__") return currentArea;
+      var areas = (uid && memberAreaMap[uid]) || [];
+      if (!areas.length) return "";
+      if (areas.length === 1) return areas[0].areaId;
+      return await AdminShell.pickArea(areas);
+    }
+
+    // 只读展示用：取权限最高的域，不打断操作者
+    function getMemberAreaPrimary(uid) {
+      if (currentArea !== "__all__") return currentArea;
+      var areas = (uid && memberAreaMap[uid]) || [];
+      return areas.length ? areas[0].areaId : "";
+    }
 
     async function loadAreas() {
       try {
         var data = await AdminShell.req("/admin/api/areas");
-        var areas = data.areas || [];
+        // 按用户在标签条上拖出来的顺序排列，排第一的即默认加载的域
+        var areas = AdminShell.applyAreaOrder(data.areas || []);
         var picker = AdminShell.byId("areaPicker");
         picker.innerHTML = "";
-        areas.forEach(function (a, i) {
+        // 「全部域」放在最前：跨域搜人不用再一个个域点过去
+        if (areas.length > 1) {
+          var allOpt = document.createElement("option");
+          allOpt.value = "__all__";
+          allOpt.textContent = "全部域";
+          picker.appendChild(allOpt);
+        }
+        areas.forEach(function (a) {
           var opt = document.createElement("option");
           opt.value = a.id;
           opt.textContent = a.name || a.code || a.id.slice(0, 10);
           picker.appendChild(opt);
         });
         if (areas.length) {
+          // 默认选排在最前的那个域（顺序由标签条拖动决定）。不默认「全部域」是
+          // 因为跨域聚合要并发拉全部域，首次约 2 秒，不该每次开页面都付这个代价。
           currentArea = areas[0].id;
           picker.value = currentArea;
         }
-        AdminShell.upgradeSelect("areaPicker");
+        AdminShell.renderAreaTabs("areaPicker", "areaTabs");
         populateSendAreaPicker(areas);
       } catch (e) {
         var picker = AdminShell.byId("areaPicker");
         picker.innerHTML = '<option value="">加载域失败</option>';
+        AdminShell.renderAreaTabs("areaPicker", "areaTabs");
       }
     }
 
@@ -99,7 +134,11 @@
 
     async function loadMembers() {
       var keyword = (AdminShell.byId("memberSearch") || {}).value || "";
-      var url = "/admin/api/members?offset=" + currentOffset + "&limit=" + pageSize + "&area=" + encodeURIComponent(getArea());
+      // 「全部域」要把各域成员一起铺出来，用单域分页的 50 会被靠前的域占满，
+      // 看上去像只显示了一个域。这条路径由后端从内存池切片，放大页长不会更慢。
+      var isAll = getArea() === "__all__";
+      var size = isAll ? 500 : pageSize;
+      var url = "/admin/api/members?offset=" + currentOffset + "&limit=" + size + "&area=" + encodeURIComponent(getArea());
       if (keyword) url += "&keyword=" + encodeURIComponent(keyword);
       try {
         var data = await AdminShell.req(url);
@@ -108,12 +147,24 @@
         AdminShell.animateNumber("onlineMembers", data.online || 0);
 
         var members = data.members || [];
+        if (data.crossArea) {
+          memberAreaMap = {};
+          members.forEach(function (m) {
+            if (m.uid && m.areas && m.areas.length) memberAreaMap[m.uid] = m.areas;
+          });
+        }
         var rows = members.map(function (m) {
           var isOnline = m.online;
           var dotColor = isOnline ? "#22c55e" : "#cbd5e1";
           var statusLabel = isOnline
             ? '<span class="m-badge m-badge--online">在线</span>'
             : '<span class="m-badge m-badge--offline">离线</span>';
+          // 一个人可能同时在多个域，逐个标注，不能只显示主域
+          var areaHtml = (m.areas && m.areas.length)
+            ? m.areas.map(function (a) {
+                return '<span class="m-area-chip">' + esc(a.areaName) + '</span>';
+              }).join("")
+            : (m.areaName ? '<span class="m-area-chip">' + esc(m.areaName) + '</span>' : "");
           var activityHtml = "";
           if (m.playingState) {
             var icon = m.displayType === "MUSIC" ? "&#9835; " : "";
@@ -136,7 +187,7 @@
                     '<span style="position:absolute;bottom:0;right:0;width:10px;height:10px;border-radius:50%;background:' + dotColor + ';border:2px solid var(--paper)"></span>' +
                   '</div>' +
                   '<div style="min-width:0">' +
-                    '<div class="table-emphasis" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(m.name) + '</div>' +
+                    '<div class="table-emphasis" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(m.name) + areaHtml + '</div>' +
                     activityHtml +
                   '</div>' +
                 '</div>' +
@@ -155,12 +206,18 @@
         AdminShell.byId("memberRows").innerHTML =
           rows || '<tr><td colspan="4" class="empty-state">暂无数据</td></tr>';
 
-        var page = Math.floor(currentOffset / pageSize) + 1;
-        var pages = Math.max(1, Math.ceil(totalMembers / pageSize));
+        // 跨域是一次铺完的，分页按 size 而不是单域的 pageSize 计算，否则会显示成多页
+        var step = isAll ? size : pageSize;
+        var page = Math.floor(currentOffset / step) + 1;
+        var pages = Math.max(1, Math.ceil(totalMembers / step));
         AdminShell.byId("pageInfo").textContent = page + " / " + pages;
 
-        if (data.stale) {
+        if (data.partial && data.partial.length) {
+          setPageState("已加载 " + members.length + " 条，这些域取数失败: " + data.partial.join("、"), "warning");
+        } else if (data.stale) {
           setPageState("已加载 " + members.length + " 条 (缓存数据)", "warning");
+        } else if (isAll) {
+          setPageState("已同步 " + members.length + " 条（全部 " + totalMembers + " 人）", "success");
         } else {
           setPageState("已同步 " + members.length + " 条", "success");
         }
@@ -169,11 +226,14 @@
       }
     }
 
+    function _step() { return getArea() === "__all__" ? 500 : pageSize; }
     function prevPage() {
-      if (currentOffset >= pageSize) { currentOffset -= pageSize; loadMembers(); }
+      var step = _step();
+      if (currentOffset >= step) { currentOffset -= step; loadMembers(); }
     }
     function nextPage() {
-      if (currentOffset + pageSize < totalMembers) { currentOffset += pageSize; loadMembers(); }
+      var step = _step();
+      if (currentOffset + step < totalMembers) { currentOffset += step; loadMembers(); }
     }
 
     /* ========= 用户详情 ========= */
@@ -326,10 +386,10 @@
         }
     }
 
-    async function showDetail(uid) {
+    async function showDetail(uid, area) {
       _openDrawerImmediate(uid);
       try {
-        var data = await AdminShell.req("/admin/api/members/" + uid + "?area=" + encodeURIComponent(getArea()));
+        var data = await AdminShell.req("/admin/api/members/" + uid + "?area=" + encodeURIComponent(area || getMemberAreaPrimary(uid)));
         _fillDrawer(uid, data);
       } catch (e) {
         AdminShell.byId("detailProfile").innerHTML =
@@ -350,21 +410,25 @@
     async function doMute(uid) {
       var dur = await pickDuration("text");
       if (!dur) return;
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
         await AdminShell.req("/admin/api/members/" + uid + "/mute", {
-          method: "POST", body: JSON.stringify({ duration: dur, area: getArea() }),
+          method: "POST", body: JSON.stringify({ duration: dur, area: area }),
         });
         setPageState("已禁言", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("禁言失败: " + e.message, "error"); }
     }
 
     async function doUnmute(uid) {
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
-        await AdminShell.req("/admin/api/members/" + uid + "/unmute", { method: "POST", body: JSON.stringify({ area: getArea() }) });
+        await AdminShell.req("/admin/api/members/" + uid + "/unmute", { method: "POST", body: JSON.stringify({ area: area }) });
         setPageState("已解除禁言", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("解除禁言失败: " + e.message, "error"); }
     }
@@ -372,21 +436,25 @@
     async function doMuteMic(uid) {
       var dur = await pickDuration("mic");
       if (!dur) return;
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
         await AdminShell.req("/admin/api/members/" + uid + "/mute-mic", {
-          method: "POST", body: JSON.stringify({ duration: dur, area: getArea() }),
+          method: "POST", body: JSON.stringify({ duration: dur, area: area }),
         });
         setPageState("已禁麦", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("禁麦失败: " + e.message, "error"); }
     }
 
     async function doUnmuteMic(uid) {
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
-        await AdminShell.req("/admin/api/members/" + uid + "/unmute-mic", { method: "POST", body: JSON.stringify({ area: getArea() }) });
+        await AdminShell.req("/admin/api/members/" + uid + "/unmute-mic", { method: "POST", body: JSON.stringify({ area: area }) });
         setPageState("已解除禁麦", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("解除禁麦失败: " + e.message, "error"); }
     }
@@ -394,8 +462,10 @@
     async function doKick(uid) {
       var ok = await AdminShell.confirm("踢出用户", "确认将该用户<strong>踢出域</strong>？此操作不可撤销。");
       if (!ok) return;
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
-        await AdminShell.req("/admin/api/members/" + uid + "/kick", { method: "POST", body: JSON.stringify({ area: getArea() }) });
+        await AdminShell.req("/admin/api/members/" + uid + "/kick", { method: "POST", body: JSON.stringify({ area: area }) });
         setPageState("已踢出", "success");
         closeDrawer();
         loadMembers();
@@ -405,40 +475,52 @@
     async function doBlock(uid) {
       var ok = await AdminShell.confirm("封禁用户", "确认<strong>封禁</strong>该用户？封禁后将被踢出域且无法再加入。");
       if (!ok) return;
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
-        await AdminShell.req("/admin/api/members/" + uid + "/block", { method: "POST", body: JSON.stringify({ area: getArea() }) });
+        await AdminShell.req("/admin/api/members/" + uid + "/block", { method: "POST", body: JSON.stringify({ area: area }) });
         setPageState("已封禁", "success");
         closeDrawer();
         loadMembers();
       } catch (e) { setPageState("封禁失败: " + e.message, "error"); }
     }
 
-    async function doUnblock(uid) {
+    // 被封禁的人已不在成员列表里，查不到 memberAreaMap，域由列表行直接带过来
+    async function doUnblock(uid, area) {
+      area = area || getMemberAreaPrimary(uid);
+      if (!area) {
+        setPageState("解封失败: 无法确定该封禁所属的域", "error");
+        return;
+      }
       try {
-        await AdminShell.req("/admin/api/members/" + uid + "/unblock", { method: "POST", body: JSON.stringify({ area: getArea() }) });
+        await AdminShell.req("/admin/api/members/" + uid + "/unblock", { method: "POST", body: JSON.stringify({ area: area }) });
         setPageState("已解封", "success");
         loadBlocks();
       } catch (e) { setPageState("解封失败: " + e.message, "error"); }
     }
 
     async function doRoleAdd(uid, roleId) {
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
         var data = await AdminShell.req("/admin/api/members/" + uid + "/role", {
-          method: "POST", body: JSON.stringify({ role_id: roleId, action: "add", area: getArea() }),
+          method: "POST", body: JSON.stringify({ role_id: roleId, action: "add", area: area }),
         });
         setPageState(data.message || "角色已添加", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("添加角色失败: " + e.message, "error"); }
     }
 
     async function doRoleRemove(uid, roleId) {
+      var area = await getMemberArea(uid);
+      if (!area) return;
       try {
         var data = await AdminShell.req("/admin/api/members/" + uid + "/role", {
-          method: "POST", body: JSON.stringify({ role_id: roleId, action: "remove", area: getArea() }),
+          method: "POST", body: JSON.stringify({ role_id: roleId, action: "remove", area: area }),
         });
         setPageState(data.message || "角色已移除", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("移除角色失败: " + e.message, "error"); }
     }
@@ -453,7 +535,7 @@
           method: "POST", body: JSON.stringify({ uid: uid }),
         });
         setPageState("已设为管理员", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("设置管理员失败: " + e.message, "error"); }
     }
@@ -464,7 +546,7 @@
       try {
         await AdminShell.req("/admin/api/bot-admins/" + uid, { method: "DELETE" });
         setPageState("已撤销管理员", "success");
-        showDetail(uid);
+        showDetail(uid, area);
         loadMembers();
       } catch (e) { setPageState("撤销管理员失败: " + e.message, "error"); }
     }
@@ -479,12 +561,17 @@
         var card = AdminShell.byId("blocksCard");
         card.style.display = "block";
         var rows = blocks.map(function (b) {
+          // 封禁按域生效，解封必须回到封禁所在的域，所以把域随按钮一起带上
+          var chip = (data.crossArea && b.areaName)
+            ? ' <span class="m-area-chip">' + esc(b.areaName) + "</span>"
+            : "";
           return (
             "<tr>" +
-              '<td class="table-emphasis">' + esc(b.name) + "</td>" +
+              '<td class="table-emphasis">' + esc(b.name) + chip + "</td>" +
               "<td style=\"font-size:12px;color:var(--ink-faint)\">" + esc((b.uid || "").slice(0, 12)) + "...</td>" +
               "<td>" +
-                '<button class="btn btn-ghost btn-sm" type="button" data-action="do-unblock" data-uid="' + esc(b.uid) + '">解封</button>' +
+                '<button class="btn btn-ghost btn-sm" type="button" data-action="do-unblock"' +
+                  ' data-uid="' + esc(b.uid) + '" data-area="' + esc(b.areaId || "") + '">解封</button>' +
               "</td>" +
             "</tr>"
           );
@@ -622,7 +709,7 @@
       "do-unmute-mic": (el) => doUnmuteMic(el.dataset.uid),
       "do-kick": (el) => doKick(el.dataset.uid),
       "do-block": (el) => doBlock(el.dataset.uid),
-      "do-unblock": (el) => doUnblock(el.dataset.uid),
+      "do-unblock": (el) => doUnblock(el.dataset.uid, el.dataset.area),
       "grant-admin": (el) => doGrantAdmin(el.dataset.uid),
       "remove-admin": (el) => doRemoveAdmin(el.dataset.uid),
       "role-add": (el) => doRoleAdd(el.dataset.uid, Number(el.dataset.rid)),

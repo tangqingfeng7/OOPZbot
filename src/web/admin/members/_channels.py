@@ -1,14 +1,14 @@
 """频道管理：列表、增删改、设置、可访问成员、在线成员与语音频道监控。"""
 
-import time
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from web.admin.shared import (
+    TtlCache,
     _get_sender,
     _require_sender,
-    _resolve_area,
+    _resolve_area_async,
     get_resolver,
     logger,
     read_json_body,
@@ -17,27 +17,27 @@ from web.admin.shared import (
 
 router = APIRouter()
 
-_channels_cache: dict = {"data": None, "ts": 0.0, "area": ""}
 _CHANNELS_CACHE_TTL = 120.0
+# 按域分槽：单槽缓存在多域间来回切时会互相挤掉，导致每次切域都要回源。
+_channels_cache = TtlCache(_CHANNELS_CACHE_TTL)
 
 
 @router.get("/admin/api/channels")
-def admin_channels_list(area: str = Query("")):
+async def admin_channels_list(area: str = Query("")):
     """返回指定域的频道列表(含分组)。"""
-    resolved_area = area.strip() or _resolve_area()
+    resolved_area = area.strip() or await _resolve_area_async()
     if not resolved_area:
         return JSONResponse({"ok": False, "error": "未找到可用域 ID"})
 
-    now = time.time()
-    if (_channels_cache["data"] and _channels_cache["area"] == resolved_area
-            and now - _channels_cache["ts"] < _CHANNELS_CACHE_TTL):
-        return JSONResponse(_channels_cache["data"])
+    cached = _channels_cache.get(resolved_area)
+    if cached is not None:
+        return JSONResponse(cached)
 
     sender = _get_sender()
     if not sender:
         return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
 
-    groups = sender.get_area_channels(area=resolved_area, quiet=True)
+    groups = await sender.get_area_channels(area=resolved_area, quiet=True)
     channels = []
     for g in groups:
         group_name = g.get("name", "")
@@ -52,7 +52,7 @@ def admin_channels_list(area: str = Query("")):
             })
 
     resp = {"ok": True, "channels": channels, "area": resolved_area}
-    _channels_cache.update(data=resp, ts=now, area=resolved_area)
+    _channels_cache.set(resolved_area, resp)
     return JSONResponse(resp)
 
 
@@ -61,17 +61,17 @@ def admin_channels_list(area: str = Query("")):
 async def admin_channel_create(request: Request):
     sender = _require_sender()
     body = await read_json_body(request)
-    area = (body.get("area") or "").strip() or _resolve_area()
+    area = (body.get("area") or "").strip() or await _resolve_area_async()
     name = (body.get("name") or "").strip()
     ch_type = body.get("type", "text")
     group_id = (body.get("group_id") or "").strip()
     if not area or not name:
         return JSONResponse({"ok": False, "error": "area 和 name 不能为空"}, status_code=400)
     try:
-        result = sender.create_channel(area=area, name=name, channel_type=ch_type, group_id=group_id)
+        result = await sender.create_channel(area=area, name=name, channel_type=ch_type, group_id=group_id)
         if isinstance(result, dict) and "error" in result:
             return JSONResponse({"ok": False, "error": result["error"]})
-        _channels_cache.update(data=None, ts=0.0, area="")
+        _channels_cache.invalidate()
         return JSONResponse({"ok": True, "message": "频道已创建", "result": result if isinstance(result, dict) else {}})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
@@ -82,14 +82,14 @@ async def admin_channel_create(request: Request):
 async def admin_channel_delete(channel_id: str, request: Request):
     sender = _require_sender()
     body = await read_json_body(request)
-    area = (body.get("area") or "").strip() or _resolve_area()
+    area = (body.get("area") or "").strip() or await _resolve_area_async()
     if not area:
         return JSONResponse({"ok": False, "error": "area 不能为空"}, status_code=400)
     try:
-        result = sender.delete_channel(channel=channel_id, area=area)
+        result = await sender.delete_channel(channel=channel_id, area=area)
         if isinstance(result, dict) and "error" in result:
             return JSONResponse({"ok": False, "error": result["error"]})
-        _channels_cache.update(data=None, ts=0.0, area="")
+        _channels_cache.invalidate()
         return JSONResponse({"ok": True, "message": "频道已删除"})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
@@ -100,15 +100,15 @@ async def admin_channel_delete(channel_id: str, request: Request):
 async def admin_channel_update(channel_id: str, request: Request):
     sender = _require_sender()
     body = await read_json_body(request)
-    area = (body.get("area") or "").strip() or _resolve_area()
+    area = (body.get("area") or "").strip() or await _resolve_area_async()
     name = (body.get("name") or "").strip()
     if not area:
         return JSONResponse({"ok": False, "error": "area 不能为空"}, status_code=400)
     try:
-        result = sender.update_channel(area=area, channel_id=channel_id, name=name)
+        result = await sender.update_channel(area=area, channel_id=channel_id, name=name)
         if isinstance(result, dict) and "error" in result:
             return JSONResponse({"ok": False, "error": result["error"]})
-        _channels_cache.update(data=None, ts=0.0, area="")
+        _channels_cache.invalidate()
         return JSONResponse({"ok": True, "message": "频道已更新"})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
@@ -116,10 +116,10 @@ async def admin_channel_update(channel_id: str, request: Request):
 
 @router.get("/admin/api/channels/{channel_id}/settings")
 @require_sender
-def admin_channel_settings(channel_id: str, area: str = Query("")):
+async def admin_channel_settings(channel_id: str, area: str = Query("")):
     """获取频道的详细设置信息。"""
     sender = _require_sender()
-    data = sender.get_channel_setting_info(channel_id)
+    data = await sender.get_channel_setting_info(channel_id)
     if isinstance(data, dict) and "error" in data:
         return JSONResponse({"ok": False, "error": data["error"]})
     return JSONResponse({"ok": True, "settings": data})
@@ -131,14 +131,14 @@ async def admin_channel_settings_edit(channel_id: str, request: Request):
     """编辑频道设置（名称、人数上限、慢速模式等）。"""
     sender = _require_sender()
     body = await read_json_body(request)
-    area = (body.pop("area", "") or "").strip() or _resolve_area()
+    area = (body.pop("area", "") or "").strip() or await _resolve_area_async()
     if not area:
         return JSONResponse({"ok": False, "error": "area 不能为空"}, status_code=400)
     try:
-        result = sender.update_channel(area=area, channel_id=channel_id, overrides=body)
+        result = await sender.update_channel(area=area, channel_id=channel_id, overrides=body)
         if isinstance(result, dict) and "error" in result:
             return JSONResponse({"ok": False, "error": result["error"]})
-        _channels_cache.update(data=None, ts=0.0, area="")
+        _channels_cache.invalidate()
         return JSONResponse({"ok": True, "message": "频道设置已保存"})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
@@ -146,16 +146,16 @@ async def admin_channel_settings_edit(channel_id: str, request: Request):
 
 @router.get("/admin/api/channels/{channel_id}/accessible-members")
 @require_sender
-def admin_channel_accessible_members(channel_id: str):
+async def admin_channel_accessible_members(channel_id: str):
     """返回频道当前的可访问成员列表（含名称）。"""
     sender = _require_sender()
-    setting = sender.get_channel_setting_info(channel_id)
+    setting = await sender.get_channel_setting_info(channel_id)
     if isinstance(setting, dict) and "error" in setting:
         return JSONResponse({"ok": False, "error": setting["error"]})
     uids = list(setting.get("accessibleMembers") or [])
     if not uids:
         return JSONResponse({"ok": True, "members": []})
-    infos = sender.get_person_infos_batch(uids)
+    infos = await sender.get_person_infos_batch(uids)
     members = []
     for uid in uids:
         info = infos.get(uid, {})
@@ -169,15 +169,15 @@ def admin_channel_accessible_members(channel_id: str):
 
 @router.get("/admin/api/online-members")
 @require_sender
-def admin_online_members(area: str = Query("")):
+async def admin_online_members(area: str = Query("")):
     """返回域内当前在线成员（用于私密频道成员选择）。"""
     sender = _require_sender()
-    resolved_area = area.strip() or _resolve_area()
+    resolved_area = area.strip() or await _resolve_area_async()
     if not resolved_area:
         return JSONResponse({"ok": False, "error": "未找到可用域 ID"})
     all_members = []
     for page_start in range(0, 200, 50):
-        result = sender.get_area_members(
+        result = await sender.get_area_members(
             area=resolved_area, offset_start=page_start,
             offset_end=page_start + 49, quiet=True,
         )
@@ -191,7 +191,7 @@ def admin_online_members(area: str = Query("")):
     uids = [m.get("uid", "") for m in online_members if m.get("uid")]
     if not uids:
         return JSONResponse({"ok": True, "members": []})
-    infos = sender.get_person_infos_batch(uids)
+    infos = await sender.get_person_infos_batch(uids)
     members = []
     for m in online_members:
         uid = m.get("uid", "")
@@ -206,9 +206,9 @@ def admin_online_members(area: str = Query("")):
 
 
 @router.get("/admin/api/voice-channels")
-def admin_voice_channels(area: str = Query("")):
+async def admin_voice_channels(area: str = Query("")):
     """返回域内语音频道及其在线用户。"""
-    resolved_area = area.strip() or _resolve_area()
+    resolved_area = area.strip() or await _resolve_area_async()
     if not resolved_area:
         return JSONResponse({"ok": False, "error": "未找到可用域 ID"})
 
@@ -216,7 +216,7 @@ def admin_voice_channels(area: str = Query("")):
     if not sender:
         return JSONResponse({"ok": False, "error": "sender 未初始化"}, status_code=503)
 
-    groups = sender.get_area_channels(area=resolved_area, quiet=True)
+    groups = await sender.get_area_channels(area=resolved_area, quiet=True)
     voice_info = {}
     for g in groups:
         for ch in g.get("channels") or []:
@@ -227,7 +227,7 @@ def admin_voice_channels(area: str = Query("")):
                     "group": g.get("name", ""),
                 }
 
-    channel_members = sender.get_voice_channel_members(area=resolved_area)
+    channel_members = await sender.get_voice_channel_members(area=resolved_area)
 
     all_uids: list[str] = []
     for ch_id in voice_info:
@@ -238,7 +238,7 @@ def admin_voice_channels(area: str = Query("")):
     person_map: dict = {}
     if all_uids:
         try:
-            person_map = sender.get_person_infos_batch(all_uids)
+            person_map = await sender.get_person_infos_batch(all_uids)
         except Exception:
             logger.debug("批量获取语音成员信息失败", exc_info=True)
 
@@ -273,7 +273,7 @@ async def admin_voice_dispatch(request: Request):
     """将用户从当前语音频道调度到指定语音频道。"""
     sender = _require_sender()
     body = await read_json_body(request)
-    area = (body.get("area") or "").strip() or _resolve_area()
+    area = (body.get("area") or "").strip() or await _resolve_area_async()
     target = (body.get("target") or "").strip()
     to_channel = (body.get("to_channel") or "").strip()
     from_channel = (body.get("from_channel") or "").strip()
@@ -282,7 +282,7 @@ async def admin_voice_dispatch(request: Request):
     if not target or not to_channel:
         return JSONResponse({"ok": False, "error": "target 和 to_channel 不能为空"}, status_code=400)
     try:
-        result = sender.drag_member(target, to_channel, from_channel=from_channel or None, area=area)
+        result = await sender.drag_member(target, to_channel, from_channel=from_channel or None, area=area)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
     if isinstance(result, dict) and "error" in result:

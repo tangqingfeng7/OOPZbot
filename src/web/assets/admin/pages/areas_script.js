@@ -24,7 +24,8 @@
       const picker = AdminShell.byId("areaPicker");
       try {
         const data = await AdminShell.req("/admin/api/areas");
-        const areas = data.areas || [];
+        // 与成员页共用同一份拖动顺序，排第一的即默认加载的域
+        const areas = AdminShell.applyAreaOrder(data.areas || []);
         picker.innerHTML = areas.length
           ? areas.map((a) => `<option value="${a.id}">${a.name || a.id}</option>`).join("")
           : '<option value="">无可用域</option>';
@@ -37,7 +38,7 @@
       } catch (e) {
         picker.innerHTML = '<option value="">加载失败</option>';
       }
-      AdminShell.upgradeSelect("areaPicker");
+      AdminShell.renderAreaTabs("areaPicker", "areaTabs");
     }
 
     function onAreaChange() {
