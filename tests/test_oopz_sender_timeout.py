@@ -1,16 +1,17 @@
-"""守卫：所有出站 HTTP 请求都必须带 timeout。
+"""出站请求的超时契约。
 
-没有超时时服务端挂住会无限阻塞调用线程 —— dispatcher 只有 4 个 worker，
-卡满即全线失联，AreaJoinPoll 同样会停摆。
+旧实现由 `oopz.oopz_sender` / `oopz.oopz_api` 自己按档位给 requests 传
+`timeout=(连接, 读)`。迁移到 SDK + aiohttp 后，超时有两个来源：
+`RequestConfig` 配到传输层，或调用方逐次传入。这里守住的仍是同一件事——
+**任何出站请求都必须有界**，不能出现连上以后无限等待的调用。
 """
 
 import ast
 import sys
-import threading
 import unittest
 from pathlib import Path
-from typing import cast
 from unittest import mock
+from unittest.mock import AsyncMock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -19,155 +20,9 @@ if str(SRC_ROOT) not in sys.path:
 
 from core.http_constants import HTTP_TIMEOUT_API, HTTP_TIMEOUT_API_SLOW  # noqa: E402
 
-_HTTP_VERBS = {"get", "post", "put", "delete", "patch", "head", "request"}
-
-
-class _Resp:
-    status_code = 200
-    text = "{}"
-
-
-class _RecordingSession:
-    def __init__(self):
-        self.headers = {}
-        self.calls = []
-
-    def request(self, method, url, headers=None, data=None, timeout=None):
-        self.calls.append({"method": method, "timeout": timeout})
-        return _Resp()
-
-    def get(self, url, headers=None, params=None, timeout=None):
-        self.calls.append({"method": "GET", "timeout": timeout})
-        return _Resp()
-
-
-class _Signer:
-    def oopz_headers(self, url_path, body_str):
-        return {}
-
-
-def _make_sender():
-    from requests import Session
-
-    from oopz.oopz_sender import OopzSender, Signer
-
-    sender = OopzSender.__new__(OopzSender)
-    session = _RecordingSession()
-    sender.signer = cast(Signer, _Signer())
-    sender.session = cast(Session, session)
-    sender._auth_refresh_lock = threading.Lock()
-    return sender, session
-
-
-class SignedRequestTimeoutTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.sender, self.session = _make_sender()
-        self.sender._throttle = lambda: None
-
-    def test_write_requests_carry_the_default_tier(self) -> None:
-        for method in ("POST", "PUT", "DELETE", "PATCH"):
-            with self.subTest(method=method):
-                self.session.calls.clear()
-                self.sender._signed_request_once(method, "/x", {"a": 1})
-
-                self.assertEqual(self.session.calls[0]["timeout"], HTTP_TIMEOUT_API)
-
-    def test_get_carries_the_default_tier(self) -> None:
-        self.sender._get_once("/x", params={"a": "1"})
-
-        self.assertEqual(self.session.calls[0]["timeout"], HTTP_TIMEOUT_API)
-
-    def test_caller_can_override_with_a_slower_tier(self) -> None:
-        self.sender._signed_request_once("POST", "/x", {"a": 1}, timeout=HTTP_TIMEOUT_API_SLOW)
-
-        self.assertEqual(self.session.calls[0]["timeout"], HTTP_TIMEOUT_API_SLOW)
-
-    def test_timeout_reaches_transport_through_post_put_delete(self) -> None:
-        self.sender._AUTH_REFRESH_STATUSES = set()
-        for call in (
-            lambda: self.sender._post("/x", {}, timeout=HTTP_TIMEOUT_API_SLOW),
-            lambda: self.sender._put("/x", {}, timeout=HTTP_TIMEOUT_API_SLOW),
-            lambda: self.sender._delete("/x", timeout=HTTP_TIMEOUT_API_SLOW),
-        ):
-            self.session.calls.clear()
-            call()
-            self.assertEqual(self.session.calls[0]["timeout"], HTTP_TIMEOUT_API_SLOW)
-
-
-class SlowTierPassthroughTest(unittest.TestCase):
-    """确有批量语义的接口要走慢档，且 timeout 能从业务方法穿透到传输层。
-
-    只断言常数分档没有意义 —— 得确认它真的被那三个接口用上了。
-    """
-
-    def _api(self):
-        from oopz.oopz_api import OopzApiMixin
-
-        class _Api(OopzApiMixin):
-            def __init__(self):
-                self.sent = []
-
-            def _get(self, path, params=None, *, timeout=None):
-                self.sent.append({"path": path, "timeout": timeout})
-                return _Resp()
-
-            def _request(self, method, path, body=None, *, timeout=None):
-                self.sent.append({"path": path, "timeout": timeout})
-                return _Resp()
-
-        return _Api()
-
-    def test_timeout_passes_through_query_and_mutation(self) -> None:
-        api = self._api()
-
-        api._query("POST", "/x", body={}, timeout=HTTP_TIMEOUT_API_SLOW)
-        api._mutation("act", "POST", "/y", body={}, timeout=HTTP_TIMEOUT_API_SLOW)
-
-        self.assertEqual(
-            [c["timeout"] for c in api.sent],
-            [HTTP_TIMEOUT_API_SLOW, HTTP_TIMEOUT_API_SLOW],
-        )
-
-    def test_default_is_none_so_transport_picks_the_default_tier(self) -> None:
-        api = self._api()
-        api._query("GET", "/x")
-
-        self.assertIsNone(api.sent[0]["timeout"], "不传时应交给传输层用默认档，而不是在这里写死")
-
-    def test_batch_endpoints_use_the_slow_tier(self) -> None:
-        import config
-
-        api = self._api()
-        api.get_user_area_detail = lambda *a, **k: {}
-        with mock.patch.dict(config.OOPZ_CONFIG, {"default_area": "A1"}, clear=False):
-            api.get_person_infos_batch(["u1"])
-            api.search_area_members(area="A1", keyword="x")
-            api.get_area_members(area="A1")
-
-        slow = [c for c in api.sent if c["timeout"] == HTTP_TIMEOUT_API_SLOW]
-        self.assertEqual(len(slow), 3, f"三个批量接口都应走慢档，实际: {api.sent}")
-
-
-class NoTimeoutlessOutboundCallTest(unittest.TestCase):
-    """AST 守卫：src/ 下任何 session/requests 的出站调用都不能漏 timeout。"""
-
-    def test_every_outbound_call_passes_timeout(self) -> None:
-        offenders = []
-        for path in SRC_ROOT.rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                if not isinstance(func, ast.Attribute) or func.attr not in _HTTP_VERBS:
-                    continue
-                receiver = ast.unparse(func.value)
-                if "session" not in receiver and "requests" not in receiver:
-                    continue
-                if not any(kw.arg == "timeout" for kw in node.keywords):
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
-
-        self.assertEqual(offenders, [], f"这些出站调用没有 timeout: {offenders}")
+_HTTP_VERBS = {"get", "post", "put", "delete", "patch", "head", "request", "ws_connect"}
+# 内置 SDK 副本与上游逐字一致，其超时策略不由本仓库负责
+_VENDORED = "oopz_sdk"
 
 
 class TimeoutTierTest(unittest.TestCase):
@@ -182,30 +37,218 @@ class TimeoutTierTest(unittest.TestCase):
         self.assertGreater(HTTP_TIMEOUT_API_SLOW[1], HTTP_TIMEOUT_API[1])
 
 
-class AutoRecallSchedulingTest(unittest.TestCase):
-    def test_sender_delegates_to_shared_scheduler(self) -> None:
-        import oopz.oopz_sender as module
+class SdkTransportTimeoutTest(unittest.TestCase):
+    """SDK 传输层要把配置的档位真正翻译成 aiohttp 的超时。"""
 
-        sender = module.OopzSender.__new__(module.OopzSender)
-        sender._auto_recall_scheduler = mock.Mock()
-        sender._auto_recall_scheduler.schedule_recall.return_value = True
-        sender._auto_recall_unbound_warned = False
-        response = mock.Mock()
-        response.json.return_value = {"data": {"messageId": "message-1"}}
+    def test_tuple_becomes_socket_level_bounds(self) -> None:
+        from oopz_sdk.transport.http import _build_timeout
 
-        with mock.patch.object(
-            module,
-            "AUTO_RECALL_CONFIG",
-            {"enabled": True, "delay": 12},
-        ):
-            sender._schedule_auto_recall(response, "area-1", "channel-1")
+        timeout = _build_timeout((5, 30))
 
-        sender._auto_recall_scheduler.schedule_recall.assert_called_once_with(
+        # 元组档位的语义是「连接 5 秒、两次收包间隔 30 秒」，没有总时限
+        self.assertEqual(timeout.sock_connect, 5)
+        self.assertEqual(timeout.sock_read, 30)
+        self.assertIsNone(timeout.total)
+
+    def test_scalar_becomes_total_bound(self) -> None:
+        from oopz_sdk.transport.http import _build_timeout
+
+        timeout = _build_timeout(12)
+
+        self.assertEqual(timeout.total, 12)
+
+    def test_project_config_supplies_a_bounded_tier(self) -> None:
+        """本项目必须显式配档，不能让网关落到无界请求上。"""
+        import oopz.sdk_config as sdk_config
+
+        source = Path(sdk_config.__file__).read_text(encoding="utf-8")
+        self.assertIn("RequestConfig(timeout=", source)
+
+        tree = ast.parse(source)
+        found = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "RequestConfig"
+            ):
+                for kw in node.keywords:
+                    if kw.arg == "timeout":
+                        found.append(ast.literal_eval(kw.value))
+        self.assertTrue(found, "sdk_config 必须给 RequestConfig 显式配置 timeout")
+        for value in found:
+            connect, read = value
+            self.assertGreater(connect, 0)
+            self.assertGreater(read, connect, "读超时应比连接超时宽松")
+
+
+class ManagedHttpClientTimeoutTest(unittest.IsolatedAsyncioTestCase):
+    """自建的异步 HTTP 客户端要把 timeout 透传到 aiohttp，而不是只在签名上摆着。"""
+
+    async def test_timeout_reaches_aiohttp(self) -> None:
+        import aiohttp
+
+        from core.async_http import ManagedHttpClient
+
+        captured = {}
+
+        class _Resp:
+            status = 200
+
+            async def json(self, content_type=None):
+                return {"ok": True}
+
+            def raise_for_status(self):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _Session:
+            def request(self, method, url, **kwargs):
+                captured.update(kwargs)
+                return _Resp()
+
+        client = ManagedHttpClient()
+        client.session = AsyncMock(return_value=_Session())
+
+        await client.request_json("GET", "https://example.com/x", timeout=7)
+
+        self.assertIsInstance(captured["timeout"], aiohttp.ClientTimeout)
+        self.assertEqual(captured["timeout"].total, 7)
+
+    async def test_timeout_is_required_by_signature(self) -> None:
+        """timeout 是 keyword-only 且无默认值，漏传会在调用处直接报错。"""
+        import inspect
+
+        from core.async_http import ManagedHttpClient
+
+        for name in ("request_json", "request_payload", "request_text"):
+            with self.subTest(method=name):
+                param = inspect.signature(getattr(ManagedHttpClient, name)).parameters["timeout"]
+                self.assertIs(param.default, inspect.Parameter.empty)
+                self.assertEqual(param.kind, inspect.Parameter.KEYWORD_ONLY)
+
+
+class NoUnboundedOutboundCallTest(unittest.TestCase):
+    """AST 守卫：项目代码里不能出现「会话无超时 + 调用也不传超时」的组合。
+
+    aiohttp 允许把超时设在 ClientSession 上，所以旧的「每个调用点都必须带
+    timeout」规则不再适用；真正要挡住的是两处都没有、请求彻底无界。
+    """
+
+    def _project_files(self):
+        for path in SRC_ROOT.rglob("*.py"):
+            if _VENDORED not in path.parts:
+                yield path
+
+    def test_no_unbounded_outbound_call(self) -> None:
+        offenders = []
+        for path in self._project_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+
+            # 把「无超时的会话」按其赋值目标记下来，才能和调用方精确配对；
+            # 只按文件配对会把 HTTP 会话和 WS 调用错配。
+            unbounded_sessions = set()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
+                    continue
+                value = node.value
+                if not isinstance(value, ast.Call):
+                    continue
+                func = value.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if name != "ClientSession":
+                    continue
+                if any(kw.arg == "timeout" for kw in value.keywords):
+                    continue
+                for target in node.targets:
+                    unbounded_sessions.add(ast.unparse(target))
+
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not isinstance(func, ast.Attribute) or func.attr not in _HTTP_VERBS:
+                    continue
+                if any(kw.arg == "timeout" for kw in node.keywords):
+                    continue
+                if ast.unparse(func.value) in unbounded_sessions:
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
+                        f"({ast.unparse(func.value)}.{func.attr})"
+                    )
+
+        self.assertEqual(offenders, [], f"存在无界的出站请求: {offenders}")
+
+    def test_requests_style_calls_always_pass_timeout(self) -> None:
+        """requests 没有会话级默认超时，漏传就是无限等待。"""
+        offenders = []
+        for path in self._project_files():
+            source = path.read_text(encoding="utf-8")
+            if "import requests" not in source:
+                continue
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not isinstance(func, ast.Attribute) or func.attr not in _HTTP_VERBS:
+                    continue
+                if "requests" not in ast.unparse(func.value):
+                    continue
+                if not any(kw.arg == "timeout" for kw in node.keywords):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+
+        self.assertEqual(offenders, [], f"这些 requests 调用没有 timeout: {offenders}")
+
+
+class AutoRecallSchedulingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_gateway_delegates_to_shared_scheduler(self) -> None:
+        import oopz.sdk_gateway as module
+
+        gateway = module.AsyncOopzGateway.__new__(module.AsyncOopzGateway)
+        gateway._auto_recall_scheduler = mock.Mock()
+        gateway._auto_recall_scheduler.schedule_recall = AsyncMock(return_value=True)
+
+        with mock.patch.object(module, "AUTO_RECALL_CONFIG", {"enabled": True, "delay": 12}):
+            await gateway._schedule_auto_recall("message-1", "area-1", "channel-1", "ts-1")
+
+        gateway._auto_recall_scheduler.schedule_recall.assert_awaited_once_with(
             message_id="message-1",
             channel="channel-1",
             area="area-1",
+            timestamp="ts-1",
             delay=12.0,
         )
+
+    async def test_disabled_config_skips_scheduling(self) -> None:
+        import oopz.sdk_gateway as module
+
+        gateway = module.AsyncOopzGateway.__new__(module.AsyncOopzGateway)
+        gateway._auto_recall_scheduler = mock.Mock()
+        gateway._auto_recall_scheduler.schedule_recall = AsyncMock()
+
+        with mock.patch.object(module, "AUTO_RECALL_CONFIG", {"enabled": False, "delay": 12}):
+            await gateway._schedule_auto_recall("message-1", "area-1", "channel-1", "ts-1")
+
+        gateway._auto_recall_scheduler.schedule_recall.assert_not_awaited()
+
+    async def test_non_positive_delay_skips_scheduling(self) -> None:
+        """延迟为 0 意味着立即撤回，等同于没发出去，必须当作未启用。"""
+        import oopz.sdk_gateway as module
+
+        gateway = module.AsyncOopzGateway.__new__(module.AsyncOopzGateway)
+        gateway._auto_recall_scheduler = mock.Mock()
+        gateway._auto_recall_scheduler.schedule_recall = AsyncMock()
+
+        with mock.patch.object(module, "AUTO_RECALL_CONFIG", {"enabled": True, "delay": 0}):
+            await gateway._schedule_auto_recall("message-1", "area-1", "channel-1", "ts-1")
+
+        gateway._auto_recall_scheduler.schedule_recall.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -1,747 +1,626 @@
+
+from __future__ import annotations
+
 import asyncio
+import hashlib
+import hmac
 import json
+import sqlite3
 import sys
 import tempfile
-import threading
 import unittest
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock
+
+from aiohttp import ClientSession, WSServerHandshakeError, web
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-
-def _response(message_id: str = "oopz-msg-2", timestamp: str = "1770000000000000"):
-    return SimpleNamespace(json=lambda: {"status": True, "data": {"messageId": message_id, "timestamp": timestamp}})
-
-
-def _raw_message(content: str = "hello") -> dict:
-    return {
-        "event": 9,
-        "body": json.dumps({
-            "data": {
-                "person": "user-1",
-                "area": "area-1",
-                "channel": "channel-1",
-                "messageId": "oopz-msg-1",
-                "timestamp": "1770000000000000",
-                "content": content,
-            }
-        }),
-    }
-
-
-def _raw_friend_request() -> dict:
-    return {
-        "event": 2,
-        "body": json.dumps({
-            "data": {
-                "person": "friend-1",
-                "name": "新朋友",
-                "avatar": "https://example.test/avatar.png",
-                "type": "apply",
-                "friendRequestId": 4455,
-                "createTime": "1770000000000000",
-            }
-        }),
-    }
+from onebot_v11.config import OneBotV11ServerConfig as ProjectOneBotConfig  # noqa: E402
+from onebot_v11.sdk_integration import (  # noqa: E402
+    OneBotV11Supplement,
+    find_sdk_onebot_v11,
+)
+from onebot_v11.sdk_migration import (  # noqa: E402
+    SDK_BACKUP_SUFFIX,
+    migrate_onebot_v11_database,
+)
+from oopz_sdk.adapters.onebot.v11.adapter import OneBotV11Adapter  # noqa: E402
+from oopz_sdk.adapters.onebot.v11.server import (  # noqa: E402
+    OneBotV11Server,
+    OneBotV11ServerConfig,
+)
+from oopz_sdk.adapters.onebot.v11.types import (  # noqa: E402
+    IdStore,
+    make_group_source,
+    make_message_source,
+    make_user_source,
+    parse_group_source,
+    parse_message_source,
+    parse_user_source,
+)
+from oopz_sdk.client.bot import OopzBot  # noqa: E402
 
 
-class OneBotV11AdapterTest(unittest.TestCase):
-    def _adapter(self, tmpdir: str, **kwargs):
-        from onebot_v11.adapter import OneBotV11Adapter
+def _listen_port(server: Any) -> int:
+    """从 aiohttp 站点拿实际监听端口。
 
-        sender = Mock()
-        sender.send_message.return_value = _response()
-        sender.send_private_message.return_value = {
-            "status": True,
-            "channel": "private-channel-1",
-            "result": {"data": {"messageId": "private-msg-1", "timestamp": "1770000000000000"}},
-        }
-        sender.recall_message.return_value = {"status": True}
-        sender.recall_private_message.return_value = {"status": True}
-        sender.get_joined_areas.return_value = [{"id": "area-1", "name": "测试域"}]
-        sender.get_area_channels.return_value = [
-            {"channels": [{"id": "channel-1", "name": "公屏", "type": "TEXT"}]}
-        ]
-        sender.get_friendship.return_value = [{"uid": "friend-1", "name": "好友一", "online": True}]
-        sender.post_friendship_response.return_value = {"status": True}
-        sender.set_user_remark_name.return_value = {"status": True}
-        sender.leave_area.return_value = {"status": True}
-        sender.get_channel_setting_info.return_value = {"name": "公屏"}
-        sender.get_person_detail_full.return_value = {"name": "用户一", "memberLevel": 3}
-        sender.get_user_area_detail.return_value = {"roleName": "成员"}
-        sender.get_self_detail.return_value = {"name": "机器人"}
-        sender.edit_user_role.return_value = {"status": True}
-        sender.get_channel_messages.return_value = [
-            {"person": "user-2", "messageId": "hist-2", "timestamp": "1770000002000000", "content": "second"},
-            {"person": "user-1", "messageId": "hist-1", "timestamp": "1770000001000000", "content": "first"},
-        ]
-        return OneBotV11Adapter(
-            sender,
-            self_oopz_id="bot-uid",
-            db_path=str(Path(tmpdir) / "onebot.sqlite3"),
-            **kwargs,
-        ), sender
+    `_server` 静态类型是 `AbstractServer`，没有 `sockets`；运行时是
+    `asyncio.Server`，确有该属性。
+    """
+    return server.sockets[0].getsockname()[1]
 
-    def test_id_mapping_is_stable(self) -> None:
-        from onebot_v11.store import OneBotStore, make_group_source
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = OneBotStore(Path(tmpdir) / "ids.sqlite3")
-            first = store.create_id(make_group_source(area="area-1", channel="channel-1"))
-            second = store.create_id(make_group_source(area="area-1", channel="channel-1"))
+# SDK v0.15.0 的同步 IdStore/MessageStore 在 Python 3.14 会由 sqlite3 报告
+# ResourceWarning；项目保持内置 SDK 源码不变，因此测试仅屏蔽这一条上游告警。
+warnings.filterwarnings("ignore", message="unclosed database.*", category=ResourceWarning)
 
+
+def _fake_bot() -> SimpleNamespace:
+    messages = SimpleNamespace(
+        send_message=AsyncMock(
+            return_value=SimpleNamespace(message_id="oopz-group-message", timestamp="1770000000000000")
+        ),
+        send_private_message=AsyncMock(
+            return_value=SimpleNamespace(message_id="oopz-private-message", timestamp="1770000000000000")
+        ),
+        recall_message=AsyncMock(return_value=SimpleNamespace(ok=True, message="")),
+        recall_private_message=AsyncMock(return_value=SimpleNamespace(ok=True, message="")),
+    )
+    person = SimpleNamespace(
+        get_self_detail=AsyncMock(return_value=SimpleNamespace(name="机器人", model_dump=lambda: {})),
+        get_person_detail_full=AsyncMock(return_value=SimpleNamespace(name="用户", model_dump=lambda: {})),
+        get_person_info=AsyncMock(return_value=SimpleNamespace(name="用户")),
+        get_friendship=AsyncMock(return_value=[]),
+    )
+    areas = SimpleNamespace(get_joined_areas=AsyncMock(return_value=[]))
+    channels = SimpleNamespace(get_channel_setting_info=AsyncMock(return_value=SimpleNamespace(name="公屏")))
+    return SimpleNamespace(messages=messages, person=person, areas=areas, channels=channels)
+
+
+class _ServerAdapter:
+    def __init__(self) -> None:
+        self.self_id = 10001
+        self.sinks: list = []
+        self.calls: list[tuple[str, dict]] = []
+
+    def add_event_sink(self, sink) -> None:
+        self.sinks.append(sink)
+
+    def remove_event_sink(self, sink) -> None:
+        if sink in self.sinks:
+            self.sinks.remove(sink)
+
+    async def call_action(self, action, params=None, *, echo=None):
+        params = dict(params or {})
+        self.calls.append((str(action), params))
+        if action == "missing":
+            return {"status": "failed", "retcode": 1404, "data": None, "message": "missing"}
+        response = {"status": "ok", "retcode": 0, "data": {"action": action, "params": params}, "message": ""}
+        if echo is not None:
+            response["echo"] = echo
+        return response
+
+    async def call_action_payload(self, payload):
+        return await self.call_action(
+            payload.get("action"),
+            payload.get("params") or {},
+            echo=payload.get("echo"),
+        )
+
+    async def emit(self, payload: dict) -> None:
+        for sink in list(self.sinks):
+            result = sink(payload)
+            if asyncio.iscoroutine(result):
+                await result
+
+
+class OneBotSdkAdapterTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "onebot.sqlite3"
+        self.bot = _fake_bot()
+        self.adapter = OneBotV11Adapter(cast("OopzBot", self.bot), "bot-uid", db_path=self.db_path)
+
+    async def asyncTearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    async def test_id_mapping_is_stable(self) -> None:
+        first = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1"))
+        second = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1"))
         self.assertEqual(first.number, second.number)
         self.assertEqual(first.source, "group:area-1:channel-1")
 
-    def test_message_event_converts_to_group_event_and_saves_mapping(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_raw_event(_raw_message("hello")))
-            stored = adapter.store.get_message(event["message_id"])
+    async def test_id_source_round_trips(self) -> None:
+        self.assertEqual(parse_user_source(make_user_source("user-1")), "user-1")
+        self.assertEqual(parse_group_source(make_group_source(area="area-1", channel="channel-1")), ("area-1", "channel-1"))
+        source = make_message_source(area="area-1", channel="channel-1", message_id="message-1")
+        self.assertEqual(parse_message_source(source), ("area-1", "channel-1", "", "message-1"))
 
-        self.assertEqual(event["post_type"], "message")
-        self.assertEqual(event["message_type"], "group")
-        self.assertEqual(event["raw_message"], "hello")
-        self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
-        self.assertIsNotNone(stored)
-        assert stored is not None
-        self.assertEqual(stored.oopz_message_id, "oopz-msg-1")
+    async def test_get_status_action(self) -> None:
+        response = await self.adapter.call_action("get_status")
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["data"], {"online": True, "good": True})
 
-    def test_member_enter_event_converts_to_group_increase(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            # Joins are only classified from an explicit action (WS code heuristic removed).
-            raw = {
-                "event": 10,
-                "body": json.dumps({"data": {"person": "newbie-1", "area": "area-1", "action": "join"}}),
-            }
-            event = asyncio.run(adapter.emit_raw_event(raw))
+    async def test_unknown_action_fails(self) -> None:
+        response = await self.adapter.call_action("does_not_exist")
+        self.assertEqual(response["retcode"], 1404)
 
-        self.assertEqual(event["post_type"], "notice")
-        self.assertEqual(event["notice_type"], "group_increase")
-        self.assertEqual(event["sub_type"], "approve")
-        self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
-        self.assertEqual(event["extra"]["oopz_user_id"], "newbie-1")
-        self.assertIn("group_id", event)
+    async def test_payload_preserves_echo(self) -> None:
+        response = await self.adapter.call_action_payload({"action": "get_status", "params": {}, "echo": "e-1"})
+        self.assertEqual(response["echo"], "e-1")
 
-    def test_member_leave_event_converts_to_group_decrease(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            # No Oopz event code means "area member left"; only an explicit
-            # action string is treated as a leave (event 11 is voice-ban, not leave).
-            raw = {
-                "event": 50,
-                "body": json.dumps({"data": {"person": "leaver-1", "area": "area-1", "action": "leave"}}),
-            }
-            event = asyncio.run(adapter.emit_raw_event(raw))
+    async def test_send_group_msg_uses_sdk_messages(self) -> None:
+        group_id = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1")).number
+        response = await self.adapter.call_action("send_group_msg", {"group_id": group_id, "message": "hello"})
+        self.assertEqual(response["status"], "ok")
+        self.assertIsInstance(response["data"]["message_id"], int)
+        self.bot.messages.send_message.assert_awaited_once()
+        self.assertEqual(self.bot.messages.send_message.await_args.kwargs["area"], "area-1")
+        self.assertEqual(self.bot.messages.send_message.await_args.kwargs["channel"], "channel-1")
 
-        self.assertEqual(event["post_type"], "notice")
-        self.assertEqual(event["notice_type"], "group_decrease")
-        self.assertEqual(event["sub_type"], "leave")
-        self.assertEqual(event["extra"]["oopz_user_id"], "leaver-1")
+    async def test_send_private_msg_resolves_sdk_user(self) -> None:
+        user_id = self.adapter.ids.createId(make_user_source("user-1")).number
+        response = await self.adapter.call_action("send_private_msg", {"user_id": user_id, "message": "hello"})
+        self.assertEqual(response["status"], "ok")
+        self.bot.messages.send_private_message.assert_awaited_once()
+        self.assertEqual(self.bot.messages.send_private_message.await_args.kwargs["target"], "user-1")
 
-    def test_self_member_event_is_ignored(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            raw = {
-                "event": 10,
-                "body": json.dumps({"data": {"person": "bot-uid", "area": "area-1", "action": "join"}}),
-            }
-            event = asyncio.run(adapter.emit_raw_event(raw))
+    async def test_delete_msg_uses_saved_mapping(self) -> None:
+        group_id = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1")).number
+        sent = await self.adapter.call_action("send_group_msg", {"group_id": group_id, "message": "hello"})
+        message_id = sent["data"]["message_id"]
+        deleted = await self.adapter.call_action("delete_msg", {"message_id": message_id})
+        self.assertEqual(deleted["status"], "ok")
+        self.bot.messages.recall_message.assert_awaited_once()
+        self.assertEqual(self.bot.messages.recall_message.await_args.kwargs["message_id"], "oopz-group-message")
 
-        self.assertEqual(event, {})
+    async def test_get_msg_returns_sent_mapping(self) -> None:
+        group_id = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1")).number
+        sent = await self.adapter.call_action("send_group_msg", {"group_id": group_id, "message": "hello"})
+        response = await self.adapter.call_action("get_msg", {"message_id": sent["data"]["message_id"]})
+        self.assertEqual(response["data"]["message_type"], "group")
+        self.assertEqual(response["data"]["group_id"], group_id)
 
-    def test_emit_member_change_join_produces_group_increase(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_member_change("join", "area-1", "newbie-1"))
+    async def test_supported_actions_include_core_message_actions(self) -> None:
+        response = await self.adapter.call_action("get_supported_actions")
+        self.assertIn("get_msg", response["data"])
+        self.assertIn("send_group_msg", response["data"])
 
-        self.assertEqual(event["post_type"], "notice")
-        self.assertEqual(event["notice_type"], "group_increase")
-        self.assertEqual(event["sub_type"], "approve")
-        self.assertEqual(event["extra"]["oopz_user_id"], "newbie-1")
-        self.assertEqual(event["extra"]["oopz_area_id"], "area-1")
-
-    def test_emit_member_change_leave_produces_group_decrease(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_member_change("leave", "area-1", "leaver-1"))
-
-        self.assertEqual(event["notice_type"], "group_decrease")
-        self.assertEqual(event["sub_type"], "leave")
-        self.assertEqual(event["extra"]["oopz_user_id"], "leaver-1")
-
-    def test_emit_member_change_ignores_self_and_invalid(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            self.assertEqual(asyncio.run(adapter.emit_member_change("join", "area-1", "bot-uid")), {})
-            self.assertEqual(asyncio.run(adapter.emit_member_change("join", "area-1", "")), {})
-            self.assertEqual(asyncio.run(adapter.emit_member_change("kick", "area-1", "u1")), {})
-
-    def test_unknown_event_is_forwarded_as_meta_event(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_raw_event({"event": 123, "body": "{}"}))
-
-        self.assertEqual(event["post_type"], "meta_event")
-        self.assertEqual(event["meta_event_type"], "oopz")
-        self.assertEqual(event["oopz_event_type"], 123)
-
-    def test_friend_request_event_converts_to_onebot_request(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_raw_event(_raw_friend_request()))
-
-        self.assertEqual(event["post_type"], "request")
-        self.assertEqual(event["request_type"], "friend")
-        self.assertEqual(event["comment"], "新朋友")
-        self.assertEqual(event["flag"], "oopz_friend_request:4455:friend-1")
-
-    def test_send_group_msg_uses_group_mapping_and_sender(self) -> None:
-        from onebot_v11.store import make_group_source
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
-            result = asyncio.run(adapter.call_action("send_group_msg", {
-                "group_id": group_id,
-                "message": "hi",
-            }))
-            stored = adapter.store.get_message(result["data"]["message_id"])
-
-        self.assertEqual(result["status"], "ok")
-        self.assertIn("message_id", result["data"])
-        self.assertIsNotNone(stored)
-        assert stored is not None
-        self.assertIsNotNone(stored.raw)
-        assert stored.raw is not None
-        self.assertEqual(stored.raw["message"], [{"type": "text", "data": {"text": "hi"}}])
-        sender.send_message.assert_called_once()
-        self.assertEqual(sender.send_message.call_args.kwargs["area"], "area-1")
-        self.assertEqual(sender.send_message.call_args.kwargs["channel"], "channel-1")
-
-    def test_send_group_msg_fails_when_response_has_no_message_id(self) -> None:
-        from onebot_v11.store import make_group_source
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            sender.send_message.return_value = SimpleNamespace(json=lambda: {"status": True})
-            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
-            result = asyncio.run(adapter.call_action("send_group_msg", {"group_id": group_id, "message": "hi"}))
-
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["retcode"], 1500)
-
-    def test_send_group_msg_accepts_oopz_context_when_group_unknown(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            result = asyncio.run(adapter.call_action("send_group_msg", {
-                "group_id": 123456,
-                "oopz_area_id": "area-1",
-                "oopz_channel_id": "channel-1",
-                "message": "hi",
-            }))
-
-        self.assertEqual(result["status"], "ok")
-        sender.send_message.assert_called_once()
-
-    def test_send_group_msg_auto_escape_keeps_cq_code_as_text(self) -> None:
-        from onebot_v11.store import make_group_source
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
-            result = asyncio.run(adapter.call_action("send_group_msg", {
-                "group_id": group_id,
-                "message": "[CQ:at,qq=123] hello",
-                "auto_escape": True,
-            }))
-            stored = adapter.store.get_message(result["data"]["message_id"])
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(sender.send_message.call_args.args[0], "[CQ:at,qq=123] hello")
-        self.assertEqual(sender.send_message.call_args.kwargs["mentionList"], [])
-        self.assertIsNotNone(stored)
-        assert stored is not None
-        self.assertIsNotNone(stored.raw)
-        assert stored.raw is not None
-        self.assertEqual(stored.raw["message"], [
-            {"type": "text", "data": {"text": "[CQ:at,qq=123] hello"}}
-        ])
-
-    def test_send_group_msg_reply_segment_maps_to_reference(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            incoming = asyncio.run(adapter.emit_raw_event(_raw_message("hello")))
-            group_id = incoming["group_id"]
-            result = asyncio.run(adapter.call_action("send_group_msg", {
-                "group_id": group_id,
-                "message": [
-                    {"type": "reply", "data": {"id": str(incoming["message_id"])}},
-                    {"type": "text", "data": {"text": "re"}},
-                ],
-            }))
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(sender.send_message.call_args.kwargs["referenceMessageId"], "oopz-msg-1")
-
-    def test_incoming_message_raw_message_is_cq_encoded(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_raw_event(_raw_message("(met)user-1(met) hi")))
-
-        at_segment = next(seg for seg in event["message"] if seg["type"] == "at")
-        self.assertEqual(event["raw_message"], f"[CQ:at,qq={at_segment['data']['qq']}] hi")
-
-    def test_incoming_message_raw_message_escapes_special_chars(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_raw_event(_raw_message("a[b]&c")))
-
-        self.assertEqual(event["raw_message"], "a&#91;b&#93;&amp;c")
-
-    def test_incoming_reply_is_restored_as_reply_segment(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            raw = {
-                "event": 9,
-                "body": json.dumps({
-                    "data": {
+    async def test_supplement_adds_history_action_and_mapping(self) -> None:
+        gateway = SimpleNamespace(
+            get_channel_messages=AsyncMock(
+                return_value=[
+                    {
+                        "person": "user-2",
+                        "messageId": "history-2",
+                        "timestamp": "1770000002000000",
+                        "content": "second",
+                    },
+                    {
                         "person": "user-1",
-                        "area": "area-1",
-                        "channel": "channel-1",
-                        "messageId": "oopz-msg-9",
-                        "timestamp": "1770000000000000",
-                        "content": "reply body",
-                        "referenceMessageId": "oopz-msg-ref",
-                    }
-                }),
-            }
-            event = asyncio.run(adapter.emit_raw_event(raw))
-
-        self.assertEqual(event["message"][0]["type"], "reply")
-        self.assertEqual(event["message"][1], {"type": "text", "data": {"text": "reply body"}})
-
-    def test_delete_msg_uses_saved_message_mapping(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            event = asyncio.run(adapter.emit_raw_event(_raw_message("hello")))
-            result = asyncio.run(adapter.call_action("delete_msg", {"message_id": event["message_id"]}))
-
-        self.assertEqual(result["status"], "ok")
-        sender.recall_message.assert_called_once_with(
-            "oopz-msg-1",
-            area="area-1",
-            channel="channel-1",
-            target="",
-        )
-
-    def test_delete_private_msg_uses_private_recall(self) -> None:
-        from onebot_v11.store import make_user_source
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            user_id = adapter.store.create_id(make_user_source("friend-1")).number
-            send_result = asyncio.run(adapter.call_action("send_private_msg", {
-                "user_id": user_id,
-                "message": "hi",
-            }))
-            result = asyncio.run(adapter.call_action("delete_msg", {
-                "message_id": send_result["data"]["message_id"],
-            }))
-
-        self.assertEqual(result["status"], "ok")
-        sender.recall_private_message.assert_called_once_with(
-            "private-msg-1",
-            channel="private-channel-1",
-            target="friend-1",
-            area=None,
-        )
-
-    def test_get_group_list_maps_area_channels_to_groups(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            result = asyncio.run(adapter.call_action("get_group_list", {}))
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["data"][0]["group_name"], "公屏")
-        self.assertEqual(result["data"][0]["extra"]["oopz_area_id"], "area-1")
-
-    def test_get_friend_list_maps_friends(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            result = asyncio.run(adapter.call_action("get_friend_list", {}))
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["data"][0]["nickname"], "好友一")
-        self.assertEqual(result["data"][0]["extra"]["oopz_user_id"], "friend-1")
-
-    def test_set_friend_add_request_accepts_and_sets_remark(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            result = asyncio.run(adapter.call_action("set_friend_add_request", {
-                "flag": "oopz_friend_request:4455:friend-1",
-                "approve": True,
-                "remark": "备注",
-            }))
-
-        self.assertEqual(result["status"], "ok")
-        sender.post_friendship_response.assert_called_once_with("friend-1", 4455, True)
-        sender.set_user_remark_name.assert_called_once_with("friend-1", "备注")
-
-    def test_get_group_msg_history_returns_chronological_messages(self) -> None:
-        from onebot_v11.store import make_group_source
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir)
-            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
-            result = asyncio.run(adapter.call_action("get_group_msg_history", {
-                "group_id": group_id,
-                "count": 10,
-            }))
-
-        self.assertEqual(result["status"], "ok")
-        messages = result["data"]["messages"]
-        self.assertEqual([m["raw_message"] for m in messages], ["first", "second"])
-        self.assertEqual(messages[0]["message_type"], "group")
-        self.assertEqual(messages[0]["group_id"], group_id)
-        sender.get_channel_messages.assert_called_once_with(area="area-1", channel="channel-1", size=10)
-
-    def test_set_group_admin_requires_role_and_grants_when_enabled(self) -> None:
-        from onebot_v11.store import make_group_source, make_user_source
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(
-                tmpdir,
-                enable_set_group_admin_as_area_role=True,
-                group_admin_role_id=42,
+                        "messageId": "history-1",
+                        "timestamp": "1770000001000000",
+                        "content": "first",
+                    },
+                ]
             )
-            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
-            user_id = adapter.store.create_id(make_user_source("user-1")).number
-            result = asyncio.run(adapter.call_action("set_group_admin", {
-                "group_id": group_id,
-                "user_id": user_id,
-                "enable": True,
-            }))
+        )
+        supplement = OneBotV11Supplement(self.adapter, gateway, ProjectOneBotConfig())
+        group_id = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1")).number
+        response = await self.adapter.call_action("get_group_msg_history", {"group_id": group_id, "count": 2})
+        messages = response["data"]["messages"]
+        self.assertEqual([item["raw_message"] for item in messages], ["first", "second"])
+        self.assertEqual(messages[0]["group_id"], group_id)
+        stored = self.adapter.store.get(str(messages[0]["message_id"]))
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.oopz_message_id, "history-1")
+        await supplement.stop()
 
-        self.assertEqual(result["status"], "ok")
-        sender.edit_user_role.assert_called_once_with("user-1", 42, add=True, area="area-1")
+    async def test_supplement_history_clamps_count(self) -> None:
+        gateway = SimpleNamespace(get_channel_messages=AsyncMock(return_value=[]))
+        supplement = OneBotV11Supplement(self.adapter, gateway, ProjectOneBotConfig())
+        group_id = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1")).number
+        await self.adapter.call_action("get_group_msg_history", {"group_id": group_id, "count": 9999})
+        gateway.get_channel_messages.assert_awaited_once_with(
+            area="area-1", channel="channel-1", size=100
+        )
+        await supplement.stop()
 
-    def test_set_group_admin_is_absent_when_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, _sender = self._adapter(tmpdir)
-            result = asyncio.run(adapter.call_action("set_group_admin", {"group_id": 1, "user_id": 1, "enable": True}))
+    async def test_supplement_caps_group_member_list(self) -> None:
+        original = AsyncMock(return_value=[{"user_id": 1}, {"user_id": 2}, {"user_id": 3}])
+        self.adapter._actions["get_group_member_list"] = original
+        supplement = OneBotV11Supplement(
+            self.adapter,
+            SimpleNamespace(),
+            ProjectOneBotConfig(member_list_max=2),
+        )
+        response = await self.adapter.call_action("get_group_member_list", {"group_id": 1})
+        self.assertEqual(response["data"], [{"user_id": 1}, {"user_id": 2}])
+        await supplement.stop()
+        self.assertIs(self.adapter._actions["get_group_member_list"], original)
 
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["retcode"], 1404)
+    async def test_supplement_stop_removes_project_only_actions(self) -> None:
+        supplement = OneBotV11Supplement(
+            self.adapter,
+            SimpleNamespace(),
+            ProjectOneBotConfig(member_list_max=0),
+        )
+        self.assertIn("get_group_msg_history", self.adapter._actions)
+        await supplement.stop()
+        self.assertNotIn("get_group_msg_history", self.adapter._actions)
 
-    def test_set_group_leave_is_available_when_enabled(self) -> None:
-        from onebot_v11.store import make_group_source
+    async def test_find_sdk_adapter(self) -> None:
+        bot = SimpleNamespace(adapters=[SimpleNamespace(protocol="other"), self.adapter])
+        self.assertIs(find_sdk_onebot_v11(bot), self.adapter)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            adapter, sender = self._adapter(tmpdir, enable_set_group_leave_as_area_leave=True)
-            group_id = adapter.store.create_id(make_group_source(area="area-1", channel="channel-1")).number
-            result = asyncio.run(adapter.call_action("set_group_leave", {"group_id": group_id}))
+    async def test_supplement_set_group_admin_maps_role(self) -> None:
+        gateway = SimpleNamespace(edit_user_role=AsyncMock(return_value={"status": True}))
+        config = ProjectOneBotConfig(enable_set_group_admin_as_area_role=True, group_admin_role_id=77)
+        supplement = OneBotV11Supplement(self.adapter, gateway, config)
+        group_id = self.adapter.ids.createId(make_group_source(area="area-1", channel="channel-1")).number
+        user_id = self.adapter.ids.createId(make_user_source("user-1")).number
+        response = await self.adapter.call_action(
+            "set_group_admin",
+            {"group_id": group_id, "user_id": user_id, "enable": True},
+        )
+        self.assertEqual(response["status"], "ok")
+        gateway.edit_user_role.assert_awaited_once_with("user-1", 77, add=True, area="area-1")
+        await supplement.stop()
 
-        self.assertEqual(result["status"], "ok")
-        sender.leave_area.assert_called_once_with("area-1")
+    async def test_supplement_emits_member_notice(self) -> None:
+        gateway = SimpleNamespace(
+            get_area_channels=AsyncMock(return_value=[{"channels": [{"id": "channel-1", "type": "TEXT"}]}])
+        )
+        supplement = OneBotV11Supplement(self.adapter, gateway, ProjectOneBotConfig())
+        await supplement.emit_member_change("join", "area-1", "user-1")
+        event = self.adapter._event_queue[-1]
+        self.assertEqual(event["notice_type"], "group_increase")
+        self.assertEqual(event["extra"]["oopz_user_id"], "user-1")
 
+    async def test_supplement_ignores_self_member_notice(self) -> None:
+        gateway = SimpleNamespace(get_area_channels=AsyncMock(return_value=[]))
+        supplement = OneBotV11Supplement(self.adapter, gateway, ProjectOneBotConfig())
+        await supplement.emit_member_change("join", "area-1", "bot-uid")
+        self.assertEqual(list(self.adapter._event_queue), [])
 
-class OneBotV11ServerTest(unittest.TestCase):
-    def _adapter(self, tmpdir: str):
-        from onebot_v11.adapter import OneBotV11Adapter
+    async def test_supplement_heartbeat_dispatches(self) -> None:
+        gateway = SimpleNamespace()
+        config = ProjectOneBotConfig(heartbeat_enabled=True, heartbeat_interval=0.01)
+        supplement = OneBotV11Supplement(self.adapter, gateway, config)
 
-        sender = Mock()
-        return OneBotV11Adapter(sender, self_oopz_id="bot-uid", db_path=str(Path(tmpdir) / "server.sqlite3"))
+        async def stop_after_event(_payload):
+            supplement._stop_event.set()
 
-    def test_http_auth_and_get_status(self) -> None:
-        async def scenario() -> None:
-            from aiohttp import ClientSession
-
-            from onebot_v11.config import OneBotV11ServerConfig
-            from onebot_v11.server import OneBotV11Server
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                adapter = self._adapter(tmpdir)
-                server = OneBotV11Server(
-                    adapter,
-                    OneBotV11ServerConfig(enabled=True, host="127.0.0.1", port=0, access_token="token"),
-                )
-                await server.start()
-                try:
-                    async with ClientSession() as session:
-                        async with session.get(f"http://127.0.0.1:{server.bound_port}/get_status") as resp:
-                            self.assertEqual(resp.status, 401)
-                        async with session.get(
-                            f"http://127.0.0.1:{server.bound_port}/get_status",
-                            headers={"Authorization": "Bearer token"},
-                        ) as resp:
-                            self.assertEqual(resp.status, 200)
-                            data = await resp.json()
-                            self.assertEqual(data["status"], "ok")
-                            self.assertTrue(data["data"]["good"])
-                finally:
-                    await server.stop()
-
-        asyncio.run(scenario())
-
-    def test_heartbeat_is_broadcast_to_event_clients(self) -> None:
-        async def scenario() -> None:
-            from aiohttp import ClientSession, WSMsgType
-
-            from onebot_v11.config import OneBotV11ServerConfig
-            from onebot_v11.server import OneBotV11Server
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                adapter = self._adapter(tmpdir)
-                server = OneBotV11Server(
-                    adapter,
-                    OneBotV11ServerConfig(
-                        enabled=True,
-                        host="127.0.0.1",
-                        port=0,
-                        send_connect_event=False,
-                        heartbeat_enabled=True,
-                        heartbeat_interval=0.2,
-                    ),
-                )
-                await server.start()
-                try:
-                    async with ClientSession() as session:
-                        ws = await session.ws_connect(f"http://127.0.0.1:{server.bound_port}/event")
-                        msg = await asyncio.wait_for(ws.receive(), timeout=3)
-                        self.assertEqual(msg.type, WSMsgType.TEXT)
-                        payload = json.loads(msg.data)
-                        self.assertEqual(payload["post_type"], "meta_event")
-                        self.assertEqual(payload["meta_event_type"], "heartbeat")
-                        self.assertEqual(payload["interval"], 200)
-                        self.assertTrue(payload["status"]["online"])
-                        await ws.close()
-                finally:
-                    await server.stop()
-
-        asyncio.run(scenario())
-
-    def test_http_post_reporting_delivers_events(self) -> None:
-        async def scenario() -> None:
-            from aiohttp import web
-
-            from onebot_v11.config import OneBotV11ServerConfig
-            from onebot_v11.server import OneBotV11Server
-
-            received: list = []
-
-            async def handler(request):
-                received.append(await request.json())
-                return web.Response(text="ok")
-
-            receiver = web.Application()
-            receiver.router.add_post("/onebot", handler)
-            runner = web.AppRunner(receiver)
-            await runner.setup()
-            site = web.TCPSite(runner, "127.0.0.1", 0)
-            await site.start()
-            self.assertTrue(runner.addresses)
-            port = int(runner.addresses[0][1])
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                adapter = self._adapter(tmpdir)
-                server = OneBotV11Server(
-                    adapter,
-                    OneBotV11ServerConfig(
-                        enabled=True,
-                        host="127.0.0.1",
-                        port=0,
-                        enable_http=False,
-                        enable_ws=False,
-                        enable_http_post=True,
-                        http_post_urls=[f"http://127.0.0.1:{port}/onebot"],
-                        heartbeat_enabled=False,
-                    ),
-                )
-                await server.start()
-                try:
-                    await adapter.emit_raw_event(_raw_message("post hello"))
-                    self.assertTrue(received)
-                    self.assertEqual(received[0]["raw_message"], "post hello")
-                finally:
-                    await server.stop()
-                    await runner.cleanup()
-
-        asyncio.run(scenario())
-
-    def test_reverse_websocket_delivers_events(self) -> None:
-        async def scenario() -> None:
-            from aiohttp import WSMsgType, web
-
-            from onebot_v11.config import OneBotV11ServerConfig
-            from onebot_v11.server import OneBotV11Server
-
-            received: list = []
-            connected = asyncio.Event()
-
-            async def ws_handler(request):
-                ws = web.WebSocketResponse()
-                await ws.prepare(request)
-                connected.set()
-                async for msg in ws:
-                    if msg.type == WSMsgType.TEXT:
-                        received.append(json.loads(msg.data))
-                return ws
-
-            app = web.Application()
-            app.router.add_get("/ws", ws_handler)
-            runner = web.AppRunner(app)
-            await runner.setup()
-            site = web.TCPSite(runner, "127.0.0.1", 0)
-            await site.start()
-            self.assertTrue(runner.addresses)
-            port = int(runner.addresses[0][1])
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                adapter = self._adapter(tmpdir)
-                server = OneBotV11Server(
-                    adapter,
-                    OneBotV11ServerConfig(
-                        enabled=True,
-                        host="127.0.0.1",
-                        port=0,
-                        enable_http=False,
-                        enable_ws=False,
-                        enable_ws_reverse=True,
-                        ws_reverse_url=f"ws://127.0.0.1:{port}/ws",
-                        send_connect_event=False,
-                        heartbeat_enabled=False,
-                    ),
-                )
-                await server.start()
-                try:
-                    await asyncio.wait_for(connected.wait(), timeout=3)
-                    await asyncio.sleep(0.1)
-                    await adapter.emit_raw_event(_raw_message("reverse hello"))
-                    for _ in range(60):
-                        if received:
-                            break
-                        await asyncio.sleep(0.05)
-                    self.assertTrue(received)
-                    self.assertEqual(received[-1]["raw_message"], "reverse hello")
-                finally:
-                    await server.stop()
-                    await runner.cleanup()
-
-        asyncio.run(scenario())
-
-    def test_forward_websocket_receives_events(self) -> None:
-        async def scenario() -> None:
-            from aiohttp import ClientSession, WSMsgType
-
-            from onebot_v11.config import OneBotV11ServerConfig
-            from onebot_v11.server import OneBotV11Server
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                adapter = self._adapter(tmpdir)
-                server = OneBotV11Server(
-                    adapter,
-                    OneBotV11ServerConfig(enabled=True, host="127.0.0.1", port=0, send_connect_event=False),
-                )
-                await server.start()
-                try:
-                    async with ClientSession() as session:
-                        ws = await session.ws_connect(f"http://127.0.0.1:{server.bound_port}/event")
-                        await adapter.emit_raw_event(_raw_message("ws hello"))
-                        msg = await asyncio.wait_for(ws.receive(), timeout=3)
-                        self.assertEqual(msg.type, WSMsgType.TEXT)
-                        payload = json.loads(msg.data)
-                        self.assertEqual(payload["raw_message"], "ws hello")
-                        await ws.close()
-                finally:
-                    await server.stop()
-
-        asyncio.run(scenario())
+        self.adapter.add_event_sink(stop_after_event)
+        await supplement._heartbeat_loop()
+        event = self.adapter._event_queue[-1]
+        self.assertEqual(event["meta_event_type"], "heartbeat")
+        self.assertTrue(event["status"]["online"])
 
 
-class OneBotStoreTest(unittest.TestCase):
-    def test_create_id_is_stable_under_concurrent_same_source(self) -> None:
-        from concurrent.futures import ThreadPoolExecutor
+class OneBotMigrationTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp_dir.name) / "onebot.sqlite3"
 
-        from onebot_v11.store import OneBotStore, make_user_source
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = OneBotStore(Path(tmpdir) / "ids.sqlite3")
-            source = make_user_source("concurrent-user")
-            with ThreadPoolExecutor(max_workers=16) as pool:
-                numbers = list(pool.map(lambda _: store.create_id(source).number, range(64)))
+    def _create_legacy(self, *, malformed_messages: bool = False) -> None:
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                "CREATE TABLE onebot_v11_id_map (source TEXT NOT NULL UNIQUE, number INTEGER NOT NULL UNIQUE, created_at INTEGER NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO onebot_v11_id_map(source, number, created_at) VALUES ('user:user-1', 12345, 100)"
+            )
+            raw_column = "" if malformed_messages else ", raw TEXT NOT NULL DEFAULT '{}'"
+            connection.execute(
+                "CREATE TABLE onebot_v11_messages ("
+                "ob_message_id TEXT PRIMARY KEY, oopz_message_id TEXT NOT NULL, detail_type TEXT NOT NULL, "
+                "area TEXT NOT NULL DEFAULT '', channel TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '', "
+                f"user_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL{raw_column})"
+            )
+            columns = "ob_message_id, oopz_message_id, detail_type, area, channel, target, user_id, created_at"
+            values = "'88', 'oopz-88', 'group', 'area-1', 'channel-1', '', 'user-1', 100"
+            if not malformed_messages:
+                columns += ", raw"
+                values += ", '{\"message\": \"hello\"}'"
+            connection.execute(f"INSERT INTO onebot_v11_messages({columns}) VALUES ({values})")
+            connection.commit()
 
-            self.assertEqual(len(set(numbers)), 1)
-            self.assertEqual(store.resolve_id(numbers[0]).source, source)
+    async def test_missing_database_is_not_created(self) -> None:
+        result = await migrate_onebot_v11_database(self.path)
+        self.assertIsNone(result)
+        self.assertFalse(self.path.exists())
+
+    async def test_sdk_schema_needs_no_backup(self) -> None:
+        IdStore(self.path)
+        result = await migrate_onebot_v11_database(self.path)
+        self.assertIsNone(result)
+        self.assertFalse(Path(str(self.path) + SDK_BACKUP_SUFFIX).exists())
+
+    async def test_legacy_ids_are_migrated_and_backed_up(self) -> None:
+        self._create_legacy()
+        backup = await migrate_onebot_v11_database(self.path)
+        self.assertEqual(backup, Path(str(self.path) + SDK_BACKUP_SUFFIX))
+        assert backup is not None
+        self.assertTrue(backup.is_file())
+        with sqlite3.connect(self.path) as connection:
+            row = connection.execute("SELECT string, number, source FROM onebot_v11_id_map").fetchone()
+        self.assertEqual(row, ("user:user-1", 12345, "user:user-1"))
+
+    async def test_legacy_messages_are_migrated(self) -> None:
+        self._create_legacy()
+        await migrate_onebot_v11_database(self.path)
+        with sqlite3.connect(self.path) as connection:
+            row = connection.execute(
+                "SELECT ob_message_id, oopz_message_id, raw_json FROM message_map WHERE ob_message_id='88'"
+            ).fetchone()
+            old_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onebot_v11_messages'"
+            ).fetchone()
+        self.assertEqual(row, ("88", "oopz-88", '{"message": "hello"}'))
+        self.assertIsNone(old_table)
+
+    async def test_existing_backup_is_never_overwritten(self) -> None:
+        self._create_legacy()
+        backup = await migrate_onebot_v11_database(self.path)
+        assert backup is not None
+        original = backup.read_bytes()
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                "CREATE TABLE onebot_v11_messages (ob_message_id TEXT PRIMARY KEY, oopz_message_id TEXT NOT NULL, "
+                "detail_type TEXT NOT NULL, area TEXT NOT NULL DEFAULT '', channel TEXT NOT NULL DEFAULT '', "
+                "target TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, "
+                "raw TEXT NOT NULL DEFAULT '{}')"
+            )
+            connection.commit()
+        await migrate_onebot_v11_database(self.path)
+        self.assertEqual(backup.read_bytes(), original)
+
+    async def test_second_migration_is_noop(self) -> None:
+        self._create_legacy()
+        await migrate_onebot_v11_database(self.path)
+        self.assertIsNone(await migrate_onebot_v11_database(self.path))
+
+    async def test_failed_migration_rolls_back_and_raises(self) -> None:
+        self._create_legacy(malformed_messages=True)
+        with self.assertRaises(sqlite3.OperationalError):
+            await migrate_onebot_v11_database(self.path)
+        with sqlite3.connect(self.path) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(onebot_v11_id_map)")}
+            legacy_messages = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='onebot_v11_messages'"
+            ).fetchone()
+            message_map = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_map'"
+            ).fetchone()
+        self.assertIn("source", columns)
+        self.assertNotIn("string", columns)
+        self.assertIsNotNone(legacy_messages)
+        self.assertIsNone(message_map)
 
 
-class OneBotV11ServiceLifecycleTest(unittest.TestCase):
-    def _service(self, tmpdir: str):
-        from onebot_v11.config import OneBotV11ServerConfig
-        from onebot_v11.service import OneBotV11Service
+class OneBotServerTest(unittest.IsolatedAsyncioTestCase):
+    async def _start_server(self, **overrides):
+        adapter = _ServerAdapter()
+        values = {
+            "host": "127.0.0.1",
+            "port": 0,
+            "enable_http": True,
+            "enable_ws": True,
+            "enable_http_post": False,
+            "enable_ws_reverse": False,
+            "send_connect_event": True,
+        }
+        values.update(overrides)
+        server = OneBotV11Server(adapter, OneBotV11ServerConfig(**values))
+        await server.start()
+        port = _listen_port(server.site._server) if server.site is not None else 0
+        self.addAsyncCleanup(server.stop)
+        return adapter, server, f"http://127.0.0.1:{port}"
 
-        return OneBotV11Service(
-            Mock(),
-            OneBotV11ServerConfig(
-                enabled=True,
-                db_path=str(Path(tmpdir) / "onebot.sqlite3"),
-                enable_http=False,
-                enable_ws=False,
-                enable_ws_reverse=False,
-                heartbeat_enabled=False,
-            ),
+    async def _start_app(self, handler, path: str = "/"):
+        app = web.Application()
+        app.router.add_route("*", path, handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = _listen_port(site._server)
+        self.addAsyncCleanup(runner.cleanup)
+        return f"http://127.0.0.1:{port}{path}"
+
+    async def test_http_auth_distinguishes_missing_and_wrong_token(self) -> None:
+        _adapter, _server, base = await self._start_server(access_token="secret")
+        async with ClientSession() as session:
+            self.assertEqual((await session.get(f"{base}/get_status")).status, 401)
+            self.assertEqual(
+                (await session.get(f"{base}/get_status", headers={"Authorization": "Bearer wrong"})).status,
+                403,
+            )
+            response = await session.get(f"{base}/get_status", headers={"Authorization": "Bearer secret"})
+            self.assertEqual(response.status, 200)
+
+    async def test_http_get_action_passes_query(self) -> None:
+        adapter, _server, base = await self._start_server()
+        async with ClientSession() as session:
+            response = await session.get(f"{base}/echo", params={"name": "value"})
+            payload = await response.json()
+        self.assertEqual(payload["data"]["params"], {"name": "value"})
+        self.assertEqual(adapter.calls[-1], ("echo", {"name": "value"}))
+
+    async def test_http_post_json_action(self) -> None:
+        _adapter, _server, base = await self._start_server()
+        async with ClientSession() as session:
+            response = await session.post(f"{base}/echo", json={"value": 3})
+            payload = await response.json()
+        self.assertEqual(payload["data"]["params"], {"value": 3})
+
+    async def test_http_post_form_action(self) -> None:
+        _adapter, _server, base = await self._start_server()
+        async with ClientSession() as session:
+            response = await session.post(f"{base}/echo/", data={"value": "3"})
+            payload = await response.json()
+        self.assertEqual(payload["data"]["params"], {"value": "3"})
+
+    async def test_http_invalid_json_is_400(self) -> None:
+        _adapter, _server, base = await self._start_server()
+        async with ClientSession() as session:
+            response = await session.post(
+                f"{base}/echo", data="{", headers={"Content-Type": "application/json"}
+            )
+        self.assertEqual(response.status, 400)
+
+    async def test_http_unsupported_content_type_is_406(self) -> None:
+        _adapter, _server, base = await self._start_server()
+        async with ClientSession() as session:
+            response = await session.post(f"{base}/echo", data="value", headers={"Content-Type": "text/plain"})
+        self.assertEqual(response.status, 406)
+
+    async def test_http_unknown_action_is_404(self) -> None:
+        _adapter, _server, base = await self._start_server()
+        async with ClientSession() as session:
+            response = await session.get(f"{base}/missing")
+        self.assertEqual(response.status, 404)
+
+    async def test_forward_api_websocket_executes_action(self) -> None:
+        _adapter, _server, base = await self._start_server()
+        async with (
+            ClientSession() as session,
+            session.ws_connect(base.replace("http://", "ws://") + "/api") as socket,
+        ):
+            await socket.send_json({"action": "get_status", "params": {}, "echo": "ws-1"})
+            payload = await socket.receive_json(timeout=1)
+        self.assertEqual(payload["echo"], "ws-1")
+        self.assertEqual(payload["data"]["action"], "get_status")
+
+    async def test_forward_event_websocket_receives_connect_and_event(self) -> None:
+        adapter, _server, base = await self._start_server()
+        async with (
+            ClientSession() as session,
+            session.ws_connect(base.replace("http://", "ws://") + "/event") as socket,
+        ):
+            connect = await socket.receive_json(timeout=1)
+            await adapter.emit({"post_type": "notice", "notice_type": "group_increase"})
+            event = await socket.receive_json(timeout=1)
+        self.assertEqual(connect["meta_event_type"], "lifecycle")
+        self.assertEqual(event["notice_type"], "group_increase")
+
+    async def test_forward_universal_websocket_handles_action_and_event(self) -> None:
+        adapter, _server, base = await self._start_server()
+        async with (
+            ClientSession() as session,
+            session.ws_connect(base.replace("http://", "ws://") + "/") as socket,
+        ):
+            await socket.receive_json(timeout=1)
+            await socket.send_json({"action": "echo", "params": {"x": 1}, "echo": 9})
+            action = await socket.receive_json(timeout=1)
+            await adapter.emit({"post_type": "meta_event", "meta_event_type": "heartbeat"})
+            event = await socket.receive_json(timeout=1)
+        self.assertEqual(action["echo"], 9)
+        self.assertEqual(event["meta_event_type"], "heartbeat")
+
+    async def test_forward_websocket_rejects_bad_token(self) -> None:
+        _adapter, _server, base = await self._start_server(access_token="secret")
+        async with ClientSession() as session:
+            with self.assertRaises(WSServerHandshakeError) as raised:
+                await session.ws_connect(base.replace("http://", "ws://") + "/api?access_token=wrong")
+        self.assertEqual(raised.exception.status, 403)
+
+    async def test_http_post_reports_event_with_signature(self) -> None:
+        received: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        async def receive(request: web.Request):
+            body = await request.read()
+            received.set_result((body, dict(request.headers)))
+            return web.Response(status=204)
+
+        target = await self._start_app(receive, "/events")
+        adapter, server, _base = await self._start_server(
+            enable_http=False,
+            enable_ws=False,
+            enable_http_post=True,
+            http_post_urls=[target],
+            secret="signing-secret",
+        )
+        event = {"post_type": "notice", "notice_type": "group_increase"}
+        await adapter.emit(event)
+        body, headers = await asyncio.wait_for(received, timeout=1)
+        expected = hmac.new(b"signing-secret", body, hashlib.sha1).hexdigest()
+        self.assertEqual(json.loads(body), event)
+        self.assertEqual(headers["X-Signature"], f"sha1={expected}")
+        await server.stop()
+
+    async def test_http_post_quick_operation_calls_actions(self) -> None:
+        async def receive(_request: web.Request):
+            return web.json_response({"reply": "pong", "delete": True})
+
+        target = await self._start_app(receive, "/events")
+        adapter, _server, _base = await self._start_server(
+            enable_http=False,
+            enable_ws=False,
+            enable_http_post=True,
+            http_post_urls=[target],
+        )
+        await adapter.emit({"post_type": "message", "message_type": "group", "group_id": 7, "message_id": 8})
+        self.assertIn(("send_group_msg", {"group_id": 7, "message": "pong", "auto_escape": False}), adapter.calls)
+        self.assertIn(("delete_msg", {"message_id": 8}), adapter.calls)
+
+    async def test_reverse_universal_websocket_exchanges_actions_and_events(self) -> None:
+        connected = asyncio.Event()
+        received: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        async def reverse(request: web.Request):
+            socket = web.WebSocketResponse()
+            await socket.prepare(request)
+            connect = await socket.receive_json(timeout=1)
+            await socket.send_json({"action": "echo", "params": {"reverse": True}, "echo": "r-1"})
+            action = await socket.receive_json(timeout=1)
+            connected.set()
+            event = await socket.receive_json(timeout=1)
+            if not received.done():
+                received.set_result((connect, action, event, dict(request.headers)))
+            await socket.close()
+            return socket
+
+        http_target = await self._start_app(reverse, "/reverse")
+        ws_target = http_target.replace("http://", "ws://")
+        adapter, _server, _base = await self._start_server(
+            enable_http=False,
+            enable_ws=False,
+            enable_ws_reverse=True,
+            ws_reverse_url=ws_target,
+            ws_reverse_reconnect_interval=10,
+        )
+        await asyncio.wait_for(connected.wait(), timeout=1)
+        await adapter.emit({"post_type": "notice", "notice_type": "group_decrease"})
+        connect, action, event, headers = await asyncio.wait_for(received, timeout=1)
+        self.assertEqual(connect["meta_event_type"], "lifecycle")
+        self.assertEqual(action["echo"], "r-1")
+        self.assertEqual(event["notice_type"], "group_decrease")
+        self.assertEqual(headers["X-Client-Role"], "Universal")
+
+    async def test_reverse_targets_are_deduplicated(self) -> None:
+        adapter = _ServerAdapter()
+        config = OneBotV11ServerConfig(ws_reverse_url="ws://same", ws_reverse_api_url="ws://same")
+        server = OneBotV11Server(adapter, config)
+        self.assertEqual(
+            server._reverse_targets(),
+            [("ws://same", "universal"), ("ws://same", "api")],
         )
 
-    def test_stop_is_idempotent_and_joins_service_thread(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            service = self._service(tmpdir)
-            service.start()
-            service_thread = service._thread
-            self.assertIsNotNone(service_thread)
-            assert service_thread is not None
-            self.assertTrue(service_thread.is_alive())
-
-            service.stop(timeout=2)
-            service.stop(timeout=2)
-
-        self.assertIsNone(service._thread)
-        self.assertIsNone(service._loop)
-
-    def test_stop_during_async_start_is_not_lost(self) -> None:
-        class DelayedServer:
-            def __init__(self) -> None:
-                self.entered = threading.Event()
-                self.stop_calls = 0
-
-            async def start(self) -> None:
-                self.entered.set()
-                await asyncio.sleep(0.05)
-
-            async def stop(self) -> None:
-                self.stop_calls += 1
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            service = self._service(tmpdir)
-            delayed = DelayedServer()
-            cast(Any, service).server = delayed
-            starter = threading.Thread(target=service.start)
-            starter.start()
-            self.assertTrue(delayed.entered.wait(timeout=1))
-
-            service.stop(timeout=1)
-            starter.join(timeout=1)
-
-        self.assertFalse(starter.is_alive())
-        self.assertIsNone(service._thread)
-        self.assertEqual(delayed.stop_calls, 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    async def test_server_stop_is_idempotent(self) -> None:
+        adapter, server, _base = await self._start_server()
+        await server.stop()
+        await server.stop()
+        self.assertEqual(adapter.sinks, [])

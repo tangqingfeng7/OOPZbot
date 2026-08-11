@@ -1,314 +1,270 @@
-import os
-import atexit
+"""基于 SDK 网关的异步 ID 到名称缓存。"""
+
+from __future__ import annotations
+
+import asyncio
 import json
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List
+import os
+from typing import TYPE_CHECKING
 
-import requests
-
-from core.http_constants import HTTP_TIMEOUT_DEFAULT
-from core.json_utils import compact_json
 from core.logger_config import get_logger
 from core.paths import DATA_DIR
-from oopz.signing import oopz_auth_headers
+
+if TYPE_CHECKING:
+    from oopz.sdk_gateway import AsyncOopzGateway
 
 logger = get_logger("NameResolver")
-
 NAMES_FILE = os.path.join(DATA_DIR, "names.json")
-
-# Oopz API: 获取用户信息的端点
-PERSON_INFOS_PATH = "/client/v1/person/v1/personInfos"
 
 
 class NameResolver:
-    """ID → 名称 解析器（自动 API 查询 + 文件持久化）"""
+    """名称读取保持纯内存；缺失用户通过注入的 SDK 网关显式异步补全。"""
 
-    _instance: Optional["NameResolver"] = None
-    _instance_lock = threading.Lock()
+    _instance: NameResolver | None = None
+    _MAX_UNNAMED_USERS = 5000
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            with cls._instance_lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
-    _MAX_UNNAMED_USERS = 5000
-
-    def __init__(self):
+    def __init__(self) -> None:
         if getattr(self, "_initialized", False):
             return
-        self._lock = threading.RLock()
-        self._data: dict[str, dict[str, str]] = {"users": {}, "channels": {}, "areas": {}}
+        self._data: dict[str, dict[str, str]] = {
+            "users": {},
+            "channels": {},
+            "areas": {},
+        }
         self._pending_uids: set[str] = set()
+        self._gateway: AsyncOopzGateway | None = None
         self._dirty = False
-        self._save_timer: Optional[threading.Timer] = None
+        self._revision = 0
+        self._loaded = False
+        self._save_task: asyncio.Task[None] | None = None
         self._save_delay_seconds = 1.0
-        self._api_ready = False
-        self._session = requests.Session()
-        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="name-resolve")
         self._initialized = True
-        self._load()
-        self._init_api()
-        atexit.register(self.flush)
+        self._load_config_names()
 
-    # ------------------------------------------------------------------
-    # 公共接口
-    # ------------------------------------------------------------------
+    async def start(self) -> None:
+        if self._loaded:
+            return
+        file_data = await asyncio.to_thread(self._read_names_file)
+        for category in ("users", "channels", "areas"):
+            values = file_data.get(category)
+            if isinstance(values, dict):
+                self._data[category].update(
+                    {str(key): str(value or "") for key, value in values.items()}
+                )
+        self._loaded = True
+        logger.info(
+            "已加载名称映射: %d 个用户, %d 个频道, %d 个区域",
+            sum(bool(value) for value in self._data["users"].values()),
+            sum(bool(value) for value in self._data["channels"].values()),
+            sum(bool(value) for value in self._data["areas"].values()),
+        )
+
+    async def bind_gateway(self, gateway: AsyncOopzGateway) -> None:
+        self._gateway = gateway
+        await self.start()
 
     def user(self, uid: str) -> str:
-        """获取用户显示名称，未知则尝试 API 查询"""
-        if not uid:
-            return ""
-        with self._lock:
-            name = self._data.get("users", {}).get(uid, "")
-            if name:
-                return name
-        # 不在锁内调用 API，避免死锁
-        self._fetch_user_name(uid)
-        with self._lock:
-            name = self._data.get("users", {}).get(uid, "")
-            return name if name else self._short_id(uid)
+        """仅读缓存；网络补全必须显式 ``await ensure_users``。"""
+        return self.user_cached(uid)
 
     def user_cached(self, uid: str) -> str:
-        """仅返回本地缓存名称；未知时返回短 ID，不触发网络请求。"""
         if not uid:
             return ""
-        with self._lock:
-            name = self._data.get("users", {}).get(uid, "")
-            return name if name else self._short_id(uid)
+        return self._data["users"].get(uid) or self._short_id(uid)
 
     def channel(self, channel_id: str) -> str:
-        """获取频道显示名称，未知则返回短 ID"""
         return self._get("channels", channel_id)
 
     def area(self, area_id: str) -> str:
-        """获取区域显示名称，未知则返回短 ID"""
         return self._get("areas", area_id)
 
-    def set_user(self, uid: str, name: str):
+    def set_user(self, uid: str, name: str) -> None:
         self._set("users", uid, name)
 
-    def set_channel(self, channel_id: str, name: str):
+    def set_channel(self, channel_id: str, name: str) -> None:
         self._set("channels", channel_id, name)
 
-    def set_area(self, area_id: str, name: str):
+    def set_area(self, area_id: str, name: str) -> None:
         self._set("areas", area_id, name)
 
-    def find_uid_by_name(self, name: str) -> Optional[str]:
-        """通过显示名称反查用户 UID，不区分大小写，返回第一个匹配。"""
+    def find_uid_by_name(self, name: str) -> str | None:
         if not name:
             return None
-        name_lower = name.lower()
-        with self._lock:
-            for uid, uname in self._data.get("users", {}).items():
-                if uname and uname.lower() == name_lower:
-                    return uid
+        expected = name.casefold()
+        for uid, current in self._data["users"].items():
+            if current and current.casefold() == expected:
+                return uid
         return None
 
-    def register_id(self, category: str, id_val: str):
-        """注册一个新发现的 ID（如果尚未记录）"""
+    def register_id(self, category: str, id_val: str) -> None:
         if not category or not id_val:
             return
-        with self._lock:
+        bucket = self._data.setdefault(category, {})
+        if id_val in bucket:
+            return
+        bucket[id_val] = ""
+        if category == "users":
+            self._evict_unnamed_users()
+        self._mark_dirty()
+
+    def register_ids(self, **categories: str) -> None:
+        changed = False
+        for category, id_val in categories.items():
+            if not id_val:
+                continue
             bucket = self._data.setdefault(category, {})
-            if id_val in bucket:
-                return
-            bucket[id_val] = ""
-            self._mark_dirty_no_lock()
-            if category == "users":
-                self._evict_unnamed_users_no_lock()
-
-    def register_ids(self, **categories: str):
-        """批量注册多个 ID，单次加锁。用法: register_ids(areas=aid, channels=cid, users=uid)"""
-        with self._lock:
-            dirty = False
-            for category, id_val in categories.items():
-                if not id_val:
-                    continue
-                bucket = self._data.setdefault(category, {})
-                if id_val in bucket:
-                    continue
+            if id_val not in bucket:
                 bucket[id_val] = ""
-                dirty = True
-                if category == "users":
-                    self._evict_unnamed_users_no_lock()
-            if dirty:
-                self._mark_dirty_no_lock()
+                changed = True
+        self._evict_unnamed_users()
+        if changed:
+            self._mark_dirty()
 
-    def batch_resolve_users(self, uids: List[str]):
-        """批量解析用户名（后台线程池异步）"""
-        to_fetch = self._claim_pending_uids(uids)
-        if not to_fetch:
-            return
-        self._pool.submit(self._fetch_user_names_batch, to_fetch)
+    async def batch_resolve_users(self, uids: list[str]) -> dict[str, str]:
+        return await self.ensure_users(uids)
 
-    def ensure_users(self, uids: List[str]) -> dict[str, str]:
-        """同步确保一批用户名称已进入缓存，并返回当前名称映射。"""
-        unique_uids = [uid for uid in dict.fromkeys(uids) if uid]
-        if not unique_uids:
+    async def ensure_users(self, uids: list[str]) -> dict[str, str]:
+        unique = [str(uid) for uid in dict.fromkeys(uids) if str(uid)]
+        if not unique:
             return {}
-
-        to_fetch = self._claim_pending_uids(unique_uids)
-        if to_fetch:
-            self._fetch_user_names_batch(to_fetch)
-
-        with self._lock:
-            users = self._data.get("users", {})
-            return {uid: users.get(uid, "") for uid in unique_uids}
-
-    # ------------------------------------------------------------------
-    # Oopz API 调用
-    # ------------------------------------------------------------------
-
-    def _init_api(self):
-        """延迟导入配置和密钥，避免循环依赖"""
+        to_fetch = [
+            uid
+            for uid in unique
+            if not self._data["users"].get(uid) and uid not in self._pending_uids
+        ]
+        self._pending_uids.update(to_fetch)
         try:
-            from config import OOPZ_CONFIG, DEFAULT_HEADERS
-            from private_key import get_private_key
-
-            self._config = OOPZ_CONFIG
-            self._default_headers = DEFAULT_HEADERS
-            self._private_key = get_private_key()
-            self._api_ready = True
-            logger.info("API 用户名查询已就绪")
-        except Exception as e:
-            logger.warning(f"API 初始化失败（将使用手动映射）: {e}")
-            self._api_ready = False
-
-    def _make_headers(self, url_path: str, body_str: str) -> dict:
-        h = dict(self._default_headers)
-        h.update(oopz_auth_headers(self._private_key, self._config, url_path, body_str))
-        return h
-
-    def _fetch_user_name(self, uid: str):
-        """通过 API 获取单个用户名"""
-        if not self._api_ready or not uid:
-            return
-        to_fetch = self._claim_pending_uids([uid])
-        if to_fetch:
-            self._fetch_user_names_batch(to_fetch)
-
-    def _fetch_user_names_batch(self, uids: List[str]):
-        """通过 API 批量获取用户名"""
-        if not self._api_ready or not uids:
-            self._release_pending_uids(uids)
-            return
-
-        try:
-            with self._lock:
-                to_fetch = [
-                    uid for uid in dict.fromkeys(uids)
-                    if uid and not self._data.get("users", {}).get(uid, "")
-                ]
-            if not to_fetch:
-                self._release_pending_uids(uids)
-                return
-
-            body = {"persons": to_fetch, "commonIds": []}
-            body_str = compact_json(body)
-            url = self._config["base_url"] + PERSON_INFOS_PATH
-            headers = self._make_headers(PERSON_INFOS_PATH, body_str)
-
-            resp = self._session.post(
-                url, headers=headers,
-                data=body_str.encode("utf-8"),
-                timeout=HTTP_TIMEOUT_DEFAULT,
-            )
-            if resp.status_code != 200:
-                logger.debug(f"personInfos 请求失败: {resp.status_code}")
-                return
-
-            result = resp.json()
-            if not result.get("status"):
-                return
-
-            data_list = result.get("data", [])
-            updated = 0
-            with self._lock:
-                for person in data_list:
-                    uid = person.get("uid", "")
-                    name = person.get("name", "")
-                    if uid and name:
-                        self._data.setdefault("users", {})[uid] = name
-                        updated += 1
-                if updated:
-                    self._mark_dirty_no_lock()
-
-            if updated:
-                names = [p.get("name", "") for p in data_list if p.get("name")]
-                logger.info(f"API 自动获取到 {updated} 个用户名: {', '.join(names)}")
-
-        except Exception as e:
-            logger.debug(f"API 查询用户名失败: {e}")
+            if to_fetch and self._gateway is not None:
+                people = await self._gateway.get_person_infos_batch(to_fetch)
+                for uid, person in people.items():
+                    name = str(
+                        person.get("name")
+                        or person.get("nickname")
+                        or person.get("displayName")
+                        or ""
+                    ).strip()
+                    if name:
+                        self._data["users"][uid] = name
+                        self._dirty = True
+                        self._revision += 1
+                if people:
+                    self._schedule_save()
         finally:
-            self._release_pending_uids(uids)
+            self._pending_uids.difference_update(to_fetch)
+        return {uid: self._data["users"].get(uid, "") for uid in unique}
 
-    # ------------------------------------------------------------------
-    # 内部实现
-    # ------------------------------------------------------------------
-
-    def _evict_unnamed_users_no_lock(self) -> None:
-        """当未命名用户条目过多时，删除最早的空名条目，防止内存无限增长。"""
-        users = self._data.get("users", {})
-        unnamed = [uid for uid, name in users.items() if not name]
-        if len(unnamed) <= self._MAX_UNNAMED_USERS:
+    async def flush(self) -> None:
+        task = self._save_task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._save_task = None
+        if not self._dirty:
             return
-        to_remove = unnamed[:len(unnamed) - self._MAX_UNNAMED_USERS]
-        for uid in to_remove:
-            users.pop(uid, None)
+        snapshot = {
+            category: dict(values)
+            for category, values in self._data.items()
+        }
+        revision = self._revision
+        await asyncio.to_thread(self._write_names_file, snapshot)
+        self._dirty = revision != self._revision
+        if self._dirty:
+            self._schedule_save()
+
+    async def close(self) -> None:
+        await self.flush()
+        self._gateway = None
+
+    def get_stats(self) -> dict[str, int]:
+        return {
+            "users_total": len(self._data["users"]),
+            "users_named": sum(bool(value) for value in self._data["users"].values()),
+            "channels_total": len(self._data["channels"]),
+            "channels_named": sum(bool(value) for value in self._data["channels"].values()),
+            "areas_total": len(self._data["areas"]),
+            "areas_named": sum(bool(value) for value in self._data["areas"].values()),
+        }
 
     def _get(self, category: str, id_val: str) -> str:
         if not id_val:
             return ""
-        with self._lock:
-            name = self._data.get(category, {}).get(id_val, "")
-            if not name:
-                self._data.setdefault(category, {})[id_val] = ""
-                self._mark_dirty_no_lock()
-                return self._short_id(id_val)
-            return name
+        value = self._data.setdefault(category, {}).get(id_val, "")
+        if value:
+            return value
+        self.register_id(category, id_val)
+        return self._short_id(id_val)
 
-    def _set(self, category: str, id_val: str, name: str):
-        with self._lock:
-            bucket = self._data.setdefault(category, {})
-            if bucket.get(id_val) == name:
-                return
-            bucket[id_val] = name
-            self._mark_dirty_no_lock()
-
-    def _claim_pending_uids(self, uids: List[str]) -> List[str]:
-        unique_uids = list(dict.fromkeys(uid for uid in uids if uid))
-        if not unique_uids:
-            return []
-        to_fetch = []
-        with self._lock:
-            users = self._data.get("users", {})
-            for uid in unique_uids:
-                if users.get(uid, "") or uid in self._pending_uids:
-                    continue
-                self._pending_uids.add(uid)
-                to_fetch.append(uid)
-        return to_fetch
-
-    def _release_pending_uids(self, uids: List[str]):
-        if not uids:
+    def _set(self, category: str, id_val: str, name: str) -> None:
+        if not id_val:
             return
-        with self._lock:
-            for uid in uids:
-                self._pending_uids.discard(uid)
+        bucket = self._data.setdefault(category, {})
+        if bucket.get(id_val) == name:
+            return
+        bucket[id_val] = name
+        self._mark_dirty()
 
-    def _mark_dirty_no_lock(self):
+    def _evict_unnamed_users(self) -> None:
+        users = self._data["users"]
+        unnamed = [uid for uid, name in users.items() if not name]
+        for uid in unnamed[: max(0, len(unnamed) - self._MAX_UNNAMED_USERS)]:
+            users.pop(uid, None)
+
+    def _mark_dirty(self) -> None:
         self._dirty = True
-        self._schedule_save_no_lock()
+        self._revision += 1
+        self._schedule_save()
 
-    def _schedule_save_no_lock(self):
-        if self._save_timer and self._save_timer.is_alive():
+    def _schedule_save(self) -> None:
+        if self._save_task is not None and not self._save_task.done():
             return
-        self._save_timer = threading.Timer(self._save_delay_seconds, self.flush)
-        self._save_timer.daemon = True
-        self._save_timer.start()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def delayed_save() -> None:
+            await asyncio.sleep(self._save_delay_seconds)
+            await self.flush()
+
+        self._save_task = loop.create_task(delayed_save(), name="name-cache-save")
+
+    def _load_config_names(self) -> None:
+        try:
+            from config import NAME_MAP
+
+            for category in ("users", "channels", "areas"):
+                values = NAME_MAP.get(category)
+                if isinstance(values, dict):
+                    self._data[category].update(values)
+        except (ImportError, AttributeError):
+            pass
+
+    @staticmethod
+    def _read_names_file() -> dict:
+        if not os.path.isfile(NAMES_FILE):
+            return {}
+        try:
+            with open(NAMES_FILE, encoding="utf-8") as file:
+                payload = json.load(file)
+            return payload if isinstance(payload, dict) else {}
+        except Exception as exc:
+            logger.warning("加载 names.json 失败: %s", exc)
+            return {}
+
+    @staticmethod
+    def _write_names_file(payload: dict) -> None:
+        os.makedirs(os.path.dirname(NAMES_FILE), exist_ok=True)
+        temporary = f"{NAMES_FILE}.tmp"
+        with open(temporary, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, NAMES_FILE)
 
     @staticmethod
     def _short_id(full_id: str) -> str:
@@ -316,65 +272,8 @@ class NameResolver:
             return full_id
         return full_id[:6] + ".." + full_id[-4:]
 
-    def _load(self):
-        """从 names.json 和 config.py 加载映射"""
-        try:
-            from config import NAME_MAP
-            for cat in ("users", "channels", "areas"):
-                if cat in NAME_MAP:
-                    self._data[cat].update(NAME_MAP[cat])
-        except (ImportError, AttributeError):
-            pass
 
-        if os.path.exists(NAMES_FILE):
-            try:
-                with open(NAMES_FILE, "r", encoding="utf-8") as f:
-                    file_data = json.load(f)
-                for cat in ("users", "channels", "areas"):
-                    if cat in file_data:
-                        self._data[cat].update(file_data[cat])
-                logger.info(
-                    f"已加载名称映射: "
-                    f"{sum(1 for v in self._data['users'].values() if v)} 个用户, "
-                    f"{sum(1 for v in self._data['channels'].values() if v)} 个频道, "
-                    f"{sum(1 for v in self._data['areas'].values() if v)} 个区域"
-                )
-            except Exception as e:
-                logger.warning(f"加载 names.json 失败: {e}")
-        else:
-            logger.info("names.json 不存在，将自动创建")
-
-    def _save_no_lock(self):
-        """保存到 names.json（调用时需已持有锁）"""
-        try:
-            os.makedirs(os.path.dirname(NAMES_FILE), exist_ok=True)
-            with open(NAMES_FILE, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"保存 names.json 失败: {e}")
-
-    def flush(self):
-        with self._lock:
-            self._save_timer = None
-            if not self._dirty:
-                return
-            self._save_no_lock()
-            self._dirty = False
-
-    def get_stats(self) -> dict:
-        with self._lock:
-            return {
-                "users_total": len(self._data.get("users", {})),
-                "users_named": sum(1 for v in self._data.get("users", {}).values() if v),
-                "channels_total": len(self._data.get("channels", {})),
-                "channels_named": sum(1 for v in self._data.get("channels", {}).values() if v),
-                "areas_total": len(self._data.get("areas", {})),
-                "areas_named": sum(1 for v in self._data.get("areas", {}).values() if v),
-            }
-
-
-# 全局单例
-_resolver: Optional[NameResolver] = None
+_resolver: NameResolver | None = None
 
 
 def get_resolver() -> NameResolver:

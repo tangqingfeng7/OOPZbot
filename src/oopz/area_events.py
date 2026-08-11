@@ -8,7 +8,6 @@ event taxonomy lives in one place.
 from __future__ import annotations
 
 import json
-from typing import Optional, Tuple
 
 # Authoritative Oopz WS event codes (source: Oopzbot-SDK
 # oopz_sdk/config/constants.py, cross-checked against captured ws_capture
@@ -25,7 +24,7 @@ _JOIN_KEYS = ("enter", "join", "add", "member_join", "join_area", "subscribe", "
 _LEAVE_KEYS = ("leave", "exit", "remove", "quit", "member_leave", "leave_area", "unsubscribe", "0")
 
 
-def parse_member_event(event: int, data: dict) -> Optional[Tuple[str, str, str]]:
+def parse_member_event(event: int, data: dict) -> tuple[str, str, str] | None:
     """Classify a raw Oopz event as an area member change.
 
     Returns ``("join"|"leave", area, uid)`` for area-level member changes, or
@@ -33,7 +32,7 @@ def parse_member_event(event: int, data: dict) -> Optional[Tuple[str, str, str]]
     channel-scoped events, which are ignored here).
     """
     try:
-        event_int: Optional[int] = int(event)
+        event_int: int | None = int(event)
     except (TypeError, ValueError):
         event_int = None
     if event_int is not None and event_int in NON_MEMBER_EVENTS:

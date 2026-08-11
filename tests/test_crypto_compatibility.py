@@ -1,4 +1,3 @@
-"""生产依赖 cryptography测试。"""
 
 from __future__ import annotations
 
@@ -16,10 +15,14 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from oopz.oopz_password_login import (  # noqa: E402
+# 签名与密码加密已随登录链路迁入 SDK；算法与旧实现逐字一致，
+# 这些用例继续守住「与服务端约定的加密格式」不被无声改动。
+from oopz_sdk.auth.api_password_login import (  # noqa: E402
     _build_oopz_sign,
     _encrypt_password_code,
-    load_private_key_from_pem,
+)
+from oopz_sdk.auth.api_password_login import (  # noqa: E402
+    _load_private_key as load_private_key_from_pem,
 )
 from tools.credential_tool import jwk_to_pem  # noqa: E402
 

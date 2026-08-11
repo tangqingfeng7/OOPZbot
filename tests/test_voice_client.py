@@ -1,146 +1,117 @@
-import queue
+import asyncio
 import sys
-import threading
-import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from music.sdk_voice import SdkVoiceController  # noqa: E402
+from oopz.sdk_transport import ProjectBrowserVoiceTransport  # noqa: E402
 
-from music.voice_client import VoiceClient
 
-
-class VoiceClientPlaybackTest(unittest.TestCase):
+class SdkVoiceControllerTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.client = VoiceClient.__new__(VoiceClient)
-        self.client._stop_event = threading.Event()
-        self.client._playing = False
-        self.client._on_play_start_callback = None
-        self.client._remote_last_fail = 0
-        self.client._temp_audio_path = None
-        self.client._current_agora_uid = None
-        self.client.get_state = Mock(return_value="finished")
+        self.voice = Mock()
+        self.voice.current_sign = Mock(agora_sign_pid="123")
+        self.voice.join = AsyncMock(return_value={"ok": True})
+        self.voice.leave = AsyncMock()
+        self.voice.play_bytes = AsyncMock(return_value={"ok": True})
+        self.voice.stop = AsyncMock()
+        self.voice.pause = AsyncMock(return_value=True)
+        self.voice.resume = AsyncMock(return_value=True)
+        self.voice.seek = AsyncMock(return_value=True)
+        self.voice.set_volume = AsyncMock(return_value=True)
+        self.voice.close = AsyncMock()
+        self.controller = SdkVoiceController(self.voice, proxy_value=False)
 
-    def test_do_play_prefers_remote_url_before_local_download(self) -> None:
-        self.client._download_audio_with_retry = Mock(return_value=(b"abc", "audio/mpeg"))
-        self.client._run_on_browser = Mock(return_value={"ok": True, "duration": 1.5})
+    async def asyncTearDown(self) -> None:
+        if not self.controller._closed:
+            await self.controller.destroy()
 
-        self.client._do_play(url="https://example.com/song.mp3")
-
-        self.client._run_on_browser.assert_any_call(
-            "agoraPlayAudio",
-            "https://example.com/song.mp3",
-            timeout=5,
+    async def test_join_delegates_to_sdk_voice(self) -> None:
+        await self.controller.join(
+            area="area-1",
+            channel="voice-1",
+            from_area="area-0",
+            from_channel="voice-0",
+            rtc_uid=123,
         )
-        self.assertFalse(self.client._playing)
+        self.voice.join.assert_awaited_once_with(
+            area="area-1",
+            channel="voice-1",
+            from_area="area-0",
+            from_channel="voice-0",
+            rtc_uid=123,
+        )
 
-    def test_do_play_falls_back_to_local_when_remote_fails(self) -> None:
-        self.client._download_audio_with_retry = Mock(return_value=(b"abc", "audio/mpeg"))
+    async def test_preload_is_reused_by_playback(self) -> None:
+        self.controller._fetcher.fetch = Mock(return_value=(b"audio", "audio/mpeg"))
+        self.controller.preload_audio("https://example.com/song.mp3")
+        await asyncio.gather(*self.controller._preload_tasks.values())
 
-        call_count = [0]
+        await self.controller.play_audio("https://example.com/song.mp3")
 
-        def _run(method, *args, **kwargs):
-            if method == "agoraPlayAudio":
-                call_count[0] += 1
-                if call_count[0] == 1:
-                    return {"ok": False, "error": "unsupported"}
-                return {"ok": True, "duration": 2}
-            raise AssertionError(f"unexpected browser call: {method}")
+        self.controller._fetcher.fetch.assert_called_once()
+        self.voice.play_bytes.assert_awaited_once_with(b"audio", mime_type="audio/mpeg")
+        self.assertTrue(self.controller.is_playing)
 
-        self.client._run_on_browser = Mock(side_effect=_run)
+    async def test_playback_awaits_async_started_callback(self) -> None:
+        self.controller._fetcher.fetch = Mock(return_value=(b"audio", "audio/ogg"))
+        callback = AsyncMock()
 
-        self.client._do_play(url="https://example.com/song.mp3")
+        await self.controller.play_audio("https://example.com/song.ogg", callback)
 
-        self.client._download_audio_with_retry.assert_called_once()
-        play_calls = [c for c in self.client._run_on_browser.call_args_list
-                      if c.args[0] == "agoraPlayAudio"]
-        self.assertGreaterEqual(len(play_calls), 2)
-        self.assertFalse(self.client._playing)
+        callback.assert_awaited_once_with()
 
-    def test_remote_failure_suppresses_subsequent_attempts(self) -> None:
-        """远程失败后，后续播放应跳过远程尝试，直接本地下载。"""
-        self.client._download_audio_with_retry = Mock(return_value=(b"data", "audio/mpeg"))
-        self.client._run_on_browser = Mock(return_value={"ok": True, "duration": 3})
-        import time as _time
-        self.client._remote_last_fail = _time.monotonic()
+    async def test_sdk_play_error_is_not_reported_as_success(self) -> None:
+        self.controller._fetcher.fetch = Mock(return_value=(b"audio", "audio/mpeg"))
+        self.voice.play_bytes.return_value = {"ok": False, "error": "decode failed"}
 
-        self.client._do_play(url="https://example.com/song.mp3")
+        with self.assertRaisesRegex(RuntimeError, "decode failed"):
+            await self.controller.play_audio("https://example.com/song.mp3")
+        self.assertFalse(self.controller.is_playing)
 
-        all_calls = self.client._run_on_browser.call_args_list
-        play_urls = [c.args[1] for c in all_calls if c.args[0] == "agoraPlayAudio"]
-        remote_calls = [u for u in play_urls if u.startswith("http")]
-        self.assertEqual(len(remote_calls), 0, "Should skip remote when recently failed")
-        self.client._download_audio_with_retry.assert_called_once()
+    async def test_destroy_is_idempotent_and_closes_sdk_backend(self) -> None:
+        await self.controller.destroy()
+        await self.controller.destroy()
 
-    def test_join_rolls_back_when_initial_identity_fails(self) -> None:
-        self.client._available = True
-        self.client._app_id = "app-id"
-        self.client._agora_uid = "123456"
-        self.client._oopz_uid = "oopz-user"
-        self.client._identity_stop = threading.Event()
-        self.client._identity_thread = None
-        self.client._play_thread = None
-        self.client._stop_identity_heartbeat = Mock()
-        self.client.stop_audio = Mock()
+        self.voice.close.assert_awaited_once_with()
+        self.assertFalse(self.controller.available)
 
-        def _run(method, *args, **kwargs):
-            if method == "agoraJoin":
-                return {"ok": True, "uid": args[3]}
-            if method == "agoraSetVoiceIdentity":
-                return {"ok": False, "error": "bridge missing"}
-            if method == "agoraSetVoiceState":
-                return {"ok": True}
-            if method == "agoraLeave":
-                return {"ok": True}
-            raise AssertionError(f"unexpected browser call: {method}")
 
-        self.client._run_on_browser = Mock(side_effect=_run)
+class SeleniumFallbackTest(unittest.IsolatedAsyncioTestCase):
+    async def test_falls_back_when_playwright_initialization_fails(self) -> None:
+        transport = ProjectBrowserVoiceTransport(Mock(), proxy_value=False)
+        with (
+            patch.object(
+                transport,
+                "_init_playwright_browser",
+                AsyncMock(side_effect=RuntimeError("playwright failed")),
+            ),
+            patch.object(transport, "_init_selenium_browser") as selenium,
+            patch(
+                "oopz_sdk.transport.voice_browser.BrowserVoiceTransport._shutdown_browser",
+                new=AsyncMock(),
+            ),
+        ):
+            await transport._init_browser()
 
-        ok = self.client.join(token="token", room_id="room", uid=123456)
+        selenium.assert_called_once_with()
+        self.assertTrue(transport._init_done.is_set())
 
-        self.assertFalse(ok)
-        methods = [call.args[0] for call in self.client._run_on_browser.call_args_list]
-        self.assertIn("agoraSetVoiceIdentity", methods)
-        self.assertIn("agoraLeave", methods)
-        self.assertIsNone(self.client._current_agora_uid)
+    async def test_does_not_start_selenium_when_playwright_succeeds(self) -> None:
+        transport = ProjectBrowserVoiceTransport(Mock(), proxy_value=False)
+        with (
+            patch.object(transport, "_init_playwright_browser", new=AsyncMock()),
+            patch.object(transport, "_init_selenium_browser") as selenium,
+        ):
+            await transport._init_browser()
 
-    def test_browser_call_respects_explicit_shutdown_budget(self) -> None:
-        self.client._shutdown = threading.Event()
-        self.client._task_queue = queue.Queue()
-        started_at = time.monotonic()
-
-        with self.assertRaisesRegex(TimeoutError, "浏览器操作超时"):
-            self.client._run_on_browser(
-                "agoraState",
-                timeout=60,
-                wait_timeout=0.02,
-            )
-
-        self.assertLess(time.monotonic() - started_at, 0.2)
-
-    def test_repeated_destroy_retries_join_for_live_browser_thread(self) -> None:
-        self.client._destroyed = True
-        self.client._available = True
-        self.client._shutdown = threading.Event()
-        self.client._task_queue = queue.Queue()
-        self.client._identity_stop = threading.Event()
-        self.client._preload_stop = threading.Event()
-        self.client._preload_thread = None
-        self.client._play_thread = None
-        self.client._identity_thread = None
-        self.client._browser_thread = Mock()
-        self.client._browser_thread.is_alive.return_value = True
-
-        self.client.destroy(timeout=0)
-        self.client.destroy(timeout=0)
-
-        self.assertEqual(self.client._browser_thread.join.call_count, 2)
+        selenium.assert_not_called()
 
 
 if __name__ == "__main__":

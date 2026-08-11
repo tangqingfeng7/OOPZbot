@@ -1,12 +1,13 @@
-"""OneBot v11 sidecar adapter for the local Oopz bot runtime."""
+"""项目对内置 Oopz-SDK OneBot v11 的配置、迁移与能力补丁。"""
 
-from onebot_v11.adapter import OneBotV11Adapter
 from onebot_v11.config import OneBotV11ServerConfig, get_onebot_v11_config
-from onebot_v11.service import OneBotV11Service
+from onebot_v11.sdk_integration import OneBotV11Supplement, find_sdk_onebot_v11
+from onebot_v11.sdk_migration import migrate_onebot_v11_database
 
 __all__ = [
-    "OneBotV11Adapter",
     "OneBotV11ServerConfig",
-    "OneBotV11Service",
+    "OneBotV11Supplement",
+    "find_sdk_onebot_v11",
     "get_onebot_v11_config",
+    "migrate_onebot_v11_database",
 ]
