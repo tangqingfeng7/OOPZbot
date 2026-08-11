@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -19,31 +19,31 @@ class MusicPlatform(Protocol):
         """平台显示名，如 "网易云" / "QQ音乐" / "B站"。"""
         ...
 
-    def search(self, keyword: str, limit: int = 1) -> Optional[dict]:
+    async def search(self, keyword: str, limit: int = 1) -> dict | None:
         """搜索单首歌曲，返回标准化歌曲 dict 或 None。"""
         ...
 
-    def search_many(self, keyword: str, limit: int = 10, offset: int = 0) -> list[dict]:
+    async def search_many(self, keyword: str, limit: int = 10, offset: int = 0) -> list[dict]:
         """搜索多首歌曲，返回标准化歌曲 dict 列表。"""
         ...
 
-    def get_song_url(self, song_id) -> Optional[str]:
+    async def get_song_url(self, song_id) -> str | None:
         """获取歌曲播放 URL。"""
         ...
 
-    def get_song_detail(self, song_id) -> Optional[dict]:
+    async def get_song_detail(self, song_id) -> dict | None:
         """获取歌曲详情。"""
         ...
 
-    def get_lyric(self, song_id) -> Optional[str]:
+    async def get_lyric(self, song_id) -> str | None:
         """获取 LRC 歌词，无歌词返回 None。"""
         ...
 
-    def summarize(self, keyword: str) -> dict:
+    async def summarize(self, keyword: str) -> dict:
         """搜索并汇总：返回 {"code": "success"|"error", "message": str, "data": dict|None}。"""
         ...
 
-    def summarize_by_id(self, song_id) -> dict:
+    async def summarize_by_id(self, song_id) -> dict:
         """按 ID 获取详情 + URL：返回同 summarize 格式。"""
         ...
 
@@ -57,10 +57,10 @@ class PlatformRegistry:
     def register(self, platform: MusicPlatform) -> None:
         self._platforms[platform.name] = platform
 
-    def get(self, name: str) -> Optional[MusicPlatform]:
+    def get(self, name: str) -> MusicPlatform | None:
         return self._platforms.get(name)
 
-    def get_default(self) -> Optional[MusicPlatform]:
+    def get_default(self) -> MusicPlatform | None:
         return self._platforms.get("netease")
 
     @property
@@ -70,3 +70,9 @@ class PlatformRegistry:
     def display_name(self, platform_name: str) -> str:
         p = self._platforms.get(platform_name)
         return p.display_name if p else platform_name
+
+    async def close(self) -> None:
+        for platform in self._platforms.values():
+            closer = getattr(platform, "close", None)
+            if closer is not None:
+                await closer()

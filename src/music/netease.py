@@ -1,12 +1,11 @@
 import threading
 import time
 from collections import OrderedDict
-from typing import Generic, Optional, TypeVar
+from typing import Generic, TypeVar
 from urllib.parse import urlparse
 
-import requests
-
 from config import NETEASE_CLOUD
+from core.async_http import ManagedHttpClient
 from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
 
@@ -15,7 +14,7 @@ logger = get_logger("Netease")
 _CacheValue = TypeVar("_CacheValue")
 
 
-def _safe_params(params: Optional[dict]) -> dict:
+def _safe_params(params: dict | None) -> dict:
     safe = dict(params or {})
     for key in ("cookie", "Cookie"):
         if key in safe:
@@ -143,7 +142,7 @@ class NeteaseCloud:
         self.base_url = NETEASE_CLOUD.get("base_url", "").rstrip("/")
         self.cookie = NETEASE_CLOUD.get("cookie", "")
         self._search_cache: _SearchCache[dict] = _SearchCache()
-        self._session = requests.Session()
+        self._http = ManagedHttpClient()
         self._last_song_url_error = ""
         if not self.base_url:
             logger.warning("网易云 API 地址未配置 (NETEASE_CLOUD.base_url)")
@@ -152,13 +151,13 @@ class NeteaseCloud:
     def last_song_url_error(self) -> str:
         return self._last_song_url_error
 
-    def _request(
+    async def _request(
         self,
         method: str,
         path: str,
-        params: Optional[dict] = None,
+        params: dict | None = None,
         include_cookie_param: bool = False,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """发起网易云 API 请求；需要登录态的接口用 POST body 携带 cookie。"""
         if not self.base_url:
             return None
@@ -177,35 +176,27 @@ class NeteaseCloud:
                 bool(str(self.cookie or "").strip()),
                 include_cookie_param and bool(str(self.cookie or "").strip()),
             )
-            if method.upper() == "POST":
-                resp = self._session.post(
-                    f"{self.base_url}{path}",
-                    data=request_params,
-                    headers=headers,
-                    timeout=HTTP_TIMEOUT_DEFAULT,
-                )
-            else:
-                resp = self._session.get(
-                    f"{self.base_url}{path}",
-                    params=request_params,
-                    headers=headers,
-                    timeout=HTTP_TIMEOUT_DEFAULT,
-                )
-            resp.raise_for_status()
-            return resp.json()
+            return await self._http.request_json(
+                method.upper(),
+                f"{self.base_url}{path}",
+                params=request_params if method.upper() != "POST" else None,
+                data=request_params if method.upper() == "POST" else None,
+                headers=headers,
+                timeout=HTTP_TIMEOUT_DEFAULT,
+            )
         except Exception as e:
             logger.error(f"网易云 API 请求失败: {e}")
             return None
 
-    def _get(self, path: str, params: Optional[dict] = None) -> Optional[dict]:
+    async def _get(self, path: str, params: dict | None = None) -> dict | None:
         """发起 GET 请求（复用连接池）"""
-        return self._request("GET", path, params=params)
+        return await self._request("GET", path, params=params)
 
-    def _post_with_cookie(self, path: str, params: Optional[dict] = None) -> Optional[dict]:
+    async def _post_with_cookie(self, path: str, params: dict | None = None) -> dict | None:
         """发起带 cookie body 的 POST 请求，供需要会员/登录态的接口使用。"""
-        return self._request("POST", path, params=params, include_cookie_param=True)
+        return await self._request("POST", path, params=params, include_cookie_param=True)
 
-    def search(self, keyword: str, limit: int = 1) -> Optional[dict]:
+    async def search(self, keyword: str, limit: int = 1) -> dict | None:
         """
         搜索歌曲
 
@@ -224,7 +215,7 @@ class NeteaseCloud:
         if cached is not None:
             return cached
 
-        data = self._get("/cloudsearch", params={"keywords": keyword, "limit": limit, "type": 1})
+        data = await self._get("/cloudsearch", params={"keywords": keyword, "limit": limit, "type": 1})
         if not data or data.get("code") != 200:
             return None
 
@@ -237,9 +228,9 @@ class NeteaseCloud:
             self._search_cache.put(cache_key, result)
         return result
 
-    def search_many(self, keyword: str, limit: int = 10, offset: int = 0) -> list[dict]:
+    async def search_many(self, keyword: str, limit: int = 10, offset: int = 0) -> list[dict]:
         """搜索歌曲，返回多条结果列表"""
-        data = self._get("/cloudsearch", params={
+        data = await self._get("/cloudsearch", params={
             "keywords": keyword,
             "limit": limit,
             "offset": max(0, int(offset or 0)),
@@ -256,7 +247,7 @@ class NeteaseCloud:
                 results.append(parsed)
         return results
 
-    def get_song_url(self, song_id: int, expected_duration_ms: int = 0, song_name: str = "") -> Optional[str]:
+    async def get_song_url(self, song_id: int, expected_duration_ms: int = 0, song_name: str = "") -> str | None:
         """获取歌曲播放 URL。level 可选 standard(体积小/弱网友好) 或 exhigh(音质更好)。
 
         实测 NeteaseCloudMusicApi 本地服务存在缓存错乱 bug：
@@ -290,9 +281,9 @@ class NeteaseCloud:
                 req_params = dict(params)
                 req_params["timestamp"] = int(time.time() * 1000)
                 data = (
-                    self._post_with_cookie(path, params=req_params)
+                    await self._post_with_cookie(path, params=req_params)
                     if method == "POST"
-                    else self._get(path, params=req_params)
+                    else await self._get(path, params=req_params)
                 )
                 if not data or data.get("code") != 200:
                     logger.debug(
@@ -376,12 +367,12 @@ class NeteaseCloud:
             logger.warning("网易云未获取到播放链接: song_id=%s level=%s", song_id, level)
         return None
 
-    def get_account_profile(self) -> Optional[dict[str, str]]:
+    async def get_account_profile(self) -> dict[str, str] | None:
         """通过项目约定的认证接口获取当前登录账号。"""
         if not self.cookie:
             logger.debug("网易云账号身份查询跳过: 未配置 Cookie")
             return None
-        data = self._post_with_cookie(
+        data = await self._post_with_cookie(
             "/login/status",
             params={"timestamp": int(time.time() * 1000)},
         )
@@ -397,9 +388,9 @@ class NeteaseCloud:
             "avatar_url": str(raw_profile.get("avatarUrl") or ""),
         }
 
-    def get_user_id(self) -> Optional[int]:
+    async def get_user_id(self) -> int | None:
         """获取当前登录用户的 ID。"""
-        profile = self.get_account_profile()
+        profile = await self.get_account_profile()
         if not profile:
             return None
         try:
@@ -408,12 +399,12 @@ class NeteaseCloud:
             logger.warning("网易云账号返回了无效的用户 ID")
             return None
 
-    def get_liked_ids(self, uid: int) -> list:
+    async def get_liked_ids(self, uid: int) -> list:
         """获取用户喜欢的歌曲 ID 列表"""
         if not self.cookie:
             logger.debug("网易云喜欢列表查询跳过: 未配置 Cookie")
             return []
-        data = self._post_with_cookie(
+        data = await self._post_with_cookie(
             "/likelist",
             params={"uid": uid, "timestamp": int(time.time() * 1000)},
         )
@@ -426,9 +417,9 @@ class NeteaseCloud:
             return []
         return ids
 
-    def get_song_detail(self, song_id: int) -> Optional[dict]:
+    async def get_song_detail(self, song_id: int) -> dict | None:
         """通过歌曲 ID 获取歌曲详细信息"""
-        data = self._get("/song/detail", params={"ids": str(song_id)})
+        data = await self._get("/song/detail", params={"ids": str(song_id)})
         if not data or data.get("code") != 200:
             return None
 
@@ -438,12 +429,12 @@ class NeteaseCloud:
 
         return self._parse_song(songs[0])
 
-    def get_song_details_batch(self, song_ids: list) -> list:
+    async def get_song_details_batch(self, song_ids: list) -> list:
         """批量获取歌曲详细信息（一次最多传 50 个 ID）"""
         if not song_ids:
             return []
         ids_str = ",".join(str(sid) for sid in song_ids)
-        data = self._get("/song/detail", params={"ids": ids_str})
+        data = await self._get("/song/detail", params={"ids": ids_str})
         if not data or data.get("code") != 200:
             return []
 
@@ -457,7 +448,7 @@ class NeteaseCloud:
                 logger.warning(f"解析歌曲失败 (id={song.get('id')}): {e}")
         return results
 
-    def get_all_liked_song_details(self, uid: int, max_songs: int = 5000,
+    async def get_all_liked_song_details(self, uid: int, max_songs: int = 5000,
                                    batch_size: int = 50) -> list[dict]:
         """拉取登录用户"我喜欢的音乐"全部歌曲详情，用于本地匹配。
 
@@ -465,7 +456,7 @@ class NeteaseCloud:
         - 用 max_songs 兜底，防止用户喜欢列表异常大把启动拖死
         - 任一批次失败不影响其它批次（容错）
         """
-        ids = self.get_liked_ids(uid)
+        ids = await self.get_liked_ids(uid)
         if not ids:
             return []
         total = len(ids)
@@ -480,7 +471,7 @@ class NeteaseCloud:
         for i in range(0, len(ids), batch_size):
             chunk = ids[i:i + batch_size]
             try:
-                details = self.get_song_details_batch(chunk)
+                details = await self.get_song_details_batch(chunk)
             except Exception as e:
                 logger.debug(f"喜欢列表详情拉取批次失败 (offset={i}): {e}")
                 continue
@@ -492,13 +483,13 @@ class NeteaseCloud:
             )
         return out
 
-    def summarize_by_id(self, song_id: int) -> dict:
+    async def summarize_by_id(self, song_id: int) -> dict:
         """通过歌曲 ID 获取完整信息（详情 + URL）"""
-        song_info = self.get_song_detail(song_id)
+        song_info = await self.get_song_detail(song_id)
         if not song_info:
             return {"code": "error", "message": f"无法获取歌曲信息: {song_id}", "data": None}
 
-        url = self.get_song_url(
+        url = await self.get_song_url(
             song_id,
             expected_duration_ms=song_info.get("duration", 0) or 0,
             song_name=song_info.get("name", ""),
@@ -510,16 +501,16 @@ class NeteaseCloud:
         song_info["url"] = url
         return {"code": "success", "message": "", "data": song_info}
 
-    def summarize(self, keyword: str) -> dict:
+    async def summarize(self, keyword: str) -> dict:
         """
         搜索并汇总歌曲信息（搜索 + 获取 URL），
         返回统一格式供 music.py 调用。
         """
-        song_info = self.search(keyword)
+        song_info = await self.search(keyword)
         if not song_info:
             return {"code": "error", "message": f"未找到: {keyword}", "data": None}
 
-        url = self.get_song_url(
+        url = await self.get_song_url(
             song_info["id"],
             expected_duration_ms=song_info.get("duration", 0) or 0,
             song_name=song_info.get("name", ""),
@@ -538,9 +529,9 @@ class NeteaseCloud:
         )
         return {"code": "success", "message": msg, "data": song_info}
 
-    def get_lyrics(self, song_id: int) -> tuple[Optional[str], Optional[str]]:
+    async def get_lyrics(self, song_id: int) -> tuple[str | None, str | None]:
         """获取歌曲 LRC 歌词和翻译歌词，一次请求同时返回 (lyric, tlyric)。"""
-        data = self._get("/lyric/new", params={"id": song_id})
+        data = await self._get("/lyric/new", params={"id": song_id})
         if not data or data.get("code") != 200:
             return None, None
         lrc_text = (data.get("lrc") or {}).get("lyric", "")
@@ -549,17 +540,20 @@ class NeteaseCloud:
         tlyric = tlrc_text if tlrc_text and "[" in tlrc_text else None
         return lyric, tlyric
 
-    def get_lyric(self, song_id: int) -> Optional[str]:
+    async def get_lyric(self, song_id: int) -> str | None:
         """获取歌曲 LRC 歌词文本，无歌词返回 None。"""
-        lyric, _ = self.get_lyrics(song_id)
+        lyric, _ = await self.get_lyrics(song_id)
         return lyric
 
-    def get_tlyric(self, song_id: int) -> Optional[str]:
+    async def get_tlyric(self, song_id: int) -> str | None:
         """获取歌曲翻译歌词，无翻译返回 None。"""
-        _, tlyric = self.get_lyrics(song_id)
+        _, tlyric = await self.get_lyrics(song_id)
         return tlyric
 
-    def _parse_song(self, song: dict) -> Optional[dict]:
+    async def close(self) -> None:
+        await self._http.close()
+
+    def _parse_song(self, song: dict) -> dict | None:
         """从 API 返回的原始歌曲数据中提取标准化字段，防御所有 None 值"""
         if not song or not song.get("id"):
             return None

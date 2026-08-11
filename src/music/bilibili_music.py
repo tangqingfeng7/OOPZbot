@@ -7,11 +7,10 @@
 from __future__ import annotations
 
 import re
-import requests
 from http.cookies import SimpleCookie
-from typing import Optional
 from urllib.parse import quote
 
+from core.async_http import ManagedHttpClient
 from core.constants import USER_AGENT
 from core.http_constants import HTTP_TIMEOUT_DEFAULT
 from core.logger_config import get_logger
@@ -76,7 +75,7 @@ def _cookie_dict(raw: str) -> dict[str, str]:
 def _cookie_debug_summary(raw: str) -> str:
     """生成不含 Cookie 值的调试摘要。"""
     names = sorted(_cookie_dict(raw).keys())
-    return "configured=%s names=%s" % (bool(names), ",".join(names) or "-")
+    return f"configured={bool(names)} names={','.join(names) or '-'}"
 
 
 def _bilibili_referer_for_video(bvid: str) -> str:
@@ -94,37 +93,55 @@ class BilibiliMusic:
         self.enabled = cfg.get("enabled", False)
         self.cookie = cfg.get("cookie", "")
         self.last_song_url_error = ""
-        self._session = requests.Session()
-        self._session.headers.update(_HEADERS)
-        cookie_pairs = _cookie_dict(self.cookie)
-        if cookie_pairs:
-            self._session.cookies.update(cookie_pairs)
+        self._cookie_pairs = _cookie_dict(self.cookie)
+        self._http = ManagedHttpClient(headers=_HEADERS)
         logger.debug("B 站音乐平台初始化: enabled=%s %s", self.enabled, _cookie_debug_summary(self.cookie))
 
-    def _prime_session(self) -> None:
+    async def _prime_session(self) -> None:
         """刷新 B 站首页 Cookie，降低公开接口偶发 412 的概率。"""
         try:
-            resp = self._session.get(_BILIBILI_HOME, timeout=HTTP_TIMEOUT_DEFAULT)
+            session = await self._http.session()
+            async with session.get(
+                _BILIBILI_HOME,
+                cookies=self._cookie_pairs,
+                proxy=self._http.request_proxy(_BILIBILI_HOME),
+                timeout=HTTP_TIMEOUT_DEFAULT,
+            ) as resp:
+                await resp.read()
             logger.debug(
                 "B 站首页 Cookie 预热完成: status=%s cookies=%s",
-                getattr(resp, "status_code", "-"),
-                ",".join(sorted(self._session.cookies.keys())) or "-",
+                getattr(resp, "status", "-"),
+                ",".join(sorted(cookie.key for cookie in session.cookie_jar)) or "-",
             )
         except Exception as e:
             logger.debug("B 站首页 Cookie 预热失败: %s", e)
 
-    def _get(self, url: str, params: dict | None = None, referer: str | None = None) -> Optional[dict]:
+    async def _get(self, url: str, params: dict | None = None, referer: str | None = None) -> dict | None:
         request_headers = {}
         if referer:
             request_headers["Referer"] = referer
         try:
-            resp = self._session.get(url, params=params, headers=request_headers, timeout=HTTP_TIMEOUT_DEFAULT)
-            if resp.status_code == 412:
+            session = await self._http.session()
+
+            async def request_once():
+                return await session.get(
+                    url,
+                    params=params,
+                    headers=request_headers,
+                    cookies=self._cookie_pairs,
+                    proxy=self._http.request_proxy(url),
+                    timeout=HTTP_TIMEOUT_DEFAULT,
+                )
+
+            resp = await request_once()
+            if resp.status == 412:
+                resp.release()
                 logger.debug("B 站 API 返回 412，刷新首页 Cookie 后重试: url=%s params=%s", url, params or {})
-                self._prime_session()
-                resp = self._session.get(url, params=params, headers=request_headers, timeout=HTTP_TIMEOUT_DEFAULT)
-            resp.raise_for_status()
-            data = resp.json()
+                await self._prime_session()
+                resp = await request_once()
+            async with resp:
+                resp.raise_for_status()
+                data = await resp.json(content_type=None)
             if isinstance(data, dict):
                 code = data.get("code")
                 if code not in (None, 0):
@@ -144,24 +161,24 @@ class BilibiliMusic:
     def _set_last_error(self, message: str) -> None:
         self.last_song_url_error = message
 
-    def search(self, keyword: str, limit: int = 1) -> Optional[dict]:
-        results = self._search_audio(keyword, limit)
+    async def search(self, keyword: str, limit: int = 1) -> dict | None:
+        results = await self._search_audio(keyword, limit)
         if results:
             return results[0]
-        results = self._search_video(keyword, limit)
+        results = await self._search_video(keyword, limit)
         if results:
             return results[0]
         return None
 
-    def search_many(self, keyword: str, limit: int = 10, offset: int = 0) -> list[dict]:
+    async def search_many(self, keyword: str, limit: int = 10, offset: int = 0) -> list[dict]:
         page = (offset // max(limit, 1)) + 1
-        results = self._search_audio(keyword, limit, page)
+        results = await self._search_audio(keyword, limit, page)
         if not results:
-            results = self._search_video(keyword, limit, page)
+            results = await self._search_video(keyword, limit, page)
         return results or []
 
-    def _search_audio(self, keyword: str, limit: int = 10, page: int = 1) -> list[dict]:
-        data = self._get(_API_SEARCH, params={
+    async def _search_audio(self, keyword: str, limit: int = 10, page: int = 1) -> list[dict]:
+        data = await self._get(_API_SEARCH, params={
             "search_type": "audio",
             "keyword": keyword,
             "page": page,
@@ -172,8 +189,8 @@ class BilibiliMusic:
         items = (data.get("data") or {}).get("result") or []
         return [p for item in items if (p := self._parse_audio(item))]
 
-    def _search_video(self, keyword: str, limit: int = 10, page: int = 1) -> list[dict]:
-        data = self._get(_API_SEARCH, params={
+    async def _search_video(self, keyword: str, limit: int = 10, page: int = 1) -> list[dict]:
+        data = await self._get(_API_SEARCH, params={
             "search_type": "video",
             "keyword": keyword + " 音乐",
             "page": page,
@@ -184,23 +201,23 @@ class BilibiliMusic:
         items = (data.get("data") or {}).get("result") or []
         return [p for item in items if (p := self._parse_video(item))]
 
-    def get_song_url(self, song_id) -> Optional[str]:
+    async def get_song_url(self, song_id) -> str | None:
         self.last_song_url_error = ""
         sid = str(song_id)
         if sid.startswith("au"):
-            url = self._get_audio_url(sid[2:])
+            url = await self._get_audio_url(sid[2:])
             if not url and not self.last_song_url_error:
                 self._set_last_error(f"B站无法获取音频链接: {sid}")
             return url
         if sid.startswith("BV") or sid.startswith("bv"):
-            url = self._get_video_audio_url(sid)
+            url = await self._get_video_audio_url(sid)
             if not url and not self.last_song_url_error:
                 self._set_last_error(f"B站无法获取视频音频流: {sid}")
             return url
-        return self._get_audio_url(sid) or self._get_video_audio_url(sid)
+        return await self._get_audio_url(sid) or await self._get_video_audio_url(sid)
 
-    def _get_audio_url(self, au_id: str) -> Optional[str]:
-        data = self._get(
+    async def _get_audio_url(self, au_id: str) -> str | None:
+        data = await self._get(
             _API_AUDIO_URL,
             params={"sid": au_id, "privilege": 2, "quality": 2},
             referer=f"https://www.bilibili.com/audio/au{au_id}",
@@ -219,8 +236,8 @@ class BilibiliMusic:
             return None
         return cdns[0] if cdns else None
 
-    def _get_video_cid(self, bvid: str) -> Optional[str]:
-        data = self._get(
+    async def _get_video_cid(self, bvid: str) -> str | None:
+        data = await self._get(
             _API_VIDEO_VIEW,
             params={"bvid": bvid},
             referer=_bilibili_referer_for_video(bvid),
@@ -241,11 +258,11 @@ class BilibiliMusic:
             return None
         return str(cid)
 
-    def _get_video_audio_url(self, bvid: str) -> Optional[str]:
-        cid = self._get_video_cid(bvid)
+    async def _get_video_audio_url(self, bvid: str) -> str | None:
+        cid = await self._get_video_cid(bvid)
         if not cid:
             return None
-        data = self._get(_API_VIDEO_PLAYURL, params={
+        data = await self._get(_API_VIDEO_PLAYURL, params={
             "bvid": bvid,
             "cid": cid,
             "fnval": 16,
@@ -275,19 +292,19 @@ class BilibiliMusic:
         self._set_last_error(f"B站视频播放链接没有音频流: {bvid}")
         return None
 
-    def get_song_detail(self, song_id) -> Optional[dict]:
+    async def get_song_detail(self, song_id) -> dict | None:
         sid = str(song_id)
         if sid.startswith("BV") or sid.startswith("bv"):
-            return self._get_video_detail(sid)
+            return await self._get_video_detail(sid)
         if sid.startswith("au"):
             sid = sid[2:]
-        data = self._get(_API_AUDIO_INFO, params={"sid": sid})
+        data = await self._get(_API_AUDIO_INFO, params={"sid": sid})
         if data and data.get("code") == 0 and data.get("data"):
             return self._parse_audio_detail(data["data"])
         return None
 
-    def _get_video_detail(self, bvid: str) -> Optional[dict]:
-        data = self._get(
+    async def _get_video_detail(self, bvid: str) -> dict | None:
+        data = await self._get(
             _API_VIDEO_VIEW,
             params={"bvid": bvid},
             referer=_bilibili_referer_for_video(bvid),
@@ -310,11 +327,11 @@ class BilibiliMusic:
             "cover": cover,
         }
 
-    def get_lyric(self, song_id) -> Optional[str]:
+    async def get_lyric(self, song_id) -> str | None:
         sid = str(song_id)
         if sid.startswith("au"):
             sid = sid[2:]
-        data = self._get(
+        data = await self._get(
             "https://www.bilibili.com/audio/music-service-c/web/song/lyric",
             params={"sid": sid},
             referer=f"https://www.bilibili.com/audio/au{sid}",
@@ -324,11 +341,11 @@ class BilibiliMusic:
         lyric = (data.get("data") or {}).get("lrc") or ""
         return lyric if lyric and "[" in lyric else None
 
-    def summarize(self, keyword: str) -> dict:
-        song = self.search(keyword)
+    async def summarize(self, keyword: str) -> dict:
+        song = await self.search(keyword)
         if not song:
             return {"code": "error", "message": f"B站未找到: {keyword}", "data": None}
-        url = self.get_song_url(song["id"])
+        url = await self.get_song_url(song["id"])
         if not url:
             return {"code": "error", "message": f"B站无法获取播放链接: {song['name']}", "data": None}
         song["url"] = url
@@ -339,17 +356,20 @@ class BilibiliMusic:
         )
         return {"code": "success", "message": msg, "data": song}
 
-    def summarize_by_id(self, song_id) -> dict:
-        song = self.get_song_detail(song_id)
+    async def summarize_by_id(self, song_id) -> dict:
+        song = await self.get_song_detail(song_id)
         if not song:
             return {"code": "error", "message": f"B站无法获取信息: {song_id}", "data": None}
-        url = self.get_song_url(song["id"])
+        url = await self.get_song_url(song["id"])
         if not url:
             return {"code": "error", "message": f"B站无法获取播放链接: {song['name']}", "data": None}
         song["url"] = url
         return {"code": "success", "message": "", "data": song}
 
-    def _parse_audio(self, item: dict) -> Optional[dict]:
+    async def close(self) -> None:
+        await self._http.close()
+
+    def _parse_audio(self, item: dict) -> dict | None:
         au_id = item.get("id") or ""
         if not au_id:
             return None
@@ -368,7 +388,7 @@ class BilibiliMusic:
             "cover": cover,
         }
 
-    def _parse_video(self, item: dict) -> Optional[dict]:
+    def _parse_video(self, item: dict) -> dict | None:
         bvid = item.get("bvid") or ""
         if not bvid:
             return None
@@ -401,7 +421,7 @@ class BilibiliMusic:
             "cover": cover,
         }
 
-    def _parse_audio_detail(self, data: dict) -> Optional[dict]:
+    def _parse_audio_detail(self, data: dict) -> dict | None:
         au_id = data.get("id") or data.get("sid") or ""
         if not au_id:
             return None

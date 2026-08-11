@@ -1,7 +1,8 @@
 import sys
 import unittest
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -9,30 +10,55 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-try:
-    import requests
-    _REQUESTS_ERROR = None
-except Exception as exc:
-    _REQUESTS_ERROR = exc
-
-
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: dict):
-        self.status_code = status_code
+    """模拟 aiohttp 响应：既能被 async with 使用，也支持 release/raise_for_status。"""
+
+    def __init__(self, status: int, payload: dict):
+        self.status = status
         self._payload = payload
+        self.released = False
 
     def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+        if self.status >= 400:
+            raise RuntimeError(f"HTTP {self.status}")
 
-    def json(self):
+    def release(self):
+        self.released = True
+
+    async def json(self, content_type=None):
         return self._payload
 
+    async def read(self):
+        return b""
 
-class BilibiliMusicTest(unittest.TestCase):
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeRequestContext:
+    """aiohttp 的 session.get() 既可 await 也可 async with，这里同时实现两种协议。"""
+
+    def __init__(self, response: _FakeResponse):
+        self._response = response
+
+    def __await__(self):
+        async def _resolve():
+            return self._response
+
+        return _resolve().__await__()
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class BilibiliMusicTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        if _REQUESTS_ERROR is not None:
-            self.skipTest(f"缺少 requests 依赖: {_REQUESTS_ERROR}")
         import music.bilibili_music as bilibili_music
 
         self.module = bilibili_music
@@ -45,11 +71,11 @@ class BilibiliMusicTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.module._cached_config = self._old_config
 
-    def test_video_playurl_uses_cid_from_view(self) -> None:
+    async def test_video_playurl_uses_cid_from_view(self) -> None:
         bili = self.module.BilibiliMusic()
         calls = []
 
-        def fake_get(url, params=None, referer=None):
+        async def fake_get(url, params=None, referer=None):
             calls.append((url, params or {}, referer))
             if url == self.module._API_VIDEO_VIEW:
                 return {
@@ -76,47 +102,60 @@ class BilibiliMusicTest(unittest.TestCase):
 
         bili._get = fake_get
 
-        url = bili._get_video_audio_url("BV1test")
+        url = await bili._get_video_audio_url("BV1test")
 
         self.assertEqual(url, "https://high.example/audio.m4s")
         self.assertEqual(calls[0][0], self.module._API_VIDEO_VIEW)
         self.assertEqual(calls[1][0], self.module._API_VIDEO_PLAYURL)
 
-    def test_get_retries_once_after_412(self) -> None:
+    async def test_get_retries_once_after_412(self) -> None:
         bili = self.module.BilibiliMusic()
         target_url = "https://api.bilibili.com/x/web-interface/search/type"
         bilibili_home = self.module._BILIBILI_HOME
         calls = []
 
-        class FakeCookies(dict):
-            pass
+        class FakeCookieJar:
+            def __init__(self):
+                self._keys = []
+
+            def seed(self, key):
+                self._keys.append(SimpleNamespace(key=key))
+
+            def __iter__(self):
+                return iter(self._keys)
 
         class FakeSession:
             def __init__(self):
-                self.headers = {}
-                self.cookies = FakeCookies()
+                self.cookie_jar = FakeCookieJar()
                 self.target_calls = 0
+                self.first_response = None
 
-            def get(self, url, params=None, headers=None, timeout=10):
+            def get(self, url, **kwargs):
                 calls.append(url)
                 if url == bilibili_home:
-                    self.cookies["buvid3"] = "seed"
-                    return _FakeResponse(200, {"ok": True})
+                    self.cookie_jar.seed("buvid3")
+                    return _FakeRequestContext(_FakeResponse(200, {"ok": True}))
                 self.target_calls += 1
                 if self.target_calls == 1:
-                    return _FakeResponse(412, {"code": -412})
-                return _FakeResponse(200, {"code": 0, "data": {"result": []}})
+                    self.first_response = _FakeResponse(412, {"code": -412})
+                    return _FakeRequestContext(self.first_response)
+                return _FakeRequestContext(_FakeResponse(200, {"code": 0, "data": {"result": []}}))
 
         fake_session = FakeSession()
-        bili._session = cast("requests.Session", fake_session)
+        bili._http.session = AsyncMock(return_value=fake_session)
+        bili._http.request_proxy = lambda url: None
 
-        data = bili._get(target_url, params={"keyword": "测试"})
+        data = await bili._get(target_url, params={"keyword": "测试"})
 
         self.assertIsNotNone(data)
         assert data is not None
         self.assertEqual(data["code"], 0)
-        self.assertEqual(calls, [target_url, self.module._BILIBILI_HOME, target_url])
-        self.assertEqual(fake_session.cookies["buvid3"], "seed")
+        # 412 必须触发一次首页预热再重试，且失败的响应要被显式释放，避免连接泄漏
+        self.assertEqual(calls, [target_url, bilibili_home, target_url])
+        first_response = fake_session.first_response
+        assert first_response is not None
+        self.assertTrue(first_response.released)
+        self.assertEqual([cookie.key for cookie in fake_session.cookie_jar], ["buvid3"])
 
 
 if __name__ == "__main__":

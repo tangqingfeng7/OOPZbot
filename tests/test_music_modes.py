@@ -1,9 +1,9 @@
+import asyncio
 import sys
-import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -22,38 +22,43 @@ from music.music import (  # noqa: E402
 )
 
 
-class MusicModeTest(unittest.TestCase):
+class MusicModeTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._music_config = dict(cfg.MUSIC_CONFIG)
         self.handler = MusicHandler.__new__(MusicHandler)
-        self.queue = Mock()
+        self.queue = AsyncMock()
         self.handler._queue_cache = {"area-1": self.queue}
-        self.handler.netease = Mock()
+        self.handler.netease = AsyncMock()
         self.handler._liked_ids_cache = []
         self.handler._voice_channel_id = "voice-1"
         self.handler._voice_channel_area = "area-1"
+        # __new__ 跳过了 __init__，补上生产路径依赖的异步锁与缓存
+        self.handler._playback_lock = asyncio.Lock()
+        self.handler._voice_lock = asyncio.Lock()
+        self.handler._active_area_cache = ""
+        self.handler._background_area_cache = ("", 0.0)
 
     def tearDown(self) -> None:
         cfg.MUSIC_CONFIG.clear()
         cfg.MUSIC_CONFIG.update(self._music_config)
 
-    def test_get_play_mode_defaults_to_list(self) -> None:
+    async def test_get_play_mode_defaults_to_list(self) -> None:
         self.queue.get_play_mode.return_value = None
 
-        mode = self.handler.get_play_mode()
+        mode = await self.handler.get_play_mode()
 
         self.assertEqual(mode, PLAY_MODE_LIST)
         self.queue.set_play_mode.assert_called_once_with(PLAY_MODE_LIST)
 
-    def test_set_play_mode_rejects_invalid_value(self) -> None:
+    async def test_set_play_mode_rejects_invalid_value(self) -> None:
         with self.assertRaises(ValueError):
-            self.handler.set_play_mode("bad-mode")
+            await self.handler.set_play_mode("bad-mode")
 
-    def test_single_mode_replays_current_song_on_natural_finish(self) -> None:
+    async def test_single_mode_replays_current_song_on_natural_finish(self) -> None:
         self.queue.get_play_mode.return_value = PLAY_MODE_SINGLE
         current_song = {"name": "song", "nested": {"value": 1}}
 
-        next_song, source = self.handler._dequeue_next_song(
+        next_song, source = await self.handler._dequeue_next_song(
             natural_end=True,
             current_song=current_song,
         )
@@ -62,11 +67,11 @@ class MusicModeTest(unittest.TestCase):
         self.assertEqual(next_song, current_song)
         self.assertIsNot(next_song, current_song)
 
-    def test_shuffle_mode_uses_random_pop(self) -> None:
+    async def test_shuffle_mode_uses_random_pop(self) -> None:
         self.queue.get_play_mode.return_value = PLAY_MODE_SHUFFLE
         self.queue.pop_random.return_value = {"name": "shuffle-song"}
 
-        next_song, source = self.handler._dequeue_next_song(
+        next_song, source = await self.handler._dequeue_next_song(
             natural_end=False,
             current_song={"name": "current"},
         )
@@ -77,7 +82,7 @@ class MusicModeTest(unittest.TestCase):
         self.queue.pop_random.assert_called_once_with()
         self.queue.play_next.assert_not_called()
 
-    def test_autoplay_mode_falls_back_to_liked_song(self) -> None:
+    async def test_autoplay_mode_falls_back_to_liked_song(self) -> None:
         self.queue.get_play_mode.return_value = PLAY_MODE_AUTOPLAY
         self.queue.play_next.return_value = None
         self.handler.netease.get_user_id.return_value = 100
@@ -96,7 +101,7 @@ class MusicModeTest(unittest.TestCase):
             },
         }
 
-        next_song, source = self.handler._dequeue_next_song(
+        next_song, source = await self.handler._dequeue_next_song(
             natural_end=True,
             current_song={"channel": "text-1", "area": "area-1", "user": "user-1"},
         )
@@ -107,7 +112,7 @@ class MusicModeTest(unittest.TestCase):
         self.assertEqual(next_song["channel"], "text-1")
         self.assertEqual(next_song["area"], "area-1")
 
-    def test_configured_auto_play_randomizes_after_queue_ends(self) -> None:
+    async def test_configured_auto_play_randomizes_after_queue_ends(self) -> None:
         cfg.MUSIC_CONFIG["auto_play_enabled"] = True
         self.queue.get_play_mode.return_value = PLAY_MODE_LIST
         self.queue.play_next.return_value = None
@@ -127,7 +132,7 @@ class MusicModeTest(unittest.TestCase):
             },
         }
 
-        next_song, source = self.handler._dequeue_next_song(
+        next_song, source = await self.handler._dequeue_next_song(
             natural_end=True,
             current_song={"channel": "text-1", "area": "area-1", "user": "user-1"},
         )
@@ -137,12 +142,12 @@ class MusicModeTest(unittest.TestCase):
         self.assertEqual(next_song["name"], "auto song")
         self.assertEqual(next_song["channel"], "text-1")
 
-    def test_disabled_auto_play_stops_when_queue_is_empty(self) -> None:
+    async def test_disabled_auto_play_stops_when_queue_is_empty(self) -> None:
         cfg.MUSIC_CONFIG["auto_play_enabled"] = False
         self.queue.get_play_mode.return_value = PLAY_MODE_LIST
         self.queue.play_next.return_value = None
 
-        next_song, source = self.handler._dequeue_next_song(
+        next_song, source = await self.handler._dequeue_next_song(
             natural_end=True,
             current_song={"channel": "text-1", "area": "area-1", "user": "user-1"},
         )
@@ -151,37 +156,39 @@ class MusicModeTest(unittest.TestCase):
         self.assertEqual(source, PLAY_MODE_LIST)
         self.handler.netease.get_user_id.assert_not_called()
 
-    def test_mark_web_active_area_updates_without_generating_link(self) -> None:
-        q = Mock()
-        q.redis = object()
+    async def test_mark_web_active_area_updates_without_generating_link(self) -> None:
+        q = AsyncMock()
+        q_client = object()
+        q.client = AsyncMock(return_value=q_client)
         self.handler._web_link_released_due_to_idle = True
 
-        with patch("music.music.set_active_area") as set_active_area:
-            self.handler._mark_web_active_area("area-2", queue=q)
+        with patch("music.music.set_active_area", new=AsyncMock()) as set_active_area:
+            await self.handler._mark_web_active_area("area-2", queue=q)
 
-        set_active_area.assert_called_once_with("area-2", redis_client=q.redis)
+        set_active_area.assert_awaited_once_with("area-2", redis_client=q_client)
         self.assertFalse(self.handler._web_link_released_due_to_idle)
 
-    def test_get_web_link_marks_active_area_even_when_link_is_empty(self) -> None:
-        q = Mock()
-        q.redis = object()
+    async def test_get_web_link_marks_active_area_even_when_link_is_empty(self) -> None:
+        q = AsyncMock()
+        q_client = object()
+        q.client = AsyncMock(return_value=q_client)
         self.handler._get_queue = Mock(return_value=q)
         self.handler._web_link_released_due_to_idle = True
 
         with (
-            patch("music.music._web_player_link", return_value=""),
-            patch("music.music.set_active_area") as set_active_area,
+            patch("music.music._web_player_link", new=AsyncMock(return_value="")),
+            patch("music.music.set_active_area", new=AsyncMock()) as set_active_area,
         ):
-            link = self.handler._get_web_link(area="area-2")
+            link = await self.handler._get_web_link(area="area-2")
 
         self.assertEqual(link, "")
-        set_active_area.assert_called_once_with("area-2", redis_client=q.redis)
+        set_active_area.assert_awaited_once_with("area-2", redis_client=q_client)
         self.assertFalse(self.handler._web_link_released_due_to_idle)
 
-    def test_song_request_omits_web_link_when_sending_is_disabled(self) -> None:
-        self.handler.names = Mock()
+    async def test_song_request_omits_web_link_when_sending_is_disabled(self) -> None:
+        self.handler.names = AsyncMock()
         self.handler.names.user.return_value = "测试用户"
-        self.handler._get_web_link = Mock(return_value="[打开播放器](https://example.test/player)")
+        self.handler._get_web_link = AsyncMock(return_value="[打开播放器](https://example.test/player)")
         song = {
             "platform": "netease",
             "name": "测试歌曲",
@@ -194,15 +201,15 @@ class MusicModeTest(unittest.TestCase):
         }
 
         with patch.dict("music.music.WEB_PLAYER_CONFIG", {"send_link_enabled": False}):
-            text = self.handler._build_song_request_text(song)
+            text = await self.handler._build_song_request_text(song)
 
         self.assertNotIn("打开播放器", text)
         self.handler._get_web_link.assert_not_called()
 
-    def test_song_request_includes_web_link_when_sending_is_enabled(self) -> None:
-        self.handler.names = Mock()
+    async def test_song_request_includes_web_link_when_sending_is_enabled(self) -> None:
+        self.handler.names = AsyncMock()
         self.handler.names.user.return_value = "测试用户"
-        self.handler._get_web_link = Mock(return_value="[打开播放器](https://example.test/player)")
+        self.handler._get_web_link = AsyncMock(return_value="[打开播放器](https://example.test/player)")
         song = {
             "platform": "netease",
             "name": "测试歌曲",
@@ -215,7 +222,7 @@ class MusicModeTest(unittest.TestCase):
         }
 
         with patch.dict("music.music.WEB_PLAYER_CONFIG", {"send_link_enabled": True}):
-            text = self.handler._build_song_request_text(song)
+            text = await self.handler._build_song_request_text(song)
 
         self.assertIn("[打开播放器](https://example.test/player)", text)
         self.handler._get_web_link.assert_called_once_with(
@@ -223,15 +230,16 @@ class MusicModeTest(unittest.TestCase):
             mark_active=False,
         )
 
-    def test_stale_song_request_link_cannot_restore_old_active_area(self) -> None:
-        queue = Mock()
-        queue.redis = object()
+    async def test_stale_song_request_link_cannot_restore_old_active_area(self) -> None:
+        queue = AsyncMock()
+        queue_client = object()
+        queue.client = AsyncMock(return_value=queue_client)
         self.handler._get_queue = Mock(return_value=queue)
         self.handler._web_link_released_due_to_idle = False
-        self.handler.names = Mock()
+        self.handler.names = AsyncMock()
         self.handler.names.user.return_value = "旧请求用户"
-        old_request_ready = threading.Event()
-        release_old_request = threading.Event()
+        old_request_ready = asyncio.Event()
+        release_old_request = asyncio.Event()
         texts: list[str] = []
         song = {
             "platform": "netease",
@@ -244,30 +252,30 @@ class MusicModeTest(unittest.TestCase):
             "attachments": [],
         }
 
-        def finish_old_request() -> None:
+        async def finish_old_request() -> None:
             old_request_ready.set()
-            self.assertTrue(release_old_request.wait(timeout=2))
-            texts.append(self.handler._build_song_request_text(song))
+            await asyncio.wait_for(release_old_request.wait(), timeout=2)
+            texts.append(await self.handler._build_song_request_text(song))
 
         with (
-            patch("music.music._web_player_link", return_value="[player](https://example.test)"),
-            patch("music.music.set_active_area") as set_active_area,
+            patch("music.music._web_player_link", new=AsyncMock(return_value="[player](https://example.test)")),
+            patch("music.music.set_active_area", new=AsyncMock()) as set_active_area,
             patch.dict("music.music.WEB_PLAYER_CONFIG", {"send_link_enabled": True}),
         ):
-            worker = threading.Thread(target=finish_old_request)
-            worker.start()
-            self.assertTrue(old_request_ready.wait(timeout=1))
-            self.handler._mark_web_active_area("area-B", queue=queue)
+            worker = asyncio.create_task(finish_old_request())
+            await asyncio.wait_for(old_request_ready.wait(), timeout=1)
+            # 域已切到 B，此时才让旧请求继续；它不能把活跃域改回 A
+            await self.handler._mark_web_active_area("area-B", queue=queue)
             release_old_request.set()
-            worker.join(timeout=2)
+            await asyncio.wait_for(worker, timeout=2)
 
-        self.assertFalse(worker.is_alive())
         self.assertEqual(len(texts), 1)
-        set_active_area.assert_called_once_with("area-B", redis_client=queue.redis)
+        set_active_area.assert_awaited_once_with("area-B", redis_client=queue_client)
 
-    def test_stale_now_playing_link_cannot_restore_old_active_area(self) -> None:
-        queue = Mock()
-        queue.redis = object()
+    async def test_stale_now_playing_link_cannot_restore_old_active_area(self) -> None:
+        queue = AsyncMock()
+        queue_client = object()
+        queue.client = AsyncMock(return_value=queue_client)
         self.handler._get_queue = Mock(return_value=queue)
         self.handler._web_link_released_due_to_idle = False
         song = {
@@ -279,38 +287,38 @@ class MusicModeTest(unittest.TestCase):
         }
 
         with (
-            patch("music.music._web_player_link", return_value="[player](https://example.test)"),
-            patch("music.music.set_active_area") as set_active_area,
+            patch("music.music._web_player_link", new=AsyncMock(return_value="[player](https://example.test)")),
+            patch("music.music.set_active_area", new=AsyncMock()) as set_active_area,
         ):
-            self.handler._mark_web_active_area("area-B", queue=queue)
-            text = self.handler._build_now_playing_text("正在播放", song)
+            await self.handler._mark_web_active_area("area-B", queue=queue)
+            text = await self.handler._build_now_playing_text("正在播放", song)
 
         self.assertIn("[player](https://example.test)", text)
-        set_active_area.assert_called_once_with("area-B", redis_client=queue.redis)
+        set_active_area.assert_awaited_once_with("area-B", redis_client=queue_client)
 
-    def test_start_playing_uses_explicit_area_queue(self) -> None:
-        area_queue = Mock()
+    async def test_start_playing_uses_explicit_area_queue(self) -> None:
+        area_queue = AsyncMock()
         self.handler._get_queue = Mock(return_value=area_queue)
 
-        self.handler._start_playing(120000, area="area-2")
+        await self.handler._start_playing(120000, area="area-2")
 
         self.handler._get_queue.assert_called_once_with("area-2")
         area_queue.set_play_state.assert_called_once()
         self.queue.set_play_state.assert_not_called()
 
-    def test_play_song_choice_reuses_search_result_without_fetching_detail(self) -> None:
-        platform = Mock()
+    async def test_play_song_choice_reuses_search_result_without_fetching_detail(self) -> None:
+        platform = AsyncMock()
         platform.get_song_url.return_value = "https://example.com/song.mp3"
         platform.summarize_by_id.return_value = {"code": "error", "message": "不应调用", "data": None}
         self.handler.platforms = Mock()
         self.handler.platforms.get.return_value = platform
-        self.handler.sender = Mock()
-        self.handler.names = Mock()
+        self.handler.sender = AsyncMock()
+        self.handler.names = AsyncMock()
         self.handler.names.user.return_value = "测试用户"
-        self.handler._check_and_enter_voice_channel = Mock(return_value=True)
-        self.handler._commit_song_request = Mock(return_value={"message": "ok", "attachments": []})
+        self.handler._check_and_enter_voice_channel = AsyncMock(return_value=True)
+        self.handler._commit_song_request = AsyncMock(return_value={"message": "ok", "attachments": []})
 
-        self.handler.play_song_choice(
+        await self.handler.play_song_choice(
             {
                 "id": 1,
                 "name": "稻香",
@@ -337,17 +345,17 @@ class MusicModeTest(unittest.TestCase):
         self.assertEqual(committed_song["duration"], "3:42")
         self.assertEqual(committed_song["duration_ms"], 222000)
 
-    def test_check_and_enter_skips_rejoin_when_already_in_same_channel(self) -> None:
+    async def test_check_and_enter_skips_rejoin_when_already_in_same_channel(self) -> None:
         """已在同一语音频道时不能再调用 _do_enter_voice/agora 重连，否则会断流。"""
         self.handler.voice = Mock()
         self.handler.voice.available = True
-        self.handler.sender = Mock()
+        self.handler.sender = AsyncMock()
         self.handler.sender.get_voice_channel_for_user.return_value = "voice-1"
-        self.handler._do_enter_voice = Mock()
-        self.handler._is_playing = Mock(return_value=True)
-        self.handler.names = Mock()
+        self.handler._do_enter_voice = AsyncMock()
+        self.handler._is_playing = AsyncMock(return_value=True)
+        self.handler.names = AsyncMock()
 
-        result = self.handler._check_and_enter_voice_channel(
+        result = await self.handler._check_and_enter_voice_channel(
             user="user-1", channel="text-1", area="area-1",
         )
 
@@ -355,19 +363,19 @@ class MusicModeTest(unittest.TestCase):
         self.handler._do_enter_voice.assert_not_called()
         self.handler.sender.send_message.assert_not_called()
 
-    def test_same_channel_id_in_another_area_is_not_the_same_session(self) -> None:
-        self.handler._playback_lock = threading.RLock()
+    async def test_same_channel_id_in_another_area_is_not_the_same_session(self) -> None:
+        self.handler._playback_lock = asyncio.Lock()
         self.handler.voice = Mock()
         self.handler.voice.available = True
-        self.handler.sender = Mock()
+        self.handler.sender = AsyncMock()
         self.handler.sender.get_voice_channel_for_user.return_value = "voice-1"
         self.handler._get_queue = Mock(return_value=self.queue)
-        self.handler._is_playing = Mock(return_value=True)
-        self.handler._do_enter_voice = Mock()
-        self.handler.names = Mock()
+        self.handler._is_playing = AsyncMock(return_value=True)
+        self.handler._do_enter_voice = AsyncMock()
+        self.handler.names = AsyncMock()
         self.handler.names.channel.return_value = "旧域语音频道"
 
-        result = self.handler._check_and_enter_voice_channel(
+        result = await self.handler._check_and_enter_voice_channel(
             user="user-1",
             channel="text-2",
             area="area-2",
@@ -378,14 +386,14 @@ class MusicModeTest(unittest.TestCase):
         self.handler._do_enter_voice.assert_not_called()
         self.handler.sender.send_message.assert_called_once()
 
-    def test_loading_session_rejects_cross_area_switch(self) -> None:
-        self.handler._playback_lock = threading.RLock()
+    async def test_loading_session_rejects_cross_area_switch(self) -> None:
+        self.handler._playback_lock = asyncio.Lock()
         self.handler._play_start_time = time.time()
         self.handler._play_duration = 120
         self.handler.voice = Mock()
         self.handler.voice.available = True
         self.handler.voice.is_playing = False
-        self.handler.sender = Mock()
+        self.handler.sender = AsyncMock()
         self.handler.sender.get_voice_channel_for_user.return_value = "voice-2"
         self.handler._get_queue = Mock(return_value=self.queue)
         self.queue.get_play_state.return_value = {
@@ -393,11 +401,11 @@ class MusicModeTest(unittest.TestCase):
             "duration": self.handler._play_duration,
             "loading": True,
         }
-        self.handler._do_enter_voice = Mock(return_value={})
-        self.handler.names = Mock()
+        self.handler._do_enter_voice = AsyncMock(return_value={})
+        self.handler.names = AsyncMock()
         self.handler.names.channel.return_value = "旧域语音频道"
 
-        result = self.handler._check_and_enter_voice_channel(
+        result = await self.handler._check_and_enter_voice_channel(
             user="user-2",
             channel="text-2",
             area="area-2",
@@ -407,148 +415,134 @@ class MusicModeTest(unittest.TestCase):
         self.handler._do_enter_voice.assert_not_called()
         self.handler.sender.send_message.assert_called_once()
 
-    def test_check_and_enter_is_serialized_by_playback_lock(self) -> None:
-        """校验到状态提交之间不能让域切换插入。"""
-        self.handler._playback_lock = threading.RLock()
-        self.handler.voice = Mock()
+    async def test_enter_voice_is_serialized_by_voice_lock(self) -> None:
+        """校验到状态提交之间不能让第二次进入插进来。
+
+        序列化点已从 `_playback_lock` 挪到 `_do_enter_voice` 内部的 `_voice_lock`：
+        「退旧频道 → 清残留 → join → 提交频道/域/代际」整段必须原子。
+        """
+        self.handler._voice_lock = asyncio.Lock()
+        self.handler._playback_generation = 0
+        self.handler._voice_channel_id = None
+        self.handler._voice_channel_area = None
+        self.handler.voice = AsyncMock()
         self.handler.voice.available = True
-        self.handler.sender = Mock()
-        resolved = threading.Event()
-        entered = threading.Event()
-
-        def resolve_voice_channel(*_args, **_kwargs):
-            resolved.set()
-            return "voice-2"
-
-        def enter_voice(*_args, **_kwargs):
-            entered.set()
-            return {}
-
-        self.handler.sender.get_voice_channel_for_user.side_effect = resolve_voice_channel
-        self.handler._is_playing = Mock(return_value=False)
-        self.handler._do_enter_voice = Mock(side_effect=enter_voice)
         self.handler.names = Mock()
-        result: list[bool] = []
+        self.handler._cleanup_stale_voice_membership = AsyncMock()
+        self.handler._restore_volume_from_redis = AsyncMock()
 
-        with self.handler._playback_lock:
-            worker = threading.Thread(
-                target=lambda: result.append(
-                    self.handler._check_and_enter_voice_channel(
-                        user="user-1",
-                        channel="text-1",
-                        area="area-1",
-                    )
-                )
-            )
-            worker.start()
-            self.assertTrue(resolved.wait(timeout=1))
-            self.assertFalse(entered.wait(timeout=0.05))
+        joining = asyncio.Event()
+        release_join = asyncio.Event()
 
-        worker.join(timeout=1)
-        self.assertFalse(worker.is_alive())
-        self.assertEqual(result, [True])
-        self.assertTrue(entered.is_set())
+        async def slow_join(**_kwargs):
+            joining.set()
+            await asyncio.wait_for(release_join.wait(), timeout=2)
+            return "sign"
 
-    def test_enter_voice_leaves_when_only_area_changes(self) -> None:
-        self.handler._playback_lock = threading.RLock()
+        self.handler.voice.join.side_effect = slow_join
+
+        first = asyncio.create_task(self.handler._do_enter_voice("voice-1", "area-1"))
+        await asyncio.wait_for(joining.wait(), timeout=1)
+
+        second = asyncio.create_task(self.handler._do_enter_voice("voice-2", "area-2"))
+        await asyncio.sleep(0.05)
+        # 第一次尚未提交状态，第二次不得进入临界区
+        self.assertEqual(self.handler.voice.join.await_count, 1)
+        self.assertIsNone(self.handler._voice_channel_id)
+
+        release_join.set()
+        self.assertEqual(await asyncio.wait_for(first, 1), {"status": True, "sign": "sign"})
+        self.assertEqual(await asyncio.wait_for(second, 1), {"status": True, "sign": "sign"})
+        self.assertEqual(self.handler._voice_channel_id, "voice-2")
+        # 首次进入 +1，第二次先退旧频道 +1 再进入 +1；退出也要推进代际，
+        # 否则 leave 期间旧推流的回调还会把状态写回来
+        self.assertEqual(self.handler._playback_generation, 3)
+
+    async def test_enter_voice_leaves_when_only_area_changes(self) -> None:
+        """同一个频道 ID 换了域也算换频道，必须先退再进，否则会留在旧域的房间里。"""
+        self.handler._voice_lock = asyncio.Lock()
         self.handler._playback_generation = 1
-        self.handler.voice = Mock()
+        self.handler._voice_channel_id = "voice-1"
+        self.handler._voice_channel_area = "area-1"
+        self.handler.voice = AsyncMock()
         self.handler.voice.available = True
-        self.handler.sender = Mock()
-        self.handler.sender.enter_channel.return_value = {"roomId": "room"}
+        self.handler.voice.join.return_value = "sign-1"
         self.handler.names = Mock()
-        self.handler._resolve_voice_rtc_uid = Mock(return_value=("123", ""))
-        self.handler._join_agora_room = Mock(return_value=(True, ""))
-        self.handler._cleanup_stale_voice_membership = Mock()
+        self.handler._cleanup_stale_voice_membership = AsyncMock()
+        self.handler._restore_volume_from_redis = AsyncMock()
 
-        def leave_current() -> None:
+        async def leave_current() -> None:
             self.handler._voice_channel_id = None
             self.handler._voice_channel_area = None
 
-        self.handler._leave_current_voice_channel = Mock(side_effect=leave_current)
+        self.handler._leave_current_voice_channel = AsyncMock(side_effect=leave_current)
 
-        result = self.handler._do_enter_voice("voice-1", "area-2")
+        result = await self.handler._do_enter_voice("voice-1", "area-2")
 
-        self.assertEqual(result, {"roomId": "room"})
-        self.handler._leave_current_voice_channel.assert_called_once_with()
+        self.assertEqual(result, {"status": True, "sign": "sign-1"})
+        self.handler._leave_current_voice_channel.assert_awaited_once_with()
+        self.handler.voice.join.assert_awaited_once_with(
+            area="area-2",
+            channel="voice-1",
+            from_area="area-1",
+            from_channel="voice-1",
+        )
         self.assertEqual(self.handler._voice_channel_area, "area-2")
+        # 换频道必须让播放代际前进，旧代的推流回调才会被判废
         self.assertEqual(self.handler._playback_generation, 2)
 
-    def test_enter_voice_rolls_back_oopz_channel_when_agora_join_fails(self) -> None:
+    async def test_enter_voice_does_not_commit_state_when_join_fails(self) -> None:
+        """加入失败必须原样返回错误且不提交状态，否则后续会以为自己已在频道里。"""
+        self.handler._voice_lock = asyncio.Lock()
+        self.handler._playback_generation = 1
         self.handler._voice_channel_id = None
         self.handler._voice_channel_area = None
-        self.handler.voice = Mock()
+        self.handler.voice = AsyncMock()
         self.handler.voice.available = True
-        self.handler.voice.agora_uid = "123456"
-        self.handler.voice.join.return_value = False
-        self.handler.sender = Mock()
-        self.handler.sender.get_self_detail.return_value = {"pid": "123456"}
-        self.handler.sender.enter_channel.return_value = {
-            "supplierSign": "token",
-            "roomId": "room",
-            "supplier": "agora",
-        }
-        self.handler.sender.leave_voice_channel.return_value = {"status": True}
+        self.handler.voice.join.side_effect = RuntimeError("agora join failed")
         self.handler.names = Mock()
-        self.handler.names.channel.return_value = "语音频道"
-        self.handler._cleanup_stale_voice_membership = Mock()
+        self.handler._cleanup_stale_voice_membership = AsyncMock()
+        self.handler._restore_volume_from_redis = AsyncMock()
 
-        result = self.handler._do_enter_voice("voice-2", "area-1")
+        result = await self.handler._do_enter_voice("voice-2", "area-1")
 
-        self.assertEqual(result, {"error": "agora_join_failed"})
-        self.handler.sender.enter_channel.assert_called_once_with(
-            channel="voice-2",
-            area="area-1",
-            channel_type="VOICE",
-            from_channel="",
-            from_area="",
-            pid="123456",
-        )
-        self.handler.sender.leave_voice_channel.assert_called_once_with(
-            channel="voice-2",
-            area="area-1",
-        )
-        self.handler.voice.leave.assert_called_once()
+        self.assertEqual(result, {"error": "agora join failed"})
         self.assertIsNone(self.handler._voice_channel_id)
         self.assertIsNone(self.handler._voice_channel_area)
+        self.assertEqual(self.handler._playback_generation, 1)
+        self.handler._restore_volume_from_redis.assert_not_awaited()
 
-    def test_enter_voice_rolls_back_when_credentials_are_missing(self) -> None:
+    async def test_enter_voice_cleans_stale_membership_before_first_join(self) -> None:
+        """本地没有频道记录时，服务端可能还留着上次的成员身份，必须先清理。"""
+        self.handler._voice_lock = asyncio.Lock()
+        self.handler._playback_generation = 0
         self.handler._voice_channel_id = None
         self.handler._voice_channel_area = None
-        self.handler.voice = Mock()
+        self.handler.voice = AsyncMock()
         self.handler.voice.available = True
-        self.handler.voice.agora_uid = "123456"
-        self.handler.sender = Mock()
-        self.handler.sender.get_self_detail.return_value = {"pid": "123456"}
-        self.handler.sender.enter_channel.return_value = {"supplier": "agora"}
-        self.handler.sender.leave_voice_channel.return_value = {"status": True}
+        self.handler.voice.join.return_value = "sign-2"
         self.handler.names = Mock()
-        self.handler.names.channel.return_value = "语音频道"
-        self.handler._cleanup_stale_voice_membership = Mock()
+        self.handler._cleanup_stale_voice_membership = AsyncMock()
+        self.handler._restore_volume_from_redis = AsyncMock()
+        self.handler._leave_current_voice_channel = AsyncMock()
 
-        result = self.handler._do_enter_voice("voice-2", "area-1")
+        result = await self.handler._do_enter_voice("voice-3", "area-3")
 
-        self.assertEqual(result, {"error": "missing_agora_credentials"})
-        self.handler.voice.join.assert_not_called()
-        self.handler.sender.leave_voice_channel.assert_called_once_with(
-            channel="voice-2",
-            area="area-1",
-        )
+        self.assertEqual(result, {"status": True, "sign": "sign-2"})
+        self.handler._cleanup_stale_voice_membership.assert_awaited_once_with("area-3")
+        # 本来就不在任何频道，不该触发退出
+        self.handler._leave_current_voice_channel.assert_not_awaited()
+        self.handler._restore_volume_from_redis.assert_awaited_once()
 
-    def test_enter_voice_requires_numeric_self_pid(self) -> None:
-        self.handler._voice_channel_id = None
-        self.handler._voice_channel_area = None
-        self.handler.voice = Mock()
-        self.handler.voice.available = True
-        self.handler.sender = Mock()
-        self.handler.sender.get_self_detail.return_value = {"pid": ""}
-        self.handler.names = Mock()
-        self.handler._cleanup_stale_voice_membership = Mock()
+    async def test_enter_voice_refuses_when_voice_is_unavailable(self) -> None:
+        self.handler._voice_lock = asyncio.Lock()
+        self.handler.voice = AsyncMock()
+        self.handler.voice.available = False
 
-        result = self.handler._do_enter_voice("voice-2", "area-1")
+        result = await self.handler._do_enter_voice("voice-2", "area-1")
 
-        self.assertEqual(result, {"error": "missing_voice_pid"})
-        self.handler.sender.enter_channel.assert_not_called()
+        self.assertEqual(result, {"error": "voice_unavailable"})
+        self.handler.voice.join.assert_not_awaited()
 
 
 if __name__ == "__main__":

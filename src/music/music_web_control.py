@@ -18,30 +18,30 @@ class WebControlExecutor:
     def __init__(self, handler):
         self.h = handler
 
-    def execute(self, command: WebCommand, queue=None) -> bool:
+    async def execute(self, command: WebCommand, queue=None) -> bool:
         logger.info("Web 控制命令: scope=%s action=%s", command.scope, command.action)
         try:
             if isinstance(command, GlobalWebCommand):
-                self._handle_volume(cast(int, command.payload["value"]))
+                await self._handle_volume(cast(int, command.payload["value"]))
                 return True
             if not isinstance(command, AreaWebCommand) or queue is None:
                 return False
-            with self.h._playback_lock:
+            async with self.h._playback_lock:
                 session = self.h._playback_snapshot_locked()
                 if session.area != command.area:
                     return False
                 if command.action == "next":
-                    self._handle_next(queue, command.area.value, session)
+                    await self._handle_next(queue, command.area.value, session)
                 elif command.action == "stop":
-                    self._handle_stop(queue)
+                    await self._handle_stop(queue)
                 elif command.action == "pause":
-                    self._handle_pause(queue)
+                    await self._handle_pause(queue)
                 elif command.action == "resume":
-                    self._handle_resume(queue)
+                    await self._handle_resume(queue)
                 elif command.action == "seek":
-                    self._handle_seek(queue, cast(float, command.payload["time"]))
+                    await self._handle_seek(queue, cast(float, command.payload["time"]))
                 elif command.action == "notify":
-                    self._handle_notify(queue, command.payload, command.area.value)
+                    await self._handle_notify(queue, command.payload, command.area.value)
                 else:
                     return False
                 return True
@@ -49,15 +49,15 @@ class WebControlExecutor:
             logger.warning("执行 Web 命令异常 (%s): %s", command.action, e)
             return False
 
-    def _stop_voice_audio(self, context: str):
+    async def _stop_voice_audio(self, context: str):
         if not (self.h.voice and self.h.voice.available):
             return
         try:
-            self.h.voice.stop_audio()
+            await self.h.voice.stop_audio()
         except Exception as e:
             logger.debug(f"{context} 停止音频失败: {e}")
 
-    def _handle_next(self, queue, area: str, session):
+    async def _handle_next(self, queue, area: str, session):
         """Web 端用户主动切下一首：直接完成出队 + 切歌 + 推流。
 
         这里不能依赖 auto_play_monitor 的轮询触发：
@@ -77,16 +77,16 @@ class WebControlExecutor:
             h._advance_playback_generation_locked()
             h._play_start_time = 0
             h._play_duration = 0
-            self._stop_voice_audio("执行 next 时")
+            await self._stop_voice_audio("执行 next 时")
             try:
-                queue.clear_current()
-                queue.clear_play_state()
+                await queue.clear_current()
+                await queue.clear_play_state()
             except Exception as e:
                 logger.debug(f"未在语音频道时清理 play_state 失败: {e}")
             return
 
         try:
-            next_song, _source = h._dequeue_next_song(
+            next_song, _source = await h._dequeue_next_song(
                 natural_end=True,
                 current_song=None,
                 queue=queue,
@@ -96,14 +96,14 @@ class WebControlExecutor:
             next_song = None
 
         session = h._advance_playback_generation_locked()
-        self._stop_voice_audio("执行 next 时")
+        await self._stop_voice_audio("执行 next 时")
         h._play_start_time = 0
         h._play_duration = 0
 
         if not next_song:
             try:
-                queue.clear_current()
-                queue.clear_play_state()
+                await queue.clear_current()
+                await queue.clear_play_state()
             except Exception as e:
                 logger.debug(f"队列空清理 play_state 失败: {e}")
             return
@@ -112,30 +112,30 @@ class WebControlExecutor:
         next_song["area"] = area
         next_song["play_uuid"] = str(uuid.uuid4())
 
-        h._mark_web_active_area(area, queue=queue)
-        h._start_playing(next_song.get("duration_ms", 0), area=area)
-        queue.set_current(next_song)
+        await h._mark_web_active_area(area, queue=queue)
+        await h._start_playing(next_song.get("duration_ms", 0), area=area)
+        await queue.set_current(next_song)
 
         try:
-            SongCache.record_play(
+            await SongCache.record_play(
                 song_id=str(next_song.get("song_id") or ""),
                 platform=str(next_song.get("platform") or "netease"),
                 data=next_song,
                 channel_id=next_song["channel"],
                 user_id=next_song.get("user", ""),
             )
-            Statistics.update_today(
+            await Statistics.update_today(
                 next_song.get("platform", "netease"), cache_hit=False,
             )
         except Exception as e:
             logger.debug(f"记录 Web 切歌播放历史失败: {e}")
 
-        h._start_stream_thread(next_song, session)
-        h._preload_next_song_if_any(queue=queue)
+        h._start_stream_task(next_song, session)
+        await h._preload_next_song_if_any(queue=queue)
 
         try:
-            text = h._build_now_playing_text("切换到下一首", next_song)
-            h.sender.send_message(
+            text = await h._build_now_playing_text("切换到下一首", next_song)
+            await h.sender.send_message(
                 text=text,
                 attachments=next_song.get("attachments", []),
                 channel=next_song["channel"],
@@ -144,38 +144,38 @@ class WebControlExecutor:
         except Exception as e:
             logger.warning(f"Web 切歌通知发送失败: {e}")
 
-    def _handle_stop(self, queue):
+    async def _handle_stop(self, queue):
         self.h._advance_playback_generation_locked()
         self.h._play_start_time = 0
         self.h._play_duration = 0
-        queue.clear_current()
-        queue.clear_queue()
+        await queue.clear_current()
+        await queue.clear_queue()
         try:
-            queue.clear_play_state()
+            await queue.clear_play_state()
         except Exception as e:
             logger.debug(f"执行 stop 时清理 play_state 失败: {e}")
-        self._stop_voice_audio("执行 stop 时")
-        self.h._leave_current_voice_channel()
+        await self._stop_voice_audio("执行 stop 时")
+        await self.h._leave_current_voice_channel()
 
-    def _handle_pause(self, queue):
-        if self.h.voice and self.h.voice.available and self.h.voice.pause_audio():
+    async def _handle_pause(self, queue):
+        if self.h.voice and self.h.voice.available and await self.h.voice.pause_audio():
             elapsed = time.time() - self.h._play_start_time
-            self.h._update_play_state_redis(
+            await self.h._update_play_state_redis(
                 queue=queue,
                 paused=True,
                 pause_elapsed=elapsed,
             )
 
-    def _handle_resume(self, queue):
-        if not (self.h.voice and self.h.voice.available and self.h.voice.resume_audio()):
+    async def _handle_resume(self, queue):
+        if not (self.h.voice and self.h.voice.available and await self.h.voice.resume_audio()):
             return
         try:
-            ps = queue.get_play_state()
+            ps = await queue.get_play_state()
             if not ps:
                 return
             elapsed = ps.get("pause_elapsed", 0)
             self.h._play_start_time = time.time() - elapsed
-            self.h._update_play_state_redis(
+            await self.h._update_play_state_redis(
                 queue=queue,
                 start_time=self.h._play_start_time,
                 paused=False,
@@ -184,42 +184,42 @@ class WebControlExecutor:
         except Exception as e:
             logger.debug(f"执行 resume 时读取 play_state 失败: {e}")
 
-    def _handle_seek(self, queue, seek_time: float):
+    async def _handle_seek(self, queue, seek_time: float):
         if not (self.h.voice and self.h.voice.available):
             return
-        if not self.h.voice.seek_audio(seek_time):
+        if not await self.h.voice.seek_audio(seek_time):
             return
         was_paused = False
         try:
-            ps = queue.get_play_state()
+            ps = await queue.get_play_state()
             if ps:
                 was_paused = bool(ps.get("paused"))
         except Exception:
             pass
         self.h._play_start_time = time.time() - seek_time
-        self.h._update_play_state_redis(
+        await self.h._update_play_state_redis(
             queue=queue,
             start_time=self.h._play_start_time,
             paused=was_paused,
             pause_elapsed=seek_time if was_paused else None,
         )
 
-    def _handle_volume(self, vol: int):
-        redis_client = get_redis_client()
+    async def _handle_volume(self, vol: int):
+        redis_client = await get_redis_client()
         try:
-            redis_client.set(KEY_VOLUME, str(vol))
+            await redis_client.set(KEY_VOLUME, str(vol))
         except Exception as e:
             logger.debug(f"持久化音量失败: {e}")
         if not (self.h.voice and self.h.voice.available):
             return
-        if not self.h.voice.set_volume(vol):
+        if not await self.h.voice.set_volume(vol):
             return
         try:
-            redis_client.set(KEY_VOLUME, str(vol))
+            await redis_client.set(KEY_VOLUME, str(vol))
         except Exception as e:
             logger.debug(f"持久化音量失败: {e}")
 
-    def _handle_notify(self, queue, info: Mapping[str, object], area: str):
+    async def _handle_notify(self, queue, info: Mapping[str, object], area: str):
         ch = self.h._voice_channel_id
         if not ch:
             return
@@ -230,17 +230,17 @@ class WebControlExecutor:
         pos_int = pos if isinstance(pos, int) and not isinstance(pos, bool) else 1
         has_current = False
         try:
-            has_current = queue.get_current() is not None
+            has_current = await queue.get_current() is not None
         except Exception as e:
             logger.debug(f"读取当前播放状态失败，按队列位置展示: {e}")
         if not has_current:
             try:
-                has_current = bool(self.h._is_playing(queue=queue))
+                has_current = bool(await self.h._is_playing(queue=queue))
             except Exception as e:
                 logger.debug(f"读取播放状态失败，按队列位置展示: {e}")
         actual = max(1, pos_int + (1 if has_current else 0))
         text = f"[Web 点歌] {name} - {artists}\n已加入队列 (位置: {actual})"
         try:
-            self.h.sender.send_message(text, channel=ch, area=area)
+            await self.h.sender.send_message(text, channel=ch, area=area)
         except Exception as e:
             logger.warning(f"Web 通知消息发送失败: {e}")

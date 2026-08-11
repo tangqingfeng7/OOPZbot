@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-import threading
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -120,7 +120,7 @@ def _detect_ip() -> str:
     return ""
 
 
-def _web_player_link(redis_client=None) -> str:
+async def _web_player_link(redis_client=None) -> str:
     """生成 Markdown 格式的 Web 播放器跳转链接"""
     url = _get_web_player_url()
     if not url:
@@ -130,7 +130,7 @@ def _web_player_link(redis_client=None) -> str:
     except (TypeError, ValueError):
         token_ttl = 86400
         logger.warning("WEB_PLAYER_CONFIG.token_ttl_seconds 非法，已回退为 86400 秒")
-    token = ensure_token(redis_client=redis_client, ttl_seconds=token_ttl)
+    token = await ensure_token(redis_client=redis_client, ttl_seconds=token_ttl)
     if token:
         return f"[▶ 网页播放器]({url}/w/{token})"
     return f"[▶ 网页播放器]({url})"
@@ -144,12 +144,14 @@ class PlaybackMixin:
         sender: Any
         platforms: PlatformRegistry
         netease: Any
-        _playback_lock: threading.RLock
+        _playback_lock: asyncio.Lock
         _voice_channel_id: str | None
         _voice_channel_area: str | None
         _voice_enter_time: float
         _play_start_time: float
         _play_duration: float
+
+        def _create_task(self, awaitable: Any, *, name: str) -> asyncio.Task[Any]: ...
 
         @property
         def queue(self) -> QueueManager: ...
@@ -158,17 +160,17 @@ class PlaybackMixin:
 
         def _resolve_background_area(self) -> str: ...
 
-        def _mark_web_active_area(
+        async def _mark_web_active_area(
             self,
             area: str = "",
             queue: QueueManager | None = None,
         ) -> None: ...
 
-        def _get_web_link(self, area: str = "", *, mark_active: bool = True) -> str: ...
+        async def _get_web_link(self, area: str = "", *, mark_active: bool = True) -> str: ...
 
-        def _leave_current_voice_channel(self) -> None: ...
+        async def _leave_current_voice_channel(self) -> None: ...
 
-        def _release_web_link_if_needed(self, queue: QueueManager | None = None) -> None: ...
+        async def _release_web_link_if_needed(self, queue: QueueManager | None = None) -> None: ...
 
         def _playback_snapshot_locked(self) -> PlaybackSessionSnapshot: ...
 
@@ -179,25 +181,28 @@ class PlaybackMixin:
 
         def _advance_playback_generation_locked(self) -> PlaybackSessionSnapshot: ...
 
-        def _dequeue_next_song(
+        async def _dequeue_next_song(
             self,
             natural_end: bool,
             current_song: dict | None,
             queue: QueueManager,
         ) -> tuple[dict | None, str]: ...
 
-    def auto_play_monitor(self, stop_event: threading.Event | None = None):
+    async def auto_play_monitor(self, stop_event: asyncio.Event | None = None) -> None:
         """定期检查播放状态，自动播放下一首（基于歌曲时长判断是否播完）"""
         if stop_event is None:
             candidate = getattr(self, "_service_stop_event", None)
-            stop_event = candidate if isinstance(candidate, threading.Event) else threading.Event()
+            stop_event = candidate if isinstance(candidate, asyncio.Event) else asyncio.Event()
         while not stop_event.is_set():
             wait_seconds = _AUTO_PLAY_CHECK_INTERVAL
             try:
                 area = self._resolve_background_area()
                 if not area:
-                    if stop_event.wait(wait_seconds):
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=wait_seconds)
                         return
+                    except asyncio.TimeoutError:
+                        continue
                     continue
 
                 stream_song: dict | None = None
@@ -209,7 +214,7 @@ class PlaybackMixin:
                 queue = None
                 is_playing = False
 
-                with self._playback_lock:
+                async with self._playback_lock:
                     session = self._playback_snapshot_locked()
                     if session.area is not None and session.area.value != area:
                         logger.debug(
@@ -221,29 +226,29 @@ class PlaybackMixin:
                         wait_seconds = _PLAY_FADE_DELAY
                     else:
                         queue = self._get_queue(area)
-                        is_playing = self._is_playing(queue=queue)
+                        is_playing = await self._is_playing(queue=queue)
 
                     if queue is not None and not is_playing:
-                        current = queue.get_current()
+                        current = await queue.get_current()
                         finished_song = None
 
                         if current is not None:
                             logger.info("自动播放监控: 歌曲已播完，清理 current 状态")
                             finished_song = current
-                            queue.clear_current()
+                            await queue.clear_current()
                             try:
-                                queue.clear_play_state()
+                                await queue.clear_play_state()
                             except Exception as e:
                                 logger.debug(f"自动播放监控清理 play_state 失败: {e}")
                             current = None
                             session = self._advance_playback_generation_locked()
 
-                        queue_length = queue.get_queue_length()
+                        queue_length = await queue.get_queue_length()
                         if (queue_length > 0 or finished_song is not None) and current is None:
                             if session.area is None or session.channel is None:
                                 wait_seconds = 2
                             else:
-                                next_song, source = self._dequeue_next_song(
+                                next_song, source = await self._dequeue_next_song(
                                     natural_end=finished_song is not None,
                                     current_song=finished_song,
                                     queue=queue,
@@ -258,7 +263,7 @@ class PlaybackMixin:
                                     if not ch:
                                         logger.warning("自动播放: 未获取到消息频道，歌曲保留在队列")
                                         try:
-                                            queue.redis.lpush(
+                                            await (await queue.client()).lpush(
                                                 queue._qkey(),
                                                 json.dumps(next_song, ensure_ascii=False),
                                             )
@@ -270,12 +275,12 @@ class PlaybackMixin:
                                         wait_seconds = 2
                                     else:
                                         next_song["play_uuid"] = str(uuid.uuid4())
-                                        self._mark_web_active_area(area, queue=queue)
-                                        self._start_playing(
+                                        await self._mark_web_active_area(area, queue=queue)
+                                        await self._start_playing(
                                             next_song.get("duration_ms", 0),
                                             area=area,
                                         )
-                                        queue.set_current(next_song)
+                                        await queue.set_current(next_song)
 
                                         stream_song = next_song
                                         stream_session = session
@@ -290,32 +295,32 @@ class PlaybackMixin:
                             grace = time.time() - self._voice_enter_time < 30
                             if not grace:
                                 logger.info("队列已空，Bot 自动退出语音频道")
-                                self._leave_current_voice_channel()
+                                await self._leave_current_voice_channel()
 
                     if queue is not None:
-                        self._release_web_link_if_needed(queue=queue)
+                        await self._release_web_link_if_needed(queue=queue)
 
                 if record_song is not None:
                     try:
-                        SongCache.record_play(
+                        await SongCache.record_play(
                             song_id=str(record_song.get("song_id") or ""),
                             platform=str(record_song.get("platform") or "netease"),
                             data=record_song,
                             channel_id=record_channel,
                             user_id=str(record_song.get("user") or ""),
                         )
-                        Statistics.update_today(
+                        await Statistics.update_today(
                             str(record_song.get("platform") or "netease"),
                             cache_hit=False,
                         )
                     except Exception:
                         logger.debug("记录自动播放历史失败", exc_info=True)
                 if stream_song is not None and stream_session is not None:
-                    self._start_stream_thread(stream_song, stream_session)
-                    self._preload_next_song_if_any(queue=queue)
+                    self._start_stream_task(stream_song, stream_session)
+                    await self._preload_next_song_if_any(queue=queue)
                 if notify_song is not None and notify_source != "autoplay":
-                    text = self._build_now_playing_text("自动播放", notify_song)
-                    self.sender.send_message(
+                    text = await self._build_now_playing_text("自动播放", notify_song)
+                    await self.sender.send_message(
                         text=text,
                         attachments=notify_song.get("attachments", []),
                         channel=record_channel,
@@ -326,40 +331,41 @@ class PlaybackMixin:
                 logger.error(f"自动播放监控出错: {e}")
                 wait_seconds = _PLAY_FADE_DELAY
 
-            if stop_event.wait(wait_seconds):
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=wait_seconds)
                 return
+            except asyncio.TimeoutError:
+                pass
 
-    def _preload_next_song_if_any(self, queue=None):
+    async def _preload_next_song_if_any(self, queue=None):
         """若队列中还有下一首且带 URL，则后台预加载其音频，减少切歌卡顿。"""
         if not self.voice or not self.voice.available:
             return
         try:
-            next_item = (queue or self.queue).peek_next()
+            next_item = await (queue or self.queue).peek_next()
             if next_item and next_item.get("url"):
                 self.voice.preload_audio(next_item["url"])
         except Exception as e:
             logger.debug(f"预加载下一首失败（忽略）: {e}")
 
-    def _start_stream_thread(
+    def _start_stream_task(
         self,
         song: dict,
         session: PlaybackSessionSnapshot,
     ) -> None:
-        """只用不可变会话快照启动推流线程。"""
-        threading.Thread(
-            target=self._stream_to_voice_channel,
-            args=(
+        """只用不可变会话快照启动受监管的异步推流任务。"""
+        self._create_task(
+            self._stream_to_voice_channel(
                 str(song["url"]),
                 str(song.get("name") or "music"),
                 session,
                 str(song.get("song_id") or ""),
                 str(song.get("platform") or "netease"),
             ),
-            name=f"MusicStream-{session.generation}",
-            daemon=True,
-        ).start()
+            name=f"music-stream-{session.generation}",
+        )
 
-    def _stream_to_voice_channel(
+    async def _stream_to_voice_channel(
         self,
         url: str,
         name: str,
@@ -367,11 +373,11 @@ class PlaybackMixin:
         song_id: str = "",
         platform_name: str = "netease",
     ) -> None:
-        """后台线程：仅在捕获的播放会话仍有效时向 Agora 提交推流。"""
+        """后台任务：仅在捕获的播放会话仍有效时向 Agora 提交推流。"""
         if session.area is None:
             logger.warning("推流快照缺少播放域，已拒绝")
             return
-        with self._playback_lock:
+        async with self._playback_lock:
             if not self._playback_snapshot_is_current_locked(session):
                 logger.info(
                     "丢弃过期推流任务: area=%s generation=%d",
@@ -385,20 +391,20 @@ class PlaybackMixin:
                 logger.warning("语音频道未连接，无法推流")
                 self._play_start_time = 0
                 self._play_duration = 0
-                q.clear_current()
+                await q.clear_current()
                 try:
-                    q.clear_play_state()
+                    await q.clear_play_state()
                 except Exception as e:
                     logger.debug(f"推流前清理 play_state 失败: {e}")
                 return
 
-        def _on_audio_started():
-            with self._playback_lock:
+        async def _on_audio_started():
+            async with self._playback_lock:
                 if not self._playback_snapshot_is_current_locked(session):
                     return
                 self._play_start_time = time.time()
                 try:
-                    q.set_play_state({
+                    await q.set_play_state({
                         "start_time": self._play_start_time,
                         "duration": self._play_duration,
                         "loading": False,
@@ -408,10 +414,10 @@ class PlaybackMixin:
                     logger.debug(f"校准 start_time 写入 Redis 失败: {e}")
 
         try:
-            with self._playback_lock:
+            async with self._playback_lock:
                 if not self._playback_snapshot_is_current_locked(session):
                     return
-                voice.play_audio(url, on_started=_on_audio_started)
+            await voice.play_audio(url, on_started=_on_audio_started)
             logger.info(f"已提交 Agora 推流任务: {name}")
             return
         except Exception as e:
@@ -424,36 +430,36 @@ class PlaybackMixin:
                         else None
                     )
                     refetch = p or self.netease
-                    new_url = refetch.get_song_url(song_id)
+                    new_url = await refetch.get_song_url(song_id)
                     if new_url:
-                        with self._playback_lock:
+                        async with self._playback_lock:
                             if not self._playback_snapshot_is_current_locked(session):
                                 return
-                            voice.play_audio(new_url, on_started=_on_audio_started)
+                        await voice.play_audio(new_url, on_started=_on_audio_started)
                         logger.info(f"重新获取URL后推流成功: {name}")
                         return
                 except Exception as inner_e:
                     logger.debug(f"重新获取音频 URL 失败: {inner_e}")
             logger.warning(f"Agora 推流失败: {e}")
 
-            with self._playback_lock:
+            async with self._playback_lock:
                 if not self._playback_snapshot_is_current_locked(session):
                     return
                 self._play_start_time = 0
                 self._play_duration = 0
-                q.clear_current()
+                await q.clear_current()
                 try:
-                    q.clear_play_state()
+                    await q.clear_play_state()
                 except Exception as clear_e:
                     logger.debug(f"推流失败后清理 play_state 失败: {clear_e}")
 
-    def _start_playing(self, duration_ms: int, area: str | None = None):
+    async def _start_playing(self, duration_ms: int, area: str | None = None):
         """记录播放开始时间和时长，同步到 Redis 供 Web 播放器读取"""
         self._play_start_time = time.time()
         self._play_duration = duration_ms / 1000 if duration_ms else _DEFAULT_PLAY_DURATION
         try:
             q = self._get_queue(area) if area is not None else self.queue
-            q.set_play_state({
+            await q.set_play_state({
                 "start_time": self._play_start_time,
                 "duration": self._play_duration,
                 "loading": True,
@@ -461,12 +467,12 @@ class PlaybackMixin:
         except Exception as e:
             logger.debug(f"写入 play_state 到 Redis 失败: {e}")
 
-    def _is_playing(self, queue=None) -> bool:
+    async def _is_playing(self, queue=None) -> bool:
         """根据时间判断当前歌曲是否还在播放（暂停状态也算播放中）"""
         if self._play_start_time <= 0:
             return False
         try:
-            ps = (queue or self.queue).get_play_state()
+            ps = await (queue or self.queue).get_play_state()
             if ps:
                 if ps.get("paused"):
                     return True
@@ -488,7 +494,7 @@ class PlaybackMixin:
         elapsed = time.time() - self._play_start_time
         return elapsed < self._play_duration
 
-    def _build_now_playing_text(self, prefix: str, song_data: dict) -> str:
+    async def _build_now_playing_text(self, prefix: str, song_data: dict) -> str:
         """构建"正在播放"消息文本"""
         platform_name = {
             "netease": "网易云",
@@ -507,7 +513,7 @@ class PlaybackMixin:
 
         # 播放提交时已经在锁内更新活跃域；通知可能在离锁后才生成。旧播放通知
         # 只能生成链接，不能把并发切换后的新活跃域覆盖回去。
-        link = self._get_web_link(
+        link = await self._get_web_link(
             area=str(song_data.get("area") or ""),
             mark_active=False,
         )
