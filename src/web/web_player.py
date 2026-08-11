@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -49,7 +50,7 @@ from web.web_rate_limit import client_ip, limiter_for
 from web.web_request_context import cookie_secure_for
 
 if TYPE_CHECKING:
-    from oopz.oopz_sender import OopzSender
+    from oopz.sdk_gateway import AsyncOopzGateway
 
 logger = get_logger("WebPlayer")
 
@@ -95,8 +96,8 @@ PLAY_MODE_SHUFFLE = "shuffle"
 _VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE}
 
 
-def _read_play_mode(redis_client: RedisDataStore, area: str = "") -> str:
-    raw = redis_client.get(_area_key(KEY_PLAY_MODE, area))
+async def _read_play_mode(redis_client: RedisDataStore, area: str = "") -> str:
+    raw = await redis_client.get(_area_key(KEY_PLAY_MODE, area))
     mode = redis_optional_text(raw, field="播放模式")
     return mode if mode in _VALID_PLAY_MODES else PLAY_MODE_LIST
 
@@ -125,34 +126,36 @@ def _finite_float(value: object, fallback: float = 0.0) -> float:
     return parsed if math.isfinite(parsed) else fallback
 
 
-def get_redis() -> RedisDataStore:
+async def get_redis() -> RedisDataStore:
     global _redis
     # 始终对齐全局客户端：Redis 从内存降级中恢复后，Web 层自动切回。
-    client = get_redis_client()
+    client = await get_redis_client()
     if client is not _redis:
         _redis = client
     return client
 
 
-def reset_redis(force: bool = False) -> None:
+async def reset_redis(force: bool = False) -> None:
     global _redis
-    _redis = get_redis_client(force_reset=True) if force else None
+    _redis = await get_redis_client(force_reset=True) if force else None
 
 
-def _area_resolver(redis_client: RedisDataStore) -> PlaybackAreaResolver:
+def _area_resolver(redis_client: RedisDataStore, active_area: str) -> PlaybackAreaResolver:
+    # 活跃域已在调用方 await 取好；解析器的读取回调必须保持同步。
     return PlaybackAreaResolver(
-        active_area_reader=lambda: get_active_area(redis_client=redis_client),
+        active_area_reader=lambda: active_area,
     )
 
 
-def _resolve_area(
+async def _resolve_area(
     redis_client: RedisDataStore,
     area: str = "",
     *,
     required: bool = True,
 ) -> str:
     """解析公共播放器 area；绝不回退到全局播放键。"""
-    resolution = _area_resolver(redis_client).public(area)
+    active_area = await get_active_area(redis_client=redis_client)
+    resolution = _area_resolver(redis_client, active_area).public(area)
     return resolution.require().value if required else resolution.value
 
 
@@ -179,19 +182,19 @@ def reset_netease() -> None:
     _netease = None
 
 
-_sender: OopzSender | None = None
+_sender: AsyncOopzGateway | None = None
 _music_dependency = None
 _plugin_runtime = None
 _plugin_host = None
 _oopz_client = None
 
 
-def set_sender(sender: OopzSender | None) -> None:
+def set_sender(sender: AsyncOopzGateway | None) -> None:
     global _sender
     _sender = sender
 
 
-def get_sender() -> OopzSender | None:
+def get_sender() -> AsyncOopzGateway | None:
     return _sender
 
 
@@ -254,14 +257,14 @@ def _admin_enabled() -> bool:
     return cfg.admin_enabled()
 
 
-def _is_admin_authorized(request: Request) -> bool:
+async def _is_admin_authorized(request: Request) -> bool:
     if not _admin_enabled():
         return False
     cookie_token = request.cookies.get(cfg.admin_cookie_name(), "")
     if not cookie_token:
         return False
     try:
-        active_token = get_redis().get(cfg.admin_session_key(cookie_token))
+        active_token = await (await get_redis()).get(cfg.admin_session_key(cookie_token))
     except Exception:
         active_token = None
     return bool(active_token)
@@ -292,16 +295,16 @@ async def _auth_web_api(request: Request, call_next):
             )
 
     if path.startswith("/api/"):
-        active = get_token(redis_client=get_redis())
+        active = await get_token(redis_client=await get_redis())
         client_token = request.cookies.get(WEB_TOKEN_COOKIE, "")
         if not active or not secrets.compare_digest(client_token, active):
             return JSONResponse({"ok": False, "error": "未授权或链接已失效"}, status_code=403)
         # 记一次使用，供空闲释放判定 —— 否则用户开着页面搜歌但队列恰好为空时会被误踢
-        touch_access(redis_client=get_redis())
+        await touch_access(redis_client=await get_redis())
     if path.startswith("/admin/api/") and path not in {"/admin/api/login"}:
         if not _admin_enabled():
             return JSONResponse({"ok": False, "error": "管理后台未启用"}, status_code=404)
-        if not _is_admin_authorized(request):
+        if not await _is_admin_authorized(request):
             return JSONResponse({"ok": False, "error": "后台未登录或会话失效"}, status_code=401)
     return await call_next(request)
 
@@ -310,34 +313,34 @@ async def _auth_web_api(request: Request, call_next):
 # 共享业务逻辑（admin 模块亦调用）
 # ---------------------------------------------------------------------------
 
-def execute_control_action(
+async def execute_control_action(
     action: str,
     body: dict,
     redis_client: PlaybackCommandStore,
     area: str = "",
 ) -> dict:
-    return PlaybackControlService(
+    return await PlaybackControlService(
         redis_client,
         default_volume=cfg.default_music_volume(),
     ).control(action=action, payload=body, area=area)
 
 
-def execute_queue_action(
+async def execute_queue_action(
     action: str,
     index,
     redis_client: PlaybackCommandStore,
     area: str,
 ) -> dict:
-    return PlaybackControlService(redis_client).mutate_queue(
+    return await PlaybackControlService(redis_client).mutate_queue(
         action=action,
         index=index,
         area=area,
     )
 
 
-def add_song_to_queue(body: dict, area: str = "") -> dict:
-    return PlaybackControlService(
-        get_redis(),
+async def add_song_to_queue(body: dict, area: str = "") -> dict:
+    return await PlaybackControlService(
+        await get_redis(),
         redis_provider=get_redis,
         platform_resolver=_resolve_platform,
         default_volume=cfg.default_music_volume(),
@@ -386,10 +389,10 @@ def _filter_songs_by_keyword(songs: list, keyword: str) -> list:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/status")
-def api_status(area: str = Query("", description="域 ID，用于多域隔离")):
+async def api_status(area: str = Query("", description="域 ID，用于多域隔离")):
     try:
-        r = get_redis()
-        area = _resolve_area(r, area)
+        r = await get_redis()
+        area = await _resolve_area(r, area)
         current_key = _area_key(KEY_CURRENT, area)
         ps_key = _area_key(KEY_PLAY_STATE, area)
 
@@ -398,7 +401,7 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
         pipe.get(ps_key)
         pipe.get(KEY_VOLUME)
         pipe.get(_area_key(KEY_PLAY_MODE, area))
-        current_raw, play_state_raw, vol_raw, mode_raw = pipe.execute()
+        current_raw, play_state_raw, vol_raw, mode_raw = await pipe.execute()
         volume = _normalize_volume(vol_raw)
         mode_value = redis_optional_text(mode_raw, field="播放模式")
         mode = mode_value if mode_value in _VALID_PLAY_MODES else PLAY_MODE_LIST
@@ -464,7 +467,7 @@ def api_status(area: str = Query("", description="域 ID，用于多域隔离"))
 
 
 @app.get("/api/lyric")
-def api_lyric(id: str = Query(...), platform: str = Query("netease")):
+async def api_lyric(id: str = Query(...), platform: str = Query("netease")):
     try:
         cache_key = f"lyric:{platform}:{id}"
         with _lyric_lock:
@@ -477,10 +480,10 @@ def api_lyric(id: str = Query(...), platform: str = Query("netease")):
                 song_id = int(id)
             except ValueError as exc:
                 raise ValueError("网易云歌曲 ID 必须是整数") from exc
-            lyric, tlyric = get_netease().get_lyrics(song_id)
+            lyric, tlyric = await get_netease().get_lyrics(song_id)
         else:
             p = _resolve_platform(platform)
-            lyric = p.get_lyric(id)
+            lyric = await p.get_lyric(id)
             tlyric = None
 
         result = {"lyric": lyric, "tlyric": tlyric}
@@ -497,12 +500,12 @@ def api_lyric(id: str = Query(...), platform: str = Query("netease")):
 
 
 @app.get("/api/queue")
-def api_queue(area: str = Query("", description="域 ID，用于多域隔离")):
+async def api_queue(area: str = Query("", description="域 ID，用于多域隔离")):
     try:
-        r = get_redis()
-        area = _resolve_area(r, area)
+        r = await get_redis()
+        area = await _resolve_area(r, area)
         queue_key = _area_key(KEY_QUEUE, area)
-        items = r.lrange(queue_key, 0, -1)
+        items = await r.lrange(queue_key, 0, -1)
         queue: list[dict] = []
         for item in items:
             song = redis_json_object(item, field="队列歌曲")
@@ -527,12 +530,12 @@ def api_queue(area: str = Query("", description="域 ID，用于多域隔离")):
 
 
 @app.get("/api/debug")
-def api_debug(area: str = Query("", description="域 ID")):
+async def api_debug(area: str = Query("", description="域 ID")):
     """调试端点：显示 Redis 中的原始数据"""
     try:
-        r = get_redis()
-        r.ping()
-        area = _resolve_area(r, area)
+        r = await get_redis()
+        await r.ping()
+        area = await _resolve_area(r, area)
         current_key = _area_key(KEY_CURRENT, area)
         queue_key = _area_key(KEY_QUEUE, area)
         current = r.get(current_key)
@@ -553,7 +556,7 @@ def api_debug(area: str = Query("", description="域 ID")):
 
 
 @app.get("/api/liked")
-def api_liked(
+async def api_liked(
     page: int = Query(1, ge=1),
     limit: int = Query(30, ge=1, le=50),
     keyword: str | None = Query(None, max_length=200),
@@ -563,10 +566,10 @@ def api_liked(
     try:
         nc = get_netease()
         if not liked_ids_cache:
-            uid = nc.get_user_id()
+            uid = await nc.get_user_id()
             if not uid:
                 return JSONResponse({"songs": [], "error": "无法获取网易云账号"})
-            liked_ids_cache = nc.get_liked_ids(uid)
+            liked_ids_cache = await nc.get_liked_ids(uid)
         if not liked_ids_cache:
             return JSONResponse({"songs": [], "total": 0, "page": 1, "pages": 0})
 
@@ -576,7 +579,7 @@ def api_liked(
             all_songs: list = []
             for i in range(0, len(all_ids), batch_size):
                 chunk = all_ids[i : i + batch_size]
-                details = nc.get_song_details_batch(chunk)
+                details = await nc.get_song_details_batch(chunk)
                 all_songs.extend(details)
             filtered = _filter_songs_by_keyword(all_songs, keyword)
             total = len(filtered)
@@ -591,7 +594,7 @@ def api_liked(
         page = min(page, pages)
         start = (page - 1) * limit
         page_ids = liked_ids_cache[start : start + limit]
-        details = nc.get_song_details_batch(page_ids)
+        details = await nc.get_song_details_batch(page_ids)
         return JSONResponse({"songs": details, "total": total, "page": page, "pages": pages})
     except Exception as e:
         logger.error(f"/api/liked 异常: {e}")
@@ -607,7 +610,7 @@ def api_liked_refresh():
 
 
 @app.get("/api/search")
-def api_search(
+async def api_search(
     keyword: str = Query(..., min_length=1, max_length=200),
     limit: int = Query(10, ge=1, le=30),
     platform: str = Query("netease"),
@@ -615,7 +618,7 @@ def api_search(
     """搜索歌曲，返回列表。platform 可选 netease / qq / bilibili。"""
     try:
         p = _resolve_platform(platform)
-        results = p.search_many(keyword, limit=limit)
+        results = await p.search_many(keyword, limit=limit)
         return JSONResponse({"results": results, "platform": platform})
     except Exception as e:
         logger.error(f"/api/search 异常: {e}")
@@ -627,8 +630,8 @@ async def api_add(request: Request, area: str = Query("", description="域 ID"))
     """通过歌曲 ID 添加到播放队列"""
     try:
         body = await request.json()
-        area = _resolve_area(get_redis(), area)
-        return JSONResponse(add_song_to_queue(body=body, area=area))
+        area = await _resolve_area(await get_redis(), area)
+        return JSONResponse(await add_song_to_queue(body=body, area=area))
     except PlaybackAreaUnavailable:
         return _area_unavailable_response()
     except Exception as e:
@@ -642,9 +645,9 @@ async def api_control(request: Request, area: str = Query("", description="域 I
     try:
         body = await request.json()
         action = body.get("action", "")
-        r = get_redis()
-        area = "" if action == "volume" else _resolve_area(r, area)
-        result = execute_control_action(action=action, body=body, redis_client=r, area=area)
+        r = await get_redis()
+        area = "" if action == "volume" else await _resolve_area(r, area)
+        result = await execute_control_action(action=action, body=body, redis_client=r, area=area)
         return JSONResponse(result)
     except PlaybackAreaUnavailable:
         return _area_unavailable_response()
@@ -660,9 +663,11 @@ async def api_queue_action(request: Request, area: str = Query("", description="
         body = await request.json()
         action = body.get("action", "")
         index = body.get("index", -1)
-        r = get_redis()
-        area = _resolve_area(r, area)
-        return JSONResponse(execute_queue_action(action=action, index=index, redis_client=r, area=area))
+        r = await get_redis()
+        area = await _resolve_area(r, area)
+        return JSONResponse(
+            await execute_queue_action(action=action, index=index, redis_client=r, area=area)
+        )
     except PlaybackAreaUnavailable:
         return _area_unavailable_response()
     except Exception as e:
@@ -671,7 +676,7 @@ async def api_queue_action(request: Request, area: str = Query("", description="
 
 
 @app.get("/health")
-def health_check(request: Request):
+async def health_check(request: Request):
     """系统健康检查。
 
     存活探测（Docker healthcheck、外部 uptime 监控）无需认证，但只拿到
@@ -686,8 +691,8 @@ def health_check(request: Request):
 
     # Redis
     try:
-        r = get_redis()
-        r.ping()
+        r = await get_redis()
+        await r.ping()
         # 内存降级时 ping 恒为 True，只看 ping 会把「Redis 完全挂掉」报成健康。
         # 但降级本身是设计中的可用状态，不计入 overall —— 判 unhealthy 会误杀容器。
         checks["redis"] = {"status": "degraded_memory" if is_degraded() else "ok"}
@@ -697,9 +702,9 @@ def health_check(request: Request):
 
     # 数据库
     try:
-        from core.database import get_connection
-        conn = get_connection()
-        conn.execute("SELECT 1")
+        from core.database import db_connection
+        async with db_connection() as conn:
+            await conn.execute("SELECT 1")
         checks["database"] = {"status": "ok"}
     except Exception as e:
         checks["database"] = {"status": "error", "detail": str(e)}
@@ -708,7 +713,7 @@ def health_check(request: Request):
     # 网易云 API
     try:
         nc = get_netease()
-        uid = nc.get_user_id()
+        uid = await nc.get_user_id()
         checks["netease_api"] = {"status": "ok" if uid else "degraded", "logged_in": bool(uid)}
     except Exception as e:
         checks["netease_api"] = {"status": "error", "detail": str(e)}
@@ -716,11 +721,11 @@ def health_check(request: Request):
 
     # 播放队列状态
     try:
-        r = get_redis()
-        area = _resolve_area(r, required=False)
+        r = await get_redis()
+        area = await _resolve_area(r, required=False)
         if area:
-            queue_len = int(r.llen(_area_key(KEY_QUEUE, area)) or 0)
-            current = r.get(_area_key(KEY_CURRENT, area))
+            queue_len = int(await r.llen(_area_key(KEY_QUEUE, area)) or 0)
+            current = await r.get(_area_key(KEY_CURRENT, area))
             checks["music"] = {
                 "status": "ok",
                 "area": area,
@@ -745,7 +750,7 @@ def health_check(request: Request):
     status_code = 200 if overall else 503
     status = "healthy" if overall else "degraded"
 
-    if not _is_admin_authorized(request):
+    if not await _is_admin_authorized(request):
         return JSONResponse({"status": status}, status_code=status_code)
 
     return JSONResponse(
@@ -765,12 +770,12 @@ def index():
 
 
 @app.get("/w/{token}", response_class=HTMLResponse)
-def index_with_token(token: str, request: Request):
-    r = get_redis()
-    active = get_token(redis_client=r)
+async def index_with_token(token: str, request: Request):
+    r = await get_redis()
+    active = await get_token(redis_client=r)
     if not active or not secrets.compare_digest(token, active):
         return HTMLResponse("播放器链接无效或已失效，请重新让 Bot 发送最新链接。", status_code=403)
-    set_token(token, redis_client=r, ttl_seconds=cfg.token_ttl_seconds())
+    await set_token(token, redis_client=r, ttl_seconds=cfg.token_ttl_seconds())
     area = (request.query_params.get("area") or "").strip()
     html_path = os.path.join(_WEB_ASSETS_DIR, "player.html")
     with open(html_path, encoding="utf-8") as f:
@@ -824,50 +829,59 @@ def run_server(host: str | None = None, port: int | None = None) -> None:
 
 
 class WebPlayerService:
-    """可显式停止的 Uvicorn 后台服务。"""
+    """与 Bot 共用事件循环的可停止 Uvicorn 服务。"""
 
     def __init__(self, host: str | None = None, port: int | None = None) -> None:
         self.host = host or cfg.web_host()
         self.port = port or cfg.web_port()
         self._server: uvicorn.Server | None = None
-        self._thread = None
-        self._lock = Lock()
+        self._task: asyncio.Task[None] | None = None
 
-    def start(self) -> None:
-        import threading
-
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
-            config = uvicorn.Config(
-                app,
-                host=self.host,
-                port=self.port,
-                log_level="warning",
-                proxy_headers=False,
-            )
-            server = uvicorn.Server(config)
-            self._server = server
-            self._thread = threading.Thread(
-                target=server.run,
-                name="WebPlayerUvicorn",
-                daemon=True,
-            )
-            self._thread.start()
-
-    def stop(self, timeout: float = 5.0) -> None:
-        with self._lock:
-            server = self._server
-            thread = self._thread
-            if server is None and thread is None:
-                return
-            if server is not None:
-                server.should_exit = True
-        if thread and thread.is_alive():
-            thread.join(timeout=max(0.0, timeout))
-        if thread and thread.is_alive():
-            logger.warning("服务停止超时: WebPlayerUvicorn，线程仍未退出")
+    async def start(self) -> None:
+        if self._task is not None and not self._task.done():
             return
-        with self._lock:
-            self._server = None
-            self._thread = None
+        config = uvicorn.Config(
+            app,
+            host=self.host,
+            port=self.port,
+            log_level="warning",
+            proxy_headers=False,
+        )
+        self._server = uvicorn.Server(config)
+        self._task = asyncio.create_task(
+            self._server.serve(),
+            name="web-player-uvicorn",
+        )
+        await asyncio.sleep(0)
+        if self._task.done():
+            await self._task
+
+    async def stop(self, timeout: float = 5.0) -> None:
+        server = self._server
+        task = self._task
+        if server is None and task is None:
+            return
+        if server is not None:
+            server.should_exit = True
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, timeout))
+            except asyncio.TimeoutError:
+                logger.warning("服务停止超时: WebPlayerUvicorn，任务仍未退出")
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        elif task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        self._server = None
+        self._task = None
+        # Web 播放器持有自己的网易云客户端（/api/search、/api/lyric 用），
+        # 与音乐服务那个是两个实例，`platforms.close()` 覆盖不到它；
+        # 不在这里关掉，关停时会留下 aiohttp 会话与连接器未释放。
+        global _netease
+        netease = _netease
+        _netease = None
+        if netease is not None:
+            try:
+                await netease.close()
+            except Exception as exc:
+                logger.warning("关闭 Web 播放器网易云会话失败: %s", exc)

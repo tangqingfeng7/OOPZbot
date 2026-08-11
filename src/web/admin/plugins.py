@@ -120,7 +120,7 @@ def admin_plugin_config_get(name: str):
     config_data = {}
     if os.path.isfile(config_path):
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 config_data = json.load(f)
         except Exception as exc:
             return JSONResponse({"ok": False, "error": f"读取配置失败: {exc}"})
@@ -129,7 +129,7 @@ def admin_plugin_config_get(name: str):
     schema_data = None
     if os.path.isfile(schema_path):
         try:
-            with open(schema_path, "r", encoding="utf-8") as f:
+            with open(schema_path, encoding="utf-8") as f:
                 schema_data = json.load(f)
         except Exception:
             pass
@@ -172,7 +172,7 @@ async def admin_plugin_config_save(name: str, request: Request):
     host = _get_plugin_host()
     reload_msg = ""
     if runtime and runtime.registry.get(plugin_name):
-        result = runtime.reload_config(plugin_name, handler=host)
+        result = await runtime.reload_config(plugin_name, handler=host)
         reload_msg = result.message
 
     return JSONResponse({"ok": True, "message": "配置已保存", "reload": reload_msg})

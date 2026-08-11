@@ -17,20 +17,20 @@ from ._runtime import _get_redis, _get_started_at
 logger = get_logger("WebPlayerAdmin")
 
 
-def _overview_payload() -> dict:
+async def _overview_payload() -> dict:
     redis_status = "connected"
     queue_len = 0
     playing: dict = {}
-    area_context = _music_area_context()
+    area_context = await _music_area_context()
     try:
-        r = _get_redis()
-        r.ping()
-        area_context = _music_area_context(r)
+        r = await _get_redis()
+        await r.ping()
+        area_context = await _music_area_context(r)
         area = area_context.get("area", "")
         if area:
-            queue_len = r.llen(_area_key(KEY_QUEUE, area))
-            current_raw = r.get(_area_key(KEY_CURRENT, area))
-            play_state_raw = r.get(_area_key(KEY_PLAY_STATE, area))
+            queue_len = await r.llen(_area_key(KEY_QUEUE, area))
+            current_raw = await r.get(_area_key(KEY_CURRENT, area))
+            play_state_raw = await r.get(_area_key(KEY_PLAY_STATE, area))
             playing = {
                 "available": True,
                 "current": (
@@ -56,8 +56,8 @@ def _overview_payload() -> dict:
     except Exception as e:
         redis_status = f"error: {e}"
 
-    today = Statistics.get_today() or {}
-    summary = Statistics.get_summary()
+    today = (await Statistics.get_today()) or {}
+    summary = await Statistics.get_summary()
     return {
         "ok": True,
         "uptime_seconds": int(time.time() - _get_started_at()),
@@ -67,8 +67,8 @@ def _overview_payload() -> dict:
         "music_area": area_context,
         "statistics_today": today,
         "statistics_summary": summary,
-        "today_messages": MessageStatsDB.get_today_total(),
-        "active_users_today": MessageStatsDB.get_active_users_today(),
+        "today_messages": await MessageStatsDB.get_today_total(),
+        "active_users_today": await MessageStatsDB.get_active_users_today(),
     }
 
 
@@ -83,12 +83,12 @@ def _tail_file(path: str, lines: int = 200) -> list[str]:
     return list(dq)
 
 
-def _top_songs_from_play_history(page: int = 1, page_size: int = 10) -> tuple[list[dict], int]:
+async def _top_songs_from_play_history(page: int = 1, page_size: int = 10) -> tuple[list[dict], int]:
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 10), 100))
     offset = (page - 1) * page_size
-    with db_connection() as conn:
-        total_row = conn.execute(
+    async with db_connection() as conn:
+        async with conn.execute(
             """
             SELECT COUNT(1) AS c
             FROM (
@@ -98,9 +98,10 @@ def _top_songs_from_play_history(page: int = 1, page_size: int = 10) -> tuple[li
                 GROUP BY sc.song_id, sc.song_name, sc.artist, sc.album
             ) t
             """
-        ).fetchone()
+        ) as cursor:
+            total_row = await cursor.fetchone()
         total = int(total_row["c"] if total_row else 0)
-        rows = conn.execute(
+        async with conn.execute(
             """
             SELECT
                 sc.song_id AS song_id,
@@ -116,14 +117,15 @@ def _top_songs_from_play_history(page: int = 1, page_size: int = 10) -> tuple[li
             LIMIT ? OFFSET ?
             """,
             (page_size, offset),
-        ).fetchall()
+        ) as cursor:
+            rows = await cursor.fetchall()
     return [dict(r) for r in rows], total
 
 
-def _queue_snapshot(redis_client: RedisDataStore, area: str = "") -> list[dict]:
+async def _queue_snapshot(redis_client: RedisDataStore, area: str = "") -> list[dict]:
     if not str(area or "").strip():
         return []
-    items = redis_client.lrange(_area_key(KEY_QUEUE, area), 0, -1)
+    items = await redis_client.lrange(_area_key(KEY_QUEUE, area), 0, -1)
     queue: list[dict] = []
     for i, item in enumerate(items):
         try:
@@ -142,14 +144,14 @@ def _queue_snapshot(redis_client: RedisDataStore, area: str = "") -> list[dict]:
     return queue
 
 
-def _current_song_snapshot(
+async def _current_song_snapshot(
     redis_client: RedisDataStore,
     area: str = "",
 ) -> dict | None:
     if not str(area or "").strip():
         return None
     try:
-        raw = redis_client.get(_area_key(KEY_CURRENT, area))
+        raw = await redis_client.get(_area_key(KEY_CURRENT, area))
         if not raw:
             return None
         song = redis_json_object(raw, field="当前播放歌曲")

@@ -47,8 +47,8 @@ def _area_unavailable_response() -> JSONResponse:
     return JSONResponse(_playback_area_unavailable_payload(), status_code=409)
 
 @router.get("/admin/api/overview")
-def admin_overview():
-    return JSONResponse(_overview_payload(), headers={"Cache-Control": "no-store"})
+async def admin_overview():
+    return JSONResponse(await _overview_payload(), headers={"Cache-Control": "no-store"})
 
 
 @router.get("/admin/api/overview/stream")
@@ -64,12 +64,12 @@ async def admin_overview_stream(request: Request):
             check_counter += 1
             if check_counter % 30 == 0 and cookie_token:
                 try:
-                    alive = _get_redis().get(cfg.admin_session_key(cookie_token))
+                    alive = await (await _get_redis()).get(cfg.admin_session_key(cookie_token))
                 except Exception:
                     alive = None
                 if not alive:
                     break
-            payload = _overview_payload()
+            payload = await _overview_payload()
             payload_text = compact_json(payload)
             if payload_text != last_payload:
                 yield f"event: overview\ndata: {payload_text}\n\n"
@@ -90,30 +90,30 @@ async def admin_overview_stream(request: Request):
 
 
 @router.get("/admin/api/statistics")
-def admin_statistics(
+async def admin_statistics(
     days: int = Query(7, ge=1, le=30),
     top_page: int = Query(1, ge=1),
     top_page_size: int = Query(10, ge=1, le=100),
 ):
-    top_items, top_total = _top_songs_from_play_history(page=top_page, page_size=top_page_size)
+    top_items, top_total = await _top_songs_from_play_history(page=top_page, page_size=top_page_size)
     top_pages = max(1, (top_total + top_page_size - 1) // top_page_size) if top_total else 1
     return JSONResponse({
         "ok": True,
-        "today": Statistics.get_today() or {},
-        "summary": Statistics.get_summary(),
-        "recent_days": Statistics.get_recent(days=days),
+        "today": (await Statistics.get_today()) or {},
+        "summary": await Statistics.get_summary(),
+        "recent_days": await Statistics.get_recent(days=days),
         "top_songs": top_items,
         "top_total": top_total,
         "top_page": top_page,
         "top_pages": top_pages,
         "top_page_size": top_page_size,
-        "recent_songs": SongCache.get_recent_songs(limit=10),
+        "recent_songs": await SongCache.get_recent_songs(limit=10),
     })
 
 
 @router.post("/admin/api/statistics/clear_history")
-def admin_clear_play_history():
-    count = SongCache.clear_play_history()
+async def admin_clear_play_history():
+    count = await SongCache.clear_play_history()
     return JSONResponse({"ok": True, "deleted": count})
 
 
@@ -138,8 +138,10 @@ async def admin_control(request: Request):
     try:
         body = await request.json()
         action = str(body.get("action", ""))
-        area = "" if action == "volume" else _require_music_area()
-        result = _execute_control_action(action=action, body=body, redis_client=_get_redis(), area=area)
+        area = "" if action == "volume" else await _require_music_area()
+        result = await _execute_control_action(
+            action=action, body=body, redis_client=await _get_redis(), area=area
+        )
         return JSONResponse(result)
     except PlaybackAreaUnavailable:
         return _area_unavailable_response()
@@ -154,14 +156,14 @@ def admin_liked_refresh():
 
 
 @router.post("/admin/api/queue/clear")
-def admin_queue_clear():
+async def admin_queue_clear():
     try:
-        area = _require_music_area()
+        area = await _require_music_area()
         return JSONResponse(
-            _execute_control_action(
+            await _execute_control_action(
                 action="clear",
                 body={},
-                redis_client=_get_redis(),
+                redis_client=await _get_redis(),
                 area=area,
             )
         )
@@ -170,22 +172,22 @@ def admin_queue_clear():
 
 
 @router.get("/admin/api/queue")
-def admin_queue(
+async def admin_queue(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ):
-    r = _get_redis()
-    area_context = _music_area_context(r)
+    r = await _get_redis()
+    area_context = await _music_area_context(r)
     area = area_context.get("area", "")
     if not area:
         return _area_unavailable_response()
-    full_queue = _queue_snapshot(r, area=area)
+    full_queue = await _queue_snapshot(r, area=area)
     total = len(full_queue)
     pages = max(1, (total + page_size - 1) // page_size) if total else 1
     page = min(page, pages)
     start = (page - 1) * page_size
     queue = full_queue[start:start + page_size]
-    current = _current_song_snapshot(r, area=area)
+    current = await _current_song_snapshot(r, area=area)
     return JSONResponse({
         "ok": True,
         "area": area,
@@ -204,23 +206,23 @@ def admin_queue(
 async def admin_queue_action(request: Request):
     body = await read_json_body(request)
     try:
-        area = _require_music_area()
+        area = await _require_music_area()
     except PlaybackAreaUnavailable:
         return _area_unavailable_response()
-    result = _execute_queue_action(
+    result = await _execute_queue_action(
         action=body.get("action", ""),
         index=body.get("index", -1),
-        redis_client=_get_redis(),
+        redis_client=await _get_redis(),
         area=area,
     )
     if result.get("ok"):
-        result["queue"] = _queue_snapshot(_get_redis(), area=area)
+        result["queue"] = await _queue_snapshot(await _get_redis(), area=area)
     return JSONResponse(result)
 
 
 @router.get("/admin/api/player/link")
-def admin_player_link():
-    token = get_token(redis_client=_get_redis())
+async def admin_player_link():
+    token = await get_token(redis_client=await _get_redis())
     path = f"/w/{token}" if token else ""
     base_url = cfg.display_web_base_url()
     full_url = f"{base_url}{path}" if token else ""
@@ -234,16 +236,16 @@ def admin_player_link():
 
 
 @router.post("/admin/api/player/link/rotate")
-def admin_player_link_rotate():
-    r = _get_redis()
-    clear_token(redis_client=r)
-    token = ensure_token(redis_client=r, ttl_seconds=cfg.token_ttl_seconds())
+async def admin_player_link_rotate():
+    r = await _get_redis()
+    await clear_token(redis_client=r)
+    token = await ensure_token(redis_client=r, ttl_seconds=cfg.token_ttl_seconds())
     base_url = cfg.display_web_base_url()
     return JSONResponse({"ok": True, "url": f"{base_url}/w/{token}"})
 
 
 @router.get("/admin/api/search")
-def admin_search(
+async def admin_search(
     keyword: str = Query(..., min_length=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=30),
@@ -256,7 +258,7 @@ def admin_search(
 
         if platform == "netease":
             nc = _get_netease()
-            data = nc._get("/cloudsearch", params={
+            data = await nc._get("/cloudsearch", params={
                 "keywords": keyword,
                 "limit": page_size,
                 "offset": offset,
@@ -275,7 +277,7 @@ def admin_search(
         else:
             from web.web_player import _resolve_platform
             p = _resolve_platform(platform)
-            results = p.search_many(keyword, limit=page_size, offset=offset)
+            results = await p.search_many(keyword, limit=page_size, offset=offset)
             total = len(results)
             pages = 1
 
@@ -296,7 +298,7 @@ def admin_search(
 async def admin_add(request: Request):
     try:
         body = await request.json()
-        return JSONResponse(_add_song_to_queue(body=body, area=_require_music_area()))
+        return JSONResponse(await _add_song_to_queue(body=body, area=await _require_music_area()))
     except PlaybackAreaUnavailable:
         return _area_unavailable_response()
     except Exception as e:
@@ -304,7 +306,7 @@ async def admin_add(request: Request):
 
 
 @router.get("/admin/api/system")
-def admin_system():
+async def admin_system():
     data: dict = {
         "ok": True,
         "python_version": sys.version.split()[0],
@@ -319,22 +321,23 @@ def admin_system():
     log_path = data["log_path"]
     data["log_size_bytes"] = os.path.getsize(log_path) if os.path.exists(log_path) else 0
     try:
-        r = _get_redis()
-        r.ping()
+        r = await _get_redis()
+        await r.ping()
         admin_redis = cast(RedisAdminClient, r)
-        info = admin_redis.info(section="server")
+        info = await admin_redis.info(section="server")
         data["redis"] = {
             "status": "connected",
-            "dbsize": admin_redis.dbsize(),
+            "dbsize": await admin_redis.dbsize(),
             "redis_version": info.get("redis_version", ""),
         }
     except Exception as e:
         data["redis"] = {"status": f"error: {e}"}
     try:
-        with db_connection() as conn:
+        async with db_connection() as conn:
             table_rows: dict = {}
             for table in ("image_cache", "song_cache", "play_history", "statistics"):
-                row = conn.execute(f"SELECT COUNT(1) AS c FROM {table}").fetchone()
+                async with conn.execute(f"SELECT COUNT(1) AS c FROM {table}") as cursor:
+                    row = await cursor.fetchone()
                 table_rows[table] = int(row["c"] if row else 0)
         data["db_tables"] = table_rows
     except Exception as e:
@@ -343,9 +346,9 @@ def admin_system():
 
 
 @router.get("/admin/api/setup/diagnostics")
-def admin_setup_diagnostics():
+async def admin_setup_diagnostics():
     diagnostics = SetupDiagnostics(sender=_get_sender(), plugins=_get_plugin_runtime())
-    report = diagnostics.build_report()
+    report = await diagnostics.build_report()
     return JSONResponse({"ok": True, **report}, headers={"Cache-Control": "no-store"})
 
 __all__ = ["router"]

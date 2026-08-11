@@ -54,7 +54,7 @@ async def admin_login(request: Request):
 
     login_guard.record_success(ip)
     token = secrets.token_urlsafe(24)
-    _set_admin_session_token(token)
+    await _set_admin_session_token(token)
     ttl = cfg.admin_session_ttl_seconds()
     response = JSONResponse({"ok": True, "ttl": ttl})
     response.set_cookie(
@@ -73,8 +73,8 @@ async def admin_login(request: Request):
 
 
 @router.post("/admin/api/logout")
-def admin_logout(request: Request):
-    _clear_admin_session_token(request.cookies.get(cfg.admin_cookie_name(), ""))
+async def admin_logout(request: Request):
+    await _clear_admin_session_token(request.cookies.get(cfg.admin_cookie_name(), ""))
     response = JSONResponse({"ok": True})
     response.delete_cookie(cfg.admin_cookie_name())
     return response

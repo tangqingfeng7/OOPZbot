@@ -88,24 +88,32 @@ class CookieSecureForTest(unittest.TestCase):
         )
 
 
-class WebServerProxyBoundaryTest(unittest.TestCase):
-    def test_uvicorn_proxy_header_rewrite_is_disabled(self) -> None:
+class WebServerProxyBoundaryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_uvicorn_proxy_header_rewrite_is_disabled(self) -> None:
+        import asyncio
+
         import web.web_player as web_player
 
+        # 服务已改为在事件循环里跑 uvicorn 任务，不再自建线程
         server = mock.Mock()
-        server.run.return_value = None
+        stop_serving = asyncio.Event()
+        server.serve = lambda: stop_serving.wait()
+
         with (
             mock.patch.object(web_player.uvicorn, "Config") as config_factory,
             mock.patch.object(web_player.uvicorn, "Server", return_value=server),
         ):
             service = web_player.WebPlayerService(host="127.0.0.1", port=18080)
-            service.start()
-            thread = service._thread
-            assert thread is not None
-            thread.join(timeout=1)
-            service.stop(timeout=1)
+            await service.start()
+            task = service._task
+            assert task is not None
+            self.assertFalse(task.done())
+            stop_serving.set()
+            await service.stop(timeout=1)
 
+        # 反代头由我们自己的中间件按可信来源处理，交给 uvicorn 重写会绕过校验
         self.assertFalse(config_factory.call_args.kwargs["proxy_headers"])
+        self.assertIsNone(service._task, "停过之后不应残留任务引用")
 
 
 if __name__ == "__main__":

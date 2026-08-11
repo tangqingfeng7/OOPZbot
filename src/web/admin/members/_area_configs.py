@@ -22,7 +22,7 @@ def admin_area_configs_list():
 
 @router.get("/admin/api/area-configs/{area_id}")
 def admin_area_config_get(area_id: str):
-    from core.area_config import get_area_registry, AreaConfigRegistry
+    from core.area_config import AreaConfigRegistry, get_area_registry
     reg = get_area_registry()
     if not reg.is_configured(area_id):
         return JSONResponse({"ok": True, "configured": False, "config": {}})
@@ -38,7 +38,7 @@ async def admin_area_config_save(area_id: str, request: Request):
     if not area_id:
         return JSONResponse({"ok": False, "error": "area_id 不能为空"}, status_code=400)
 
-    from core.area_config import get_area_registry, AreaConfigRegistry
+    from core.area_config import AreaConfigRegistry, get_area_registry
     reg = get_area_registry()
     reg.update_config(area_id, body)
 

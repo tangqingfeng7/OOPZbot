@@ -40,13 +40,13 @@ from web.admin.shared import (
 router = APIRouter()
 
 @router.get("/admin/api/config")
-def admin_get_config():
+async def admin_get_config():
     return JSONResponse({
         "ok": True,
         "config": cfg.config_snapshot(),
         "schema": cfg.config_field_schema(),
         "runtime": {
-            "music_area": _music_area_context(),
+            "music_area": await _music_area_context(),
         },
         "config_source": "config.py",
     })
@@ -63,7 +63,7 @@ async def admin_update_config(request: Request):
 
     import web.web_player as web_player
     if "redis" in applied:
-        web_player.reset_redis(force=True)
+        await web_player.reset_redis(force=True)
     if "netease" in applied:
         web_player.reset_netease()
         _set_liked_ids_cache([])
@@ -76,10 +76,10 @@ async def admin_update_config(request: Request):
     if "music" in applied and "default_volume" in applied["music"]:
         try:
             volume = cfg.default_music_volume()
-            r = web_player.get_redis()
-            r.set(web_player.KEY_VOLUME, str(volume))
+            r = await web_player.get_redis()
+            await r.set(web_player.KEY_VOLUME, str(volume))
             # 后台改的是全局默认音量，不归属任何域：留空域即对所有域生效
-            r.rpush(
+            await r.rpush(
                 KEY_WEB_COMMANDS,
                 encode_web_command(GlobalWebCommand("volume", {"value": volume})),
             )
@@ -105,7 +105,7 @@ async def admin_update_config(request: Request):
         "config": cfg.config_snapshot(),
         "schema": cfg.config_field_schema(),
         "runtime": {
-            "music_area": _music_area_context(),
+            "music_area": await _music_area_context(),
             "music_platforms": music_runtime,
         },
     })
@@ -434,14 +434,14 @@ def admin_bilibili_account():
 
 
 @router.post("/admin/api/config/reset")
-def admin_reset_config_overrides():
+async def admin_reset_config_overrides():
     try:
         cfg.reload_config_from_file()
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"重新加载 config.py 失败: {exc}"}, status_code=500)
 
     import web.web_player as web_player
-    web_player.reset_redis(force=True)
+    await web_player.reset_redis(force=True)
     web_player.reset_netease()
     _set_liked_ids_cache([])
     try:
@@ -475,9 +475,11 @@ def _parse_oopz_login_payload(body: dict[str, Any]) -> tuple[str, str, float]:
     return phone, password, max(30.0, min(timeout, 180.0))
 
 
-def _client_safe_oopz_login_result(result: dict[str, Any]) -> dict[str, Any]:
-    """移除仅供服务端热更新用的原始凭据。"""
-    return {key: value for key, value in result.items() if key != "raw"}
+def _mask_oopz_credential(value: object, *, keep: int = 4) -> str:
+    text = str(value or "")
+    if len(text) <= keep * 2:
+        return "*" * len(text)
+    return f"{text[:keep]}***{text[-keep:]}"
 
 
 @router.post("/admin/api/oopz/login")
@@ -487,16 +489,28 @@ async def admin_oopz_login(request: Request):
 
     phone, password, timeout = _parse_oopz_login_payload(await read_json_body(request))
 
-    from oopz.oopz_password_login import OopzPasswordLoginError, login_with_password
+    from oopz.credentials import persist_credentials
+    from oopz_sdk.auth import login_with_password
+    from oopz_sdk.exceptions import OopzPasswordLoginError
 
     async with _oopz_login_lock:
         try:
-            result = await login_with_password(phone, password, timeout=timeout, headless=True, save=True)
-            raw_credentials = result.get("raw", {})
-            runtime = _refresh_oopz_runtime(raw_credentials)
-            saved = result.get("saved") or []
+            credentials = await login_with_password(phone, password, timeout=timeout)
+            saved = await persist_credentials(credentials)
+            runtime = await _refresh_oopz_runtime(credentials)
             return JSONResponse({
-                **_client_safe_oopz_login_result(result),
+                "ok": True,
+                "saved": saved,
+                "credentials": {
+                    "person_uid": _mask_oopz_credential(credentials.person_uid),
+                    "device_id": _mask_oopz_credential(credentials.device_id),
+                    "jwt_token": _mask_oopz_credential(credentials.jwt_token, keep=10),
+                    "private_key": bool(credentials.private_key_pem),
+                    "app_version": credentials.app_version,
+                    "expires_at": credentials.expires_at,
+                    "expires_in_seconds": credentials.expires_in_seconds,
+                },
+                "restart_required": False,
                 "runtime": runtime,
                 "message": "OOPZ 登录成功，已保存到: " + ("、".join(saved) if saved else "运行时"),
             })

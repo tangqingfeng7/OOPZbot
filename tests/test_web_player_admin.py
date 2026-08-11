@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 try:
     from fastapi.testclient import TestClient
@@ -22,7 +22,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-from domain.plugins.base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
+from domain.plugins.base import (  # noqa: E402
+    PluginCommandCapabilities,
+    PluginDescriptor,
+    PluginMetadata,
+)
 
 
 class _FakePlugins:
@@ -70,6 +74,8 @@ class _FakeNeteaseResponse:
 
 
 class _FakeRedisPipeline:
+    """按 RedisPipeline 协议：入队是同步的，只有 execute 异步。"""
+
     def __init__(self, redis):
         self.redis = redis
         self.keys = []
@@ -78,26 +84,40 @@ class _FakeRedisPipeline:
         self.keys.append(key)
         return self
 
-    def execute(self):
-        return [self.redis.get(key) for key in self.keys]
+    async def execute(self):
+        return [await self.redis.get(key) for key in self.keys]
 
 
 class _FakeRedis:
+    """按 RedisDataStore 协议：读写异步，pipeline() 本身同步。"""
+
     def __init__(self):
         self.store = {}
 
-    def get(self, key):
+    async def get(self, key):
         return self.store.get(key)
 
-    def set(self, key, value, *args, **kwargs):
+    async def set(self, key, value, *args, **kwargs):
         self.store[key] = value
         return True
+
+    def seed(self, key, value):
+        """同步播种，供用例准备初始状态用。"""
+        self.store[key] = value
+        return self
+
+    async def delete(self, *keys):
+        removed = 0
+        for key in keys:
+            if self.store.pop(key, None) is not None:
+                removed += 1
+        return removed
 
     def pipeline(self, transaction=False):
         return _FakeRedisPipeline(self)
 
 
-class WebPlayerAdminTest(unittest.TestCase):
+class WebPlayerAdminTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         if TestClient is None:
             self.skipTest(f"缺少 TestClient 依赖: {_TESTCLIENT_ERROR}")
@@ -164,10 +184,10 @@ class WebPlayerAdminTest(unittest.TestCase):
 
     def test_player_page_does_not_pin_stale_active_area(self) -> None:
         r = _FakeRedis()
-        r.set("music:web_access_token", "token-1")
-        r.set("music:web_active_area", "old-area")
+        r.seed("music:web_access_token", "token-1")
+        r.seed("music:web_active_area", "old-area")
 
-        with patch.object(self.module, "get_redis", return_value=r):
+        with patch.object(self.module, "get_redis", AsyncMock(return_value=r)):
             response = self.client.get("/w/token-1")
 
         self.assertEqual(response.status_code, 200)
@@ -176,10 +196,10 @@ class WebPlayerAdminTest(unittest.TestCase):
 
     def test_player_page_can_pin_area_when_query_says_so(self) -> None:
         r = _FakeRedis()
-        r.set("music:web_access_token", "token-1")
-        r.set("music:web_active_area", "old-area")
+        r.seed("music:web_access_token", "token-1")
+        r.seed("music:web_active_area", "old-area")
 
-        with patch.object(self.module, "get_redis", return_value=r):
+        with patch.object(self.module, "get_redis", AsyncMock(return_value=r)):
             response = self.client.get("/w/token-1?area=area-2")
 
         self.assertEqual(response.status_code, 200)
@@ -187,10 +207,10 @@ class WebPlayerAdminTest(unittest.TestCase):
 
     def test_player_cookie_is_not_secure_on_plain_http(self) -> None:
         r = _FakeRedis()
-        r.set("music:web_access_token", "token-1")
+        r.seed("music:web_access_token", "token-1")
 
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module.cfg, "cookie_secure", return_value=True),
         ):
             response = self.client.get("/w/token-1")
@@ -201,10 +221,10 @@ class WebPlayerAdminTest(unittest.TestCase):
 
     def test_player_cookie_stays_secure_behind_https_proxy(self) -> None:
         r = _FakeRedis()
-        r.set("music:web_access_token", "token-1")
+        r.seed("music:web_access_token", "token-1")
 
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module.cfg, "cookie_secure", return_value=True),
         ):
             response = self.client.get("/w/token-1", headers={"x-forwarded-proto": "https"})
@@ -217,7 +237,7 @@ class WebPlayerAdminTest(unittest.TestCase):
         """走真实的 /admin/api/login，用于断言后台 Cookie 的 Secure 属性。"""
         r = _FakeRedis()
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module.cfg, "admin_password", return_value="pw"),
             patch.object(self.module.cfg, "admin_cookie_secure", return_value=True),
@@ -246,7 +266,7 @@ class WebPlayerAdminTest(unittest.TestCase):
     def _health(self, *, as_admin: bool):
         r = _FakeRedis()
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module, "_is_admin_authorized", return_value=as_admin),
         ):
             return self.client.get("/health")
@@ -274,7 +294,7 @@ class WebPlayerAdminTest(unittest.TestCase):
     def _admin_login_with_password(self, password: str):
         r = _FakeRedis()
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module.cfg, "admin_password", return_value="pw"),
             patch.object(self.module.cfg, "admin_login_max_failures", return_value=3),
@@ -304,7 +324,7 @@ class WebPlayerAdminTest(unittest.TestCase):
         # secrets.compare_digest 对含非 ASCII 的 str 会抛 TypeError（500）
         r = _FakeRedis()
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module.cfg, "admin_password", return_value="密码123"),
         ):
@@ -316,15 +336,15 @@ class WebPlayerAdminTest(unittest.TestCase):
 
     def test_status_without_area_follows_active_area(self) -> None:
         r = _FakeRedis()
-        r.set("music:web_access_token", "token-1")
-        r.set("music:web_active_area", "area-2")
-        r.set(
+        r.seed("music:web_access_token", "token-1")
+        r.seed("music:web_active_area", "area-2")
+        r.seed(
             self.module._area_key(self.module.KEY_CURRENT, "area-2"),
             json.dumps({"name": "稻香", "duration_ms": 222000}, ensure_ascii=False),
         )
 
         self.client.cookies.set("web_token", "token-1")
-        with patch.object(self.module, "get_redis", return_value=r):
+        with patch.object(self.module, "get_redis", AsyncMock(return_value=r)):
             response = self.client.get("/api/status")
 
         self.assertEqual(response.status_code, 200)
@@ -332,11 +352,11 @@ class WebPlayerAdminTest(unittest.TestCase):
         self.assertTrue(data["playing"])
         self.assertEqual(data["name"], "稻香")
 
-    def test_public_playback_endpoints_return_exact_409_without_area(self) -> None:
+    async def test_public_playback_endpoints_return_exact_409_without_area(self) -> None:
         from core.queue_manager import _InMemoryRedis
 
         r = _InMemoryRedis()
-        r.set("music:web_access_token", "token-1")
+        await r.set("music:web_access_token", "token-1")
         self.client.cookies.set("web_token", "token-1")
         requests = (
             ("get", "/api/status", None),
@@ -347,7 +367,7 @@ class WebPlayerAdminTest(unittest.TestCase):
             ("post", "/api/queue/action", {"action": "remove", "index": 0}),
         )
 
-        with patch.object(self.module, "get_redis", return_value=r):
+        with patch.object(self.module, "get_redis", AsyncMock(return_value=r)):
             for method, url, body in requests:
                 with self.subTest(url=url):
                     call = getattr(self.client, method)
@@ -368,7 +388,7 @@ class WebPlayerAdminTest(unittest.TestCase):
             self.module.KEY_PLAY_STATE,
             self.module.KEY_PLAY_MODE,
         ):
-            self.assertNotIn(global_key, r.keys())
+            self.assertNotIn(global_key, await r.keys())
 
     def test_admin_playback_endpoints_return_exact_409_without_area(self) -> None:
         import web.admin.shared._area as area_module
@@ -383,7 +403,7 @@ class WebPlayerAdminTest(unittest.TestCase):
             ("post", "/admin/api/add", {"id": "1"}),
         )
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module, "_admin_enabled", return_value=True),
             patch.object(self.module, "_is_admin_authorized", return_value=True),
             patch.object(area_module.cfg, "OOPZ_CONFIG", {"default_area": ""}),
@@ -406,14 +426,14 @@ class WebPlayerAdminTest(unittest.TestCase):
 
     def test_global_volume_does_not_bind_to_active_area(self) -> None:
         r = _FakeRedis()
-        r.set("music:web_access_token", "token-1")
-        r.set("music:web_active_area", "area-2")
+        r.seed("music:web_access_token", "token-1")
+        r.seed("music:web_active_area", "area-2")
 
-        def fake_control(action, body, redis_client, area=""):
+        async def fake_control(action, body, redis_client, area=""):
             return {"ok": True, "area": area, "action": action}
 
         with (
-            patch.object(self.module, "get_redis", return_value=r),
+            patch.object(self.module, "get_redis", AsyncMock(return_value=r)),
             patch.object(self.module, "execute_control_action", side_effect=fake_control),
         ):
             self.client.cookies.set("web_token", "token-1")
@@ -735,7 +755,7 @@ class WebPlayerAdminTest(unittest.TestCase):
             patch.object(self.module, "_is_admin_authorized", return_value=True),
             patch("web.admin.music.SetupDiagnostics") as diagnostics_cls,
         ):
-            diagnostics_cls.return_value.build_report.return_value = fake_report
+            diagnostics_cls.return_value.build_report = AsyncMock(return_value=fake_report)
             response = self.client.get("/admin/api/setup/diagnostics")
 
         self.assertEqual(response.status_code, 200)

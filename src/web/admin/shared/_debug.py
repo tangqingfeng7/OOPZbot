@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from http.cookies import SimpleCookie
-from typing import Optional
 
 from core.logger_config import get_logger
 
@@ -112,20 +111,20 @@ def _cookie_debug_summary(cookie: str) -> str:
     return f"len={len(text)} names={names_text}"
 
 
-def _debug_profile_text(profile: Optional[dict]) -> str:
+def _debug_profile_text(profile: dict | None) -> str:
     """生成账号资料调试文本。"""
     if not profile:
         return "profile=-"
-    return "nickname=%s uid=%s" % (
+    return "nickname={} uid={}".format(
         profile.get("nickname") or "",
         profile.get("user_id") or "",
     )
 
 
 __all__ = [
-    "_cookie_pairs_from_response",
-    "_cookie_pairs_from_header",
-    "_mask_debug_token",
     "_cookie_debug_summary",
+    "_cookie_pairs_from_header",
+    "_cookie_pairs_from_response",
     "_debug_profile_text",
+    "_mask_debug_token",
 ]

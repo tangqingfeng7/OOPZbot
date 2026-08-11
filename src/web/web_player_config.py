@@ -423,8 +423,8 @@ def coerce_config_value(meta: dict, raw: object) -> object:
     if value_type == "float":
         try:
             v = float(raw)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            raise ValueError("浮点数格式无效")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("浮点数格式无效") from exc
         min_v = meta.get("min")
         max_v = meta.get("max")
         if min_v is not None and v < min_v:
@@ -435,8 +435,8 @@ def coerce_config_value(meta: dict, raw: object) -> object:
     if value_type == "int":
         try:
             v = int(raw)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            raise ValueError("整数格式无效")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("整数格式无效") from exc
         min_v = meta.get("min")
         max_v = meta.get("max")
         if min_v is not None and v < min_v:
@@ -474,8 +474,8 @@ def coerce_config_value(meta: dict, raw: object) -> object:
         elif isinstance(raw, str):
             try:
                 d = json.loads(raw)
-            except Exception:
-                raise ValueError("JSON 格式无效")
+            except Exception as exc:
+                raise ValueError("JSON 格式无效") from exc
             if not isinstance(d, dict):
                 raise ValueError("必须是 JSON 对象")
         else:
@@ -617,7 +617,7 @@ def _persist_config_updates_locked(updates: dict, path: str | None = None) -> No
     if not os.path.exists(config_path):
         raise RuntimeError("config.py 不存在，无法保存配置")
 
-    with open(config_path, "r", encoding="utf-8", newline="") as f:
+    with open(config_path, encoding="utf-8", newline="") as f:
         text = f.read()
     try:
         tree = ast.parse(text, filename=config_path)
@@ -646,7 +646,7 @@ def _persist_config_updates_locked(updates: dict, path: str | None = None) -> No
             continue
 
         existing_keys: dict[str, ast.expr] = {}
-        for key_node, value_node in zip(dict_node.keys, dict_node.values):
+        for key_node, value_node in zip(dict_node.keys, dict_node.values, strict=False):
             if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
                 existing_keys[key_node.value] = value_node
 
@@ -691,7 +691,7 @@ def _persist_admin_uids_locked(uids: list, path: str | None = None) -> None:
     if not os.path.exists(config_path):
         raise RuntimeError("config.py 不存在，无法保存管理员列表")
 
-    with open(config_path, "r", encoding="utf-8", newline="") as f:
+    with open(config_path, encoding="utf-8", newline="") as f:
         text = f.read()
     try:
         tree = ast.parse(text, filename=config_path)
@@ -732,7 +732,7 @@ def reload_config_from_file() -> None:
     if isinstance(old_admin_uids, list) and isinstance(fresh_admin_uids, list):
         old_admin_uids.clear()
         old_admin_uids.extend(str(uid) for uid in fresh_admin_uids)
-        setattr(runtime_config, "ADMIN_UIDS", old_admin_uids)
+        runtime_config.ADMIN_UIDS = old_admin_uids
 
 
 def config_snapshot() -> dict:
@@ -806,7 +806,7 @@ def read_area_overrides() -> dict:
     if not os.path.exists(AREA_OVERRIDES_PATH):
         return {}
     try:
-        with open(AREA_OVERRIDES_PATH, "r", encoding="utf-8") as f:
+        with open(AREA_OVERRIDES_PATH, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception as e:

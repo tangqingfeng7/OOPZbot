@@ -50,14 +50,14 @@ def _normalize_ttl(ttl_seconds=None) -> int:
     return ttl if ttl > 0 else 0
 
 
-def get_token(redis_client=None) -> str:
+async def get_token(redis_client=None) -> str:
     """读取当前访问令牌。"""
     global _memory_token
     token = ""
     redis_read_ok = False
     if redis_client is not None:
         try:
-            raw = redis_client.get(KEY_WEB_ACCESS_TOKEN)
+            raw = await redis_client.get(KEY_WEB_ACCESS_TOKEN)
             redis_read_ok = True
             if isinstance(raw, bytes):
                 token = raw.decode("utf-8", errors="ignore")
@@ -77,7 +77,7 @@ def get_token(redis_client=None) -> str:
         return _memory_token
 
 
-def set_token(token: str, redis_client=None, ttl_seconds=None):
+async def set_token(token: str, redis_client=None, ttl_seconds=None):
     """设置访问令牌。"""
     global _memory_token
     val = token or ""
@@ -88,32 +88,32 @@ def set_token(token: str, redis_client=None, ttl_seconds=None):
         try:
             if ttl > 0:
                 try:
-                    redis_client.set(KEY_WEB_ACCESS_TOKEN, val, ex=ttl)
+                    await redis_client.set(KEY_WEB_ACCESS_TOKEN, val, ex=ttl)
                 except TypeError:
-                    redis_client.set(KEY_WEB_ACCESS_TOKEN, val)
+                    await redis_client.set(KEY_WEB_ACCESS_TOKEN, val)
                     if hasattr(redis_client, "expire"):
-                        redis_client.expire(KEY_WEB_ACCESS_TOKEN, ttl)
+                        await redis_client.expire(KEY_WEB_ACCESS_TOKEN, ttl)
             else:
-                redis_client.set(KEY_WEB_ACCESS_TOKEN, val)
+                await redis_client.set(KEY_WEB_ACCESS_TOKEN, val)
         except Exception as e:
             logger.debug(f"Redis 写入 Web 令牌失败，已仅写内存: {e}")
 
 
-def ensure_token(redis_client=None, ttl_seconds=None) -> str:
+async def ensure_token(redis_client=None, ttl_seconds=None) -> str:
     """确保存在可用令牌，不存在则生成。"""
     ttl = _normalize_ttl(ttl_seconds)
-    token = get_token(redis_client=redis_client)
+    token = await get_token(redis_client=redis_client)
     if token:
         # 有效令牌存在时，按需刷新 Redis 过期时间（滑动续期）
         if redis_client is not None and ttl > 0:
-            set_token(token, redis_client=redis_client, ttl_seconds=ttl)
+            await set_token(token, redis_client=redis_client, ttl_seconds=ttl)
         return token
     token = secrets.token_urlsafe(18)
-    set_token(token, redis_client=redis_client, ttl_seconds=ttl)
+    await set_token(token, redis_client=redis_client, ttl_seconds=ttl)
     return token
 
 
-def clear_token(redis_client=None):
+async def clear_token(redis_client=None):
     """清理访问令牌。"""
     global _memory_token, _memory_last_access
     with _lock:
@@ -121,16 +121,16 @@ def clear_token(redis_client=None):
         _memory_last_access = 0.0
     if redis_client is not None:
         try:
-            redis_client.delete(KEY_WEB_ACCESS_TOKEN)
+            await redis_client.delete(KEY_WEB_ACCESS_TOKEN)
         except Exception as e:
             logger.debug(f"Redis 清理 Web 令牌失败: {e}")
         try:
-            redis_client.delete(KEY_WEB_LAST_ACCESS)
+            await redis_client.delete(KEY_WEB_LAST_ACCESS)
         except Exception as e:
             logger.debug(f"Redis 清理 Web 访问时间失败: {e}")
 
 
-def touch_access(redis_client=None):
+async def touch_access(redis_client=None):
     """记录播放器最近一次被使用的时间。
 
     空闲释放只看播放队列是否为空，但用户可能正开着页面搜歌、翻喜欢列表 ——
@@ -146,24 +146,24 @@ def touch_access(redis_client=None):
     if redis_client is not None:
         try:
             if hasattr(redis_client, "set_max_float"):
-                redis_client.set_max_float(KEY_WEB_LAST_ACCESS, now)
+                await redis_client.set_max_float(KEY_WEB_LAST_ACCESS, now)
             elif hasattr(redis_client, "eval"):
-                redis_client.eval(_MAX_TIMESTAMP_LUA, 1, KEY_WEB_LAST_ACCESS, str(now))
+                await redis_client.eval(_MAX_TIMESTAMP_LUA, 1, KEY_WEB_LAST_ACCESS, str(now))
             else:
                 # 仅供实现最小 Redis 接口的测试替身；生产 Redis 必须走 Lua。
-                current = _positive_finite_timestamp(redis_client.get(KEY_WEB_LAST_ACCESS))
+                current = _positive_finite_timestamp(await redis_client.get(KEY_WEB_LAST_ACCESS))
                 if now > current:
-                    redis_client.set(KEY_WEB_LAST_ACCESS, str(now))
+                    await redis_client.set(KEY_WEB_LAST_ACCESS, str(now))
         except Exception as e:
             logger.debug(f"Redis 记录 Web 访问时间失败: {e}")
 
 
-def seconds_since_access(redis_client=None) -> float:
+async def seconds_since_access(redis_client=None) -> float:
     """距最近一次播放器访问过去了多少秒；从未访问过返回 ``float('inf')``。"""
     redis_last = 0.0
     if redis_client is not None:
         try:
-            raw = redis_client.get(KEY_WEB_LAST_ACCESS)
+            raw = await redis_client.get(KEY_WEB_LAST_ACCESS)
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", errors="ignore")
             redis_last = _positive_finite_timestamp(raw)
@@ -177,12 +177,12 @@ def seconds_since_access(redis_client=None) -> float:
     return max(0.0, time.time() - last)
 
 
-def get_active_area(redis_client=None) -> str:
+async def get_active_area(redis_client=None) -> str:
     """读取当前 Web 播放器关联的活跃域 ID。"""
     global _memory_area
     if redis_client is not None:
         try:
-            raw = redis_client.get(KEY_WEB_ACTIVE_AREA)
+            raw = await redis_client.get(KEY_WEB_ACTIVE_AREA)
             val = ""
             if isinstance(raw, bytes):
                 val = raw.decode("utf-8", errors="ignore")
@@ -197,7 +197,7 @@ def get_active_area(redis_client=None) -> str:
         return _memory_area
 
 
-def set_active_area(area: str, redis_client=None):
+async def set_active_area(area: str, redis_client=None):
     """保存当前 Web 播放器关联的活跃域 ID。"""
     global _memory_area
     val = (area or "").strip()
@@ -205,6 +205,6 @@ def set_active_area(area: str, redis_client=None):
         _memory_area = val
     if redis_client is not None:
         try:
-            redis_client.set(KEY_WEB_ACTIVE_AREA, val)
+            await redis_client.set(KEY_WEB_ACTIVE_AREA, val)
         except Exception as e:
             logger.debug(f"Redis 写入 active area 失败: {e}")

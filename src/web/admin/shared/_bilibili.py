@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
-from typing import Any, Optional, Protocol, cast
+from typing import Any, Protocol, cast
 from urllib.parse import parse_qs, urlparse
 
 from core.constants import USER_AGENT
@@ -160,7 +160,7 @@ def _bilibili_cookie_from_poll(payload: dict, response: Any) -> str:
     return cookie
 
 
-def _extract_bilibili_profile(payload: dict) -> Optional[dict]:
+def _extract_bilibili_profile(payload: dict) -> dict | None:
     """从 B 站导航栏接口返回中提取昵称和 UID。"""
     data = _bilibili_response_data(payload)
     if not isinstance(data, dict) or not data.get("isLogin"):
@@ -210,19 +210,19 @@ def _bilibili_account_status(cookie: str) -> dict:
 
 
 __all__ = [
-    "_BILIBILI_LOGIN_BASE",
     "_BILIBILI_API_BASE",
+    "_BILIBILI_COOKIE_NAMES",
+    "_BILIBILI_LOGIN_BASE",
+    "_BILIBILI_NAV_PATH",
     "_BILIBILI_QR_GENERATE_PATH",
     "_BILIBILI_QR_POLL_PATH",
-    "_BILIBILI_NAV_PATH",
-    "_BILIBILI_COOKIE_NAMES",
-    "_make_qr_data_uri",
-    "_bilibili_api_get",
     "_bilibili_account_api_get",
-    "_bilibili_response_data",
+    "_bilibili_account_status",
+    "_bilibili_api_get",
+    "_bilibili_cookie_from_poll",
     "_bilibili_login_message",
     "_bilibili_qr_code",
-    "_bilibili_cookie_from_poll",
+    "_bilibili_response_data",
     "_extract_bilibili_profile",
-    "_bilibili_account_status",
+    "_make_qr_data_uri",
 ]

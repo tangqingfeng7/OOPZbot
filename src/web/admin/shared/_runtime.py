@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from core.redis_protocol import PlaybackCommandStore, RedisDataStore
 
 if TYPE_CHECKING:
-    from oopz.oopz_sender import OopzSender
+    from oopz.sdk_gateway import AsyncOopzGateway
 
 
 def require_sender(func):
@@ -45,18 +45,18 @@ def require_sender(func):
     return sync_wrapper
 
 
-def _get_redis() -> RedisDataStore:
+async def _get_redis() -> RedisDataStore:
     """延迟导入，避免循环引用。"""
     from web.web_player import get_redis
-    return get_redis()
+    return await get_redis()
 
 
-def _get_sender() -> OopzSender | None:
+def _get_sender() -> AsyncOopzGateway | None:
     from web.web_player import get_sender
     return get_sender()
 
 
-def _require_sender() -> OopzSender:
+def _require_sender() -> AsyncOopzGateway:
     """返回已初始化的 sender。
 
     路由装饰器负责把正常的未初始化状态转换为 503；这里保留一次防御性检查，
@@ -104,29 +104,29 @@ def _set_liked_ids_cache(value: list) -> None:
     web_player.liked_ids_cache = value
 
 
-def _execute_control_action(
+async def _execute_control_action(
     action: str,
     body: dict,
     redis_client: PlaybackCommandStore,
     area: str = "",
 ) -> dict:
     from web.web_player import execute_control_action
-    return execute_control_action(action, body, redis_client, area=area)
+    return await execute_control_action(action, body, redis_client, area=area)
 
 
-def _execute_queue_action(
+async def _execute_queue_action(
     action: str,
     index,
     redis_client: PlaybackCommandStore,
     area: str,
 ) -> dict:
     from web.web_player import execute_queue_action
-    return execute_queue_action(action, index, redis_client, area=area)
+    return await execute_queue_action(action, index, redis_client, area=area)
 
 
-def _add_song_to_queue(body: dict, area: str = "") -> dict:
+async def _add_song_to_queue(body: dict, area: str = "") -> dict:
     from web.web_player import add_song_to_queue
-    return add_song_to_queue(body, area=area)
+    return await add_song_to_queue(body, area=area)
 
 
 __all__ = [

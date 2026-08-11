@@ -19,7 +19,7 @@ def _load_admin_template() -> string.Template:
     global _ADMIN_SHELL_TEMPLATE
     if _ADMIN_SHELL_TEMPLATE is None:
         tpl_path = os.path.join(WEB_ASSETS_DIR, "admin", "admin-shell-template.html")
-        with open(tpl_path, "r", encoding="utf-8") as f:
+        with open(tpl_path, encoding="utf-8") as f:
             _ADMIN_SHELL_TEMPLATE = string.Template(f.read())
     return _ADMIN_SHELL_TEMPLATE
 
@@ -183,9 +183,9 @@ def _render_admin_page(page_key: str) -> HTMLResponse:
     pages_dir = os.path.join(WEB_ASSETS_DIR, "admin", "pages")
     content_path = os.path.join(pages_dir, f"{page_key}_content.html")
     script_path = os.path.join(pages_dir, f"{page_key}_script.js")
-    with open(content_path, "r", encoding="utf-8") as f:
+    with open(content_path, encoding="utf-8") as f:
         page_content = f.read()
-    with open(script_path, "r", encoding="utf-8") as f:
+    with open(script_path, encoding="utf-8") as f:
         page_script = f.read()
     meta = _ADMIN_PAGES[page_key]
     tpl = _load_admin_template()
@@ -205,9 +205,9 @@ def _render_admin_page(page_key: str) -> HTMLResponse:
 
 
 __all__ = [
+    "_ADMIN_PAGES",
     "_ADMIN_SHELL_TEMPLATE",
     "_load_admin_template",
-    "_ADMIN_PAGES",
-    "_render_topbar_actions",
     "_render_admin_page",
+    "_render_topbar_actions",
 ]
