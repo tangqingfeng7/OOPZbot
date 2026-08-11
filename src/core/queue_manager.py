@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import fnmatch
+import inspect
 import json
 import math
 import random
-import threading
 import time
 import uuid
 from typing import cast
 
-import redis
+import redis.asyncio as aioredis
 
 from config import REDIS_CONFIG
 from core.logger_config import get_logger
@@ -43,8 +45,10 @@ from core.redis_protocol import (
 logger = get_logger("QueueManager")
 
 _redis_client: RedisDataStore | None = None
-_redis_lock = threading.Lock()
-_redis_condition = threading.Condition(_redis_lock)
+# 状态机全部在事件循环内运行，用 asyncio.Condition 取代原来的线程锁；
+# 网络探测仍然放在锁外，等待者靠 Condition 拿到最终选定的客户端。
+_redis_condition = asyncio.Condition()
+_redis_condition_loop: asyncio.AbstractEventLoop | None = None
 # 处于内存降级状态时，每隔该秒数尝试重连一次真实 Redis。
 _REDIS_RETRY_INTERVAL = 30.0
 # 等待某一次恢复探测的最长时间。它略大于默认的建连 + 读取超时；
@@ -147,10 +151,12 @@ class _InMemoryRedis:
         self._kv: dict[str, object] = {}
         self._lists: dict[str, list[object]] = {}
         self._expires_at: dict[str, float] = {}
-        self._condition = threading.Condition()
+        # 与真实客户端保持同一套异步接口；纯内存操作不会真正让出，只有
+        # blpop 的等待需要 Condition。
+        self._condition = asyncio.Condition()
 
     # --- Redis 子集 ---
-    def ping(self) -> bool:
+    async def ping(self) -> bool:
         return True
 
     def _get_list(self, key: str) -> list[object]:
@@ -168,56 +174,56 @@ class _InMemoryRedis:
         return True
 
     # 列表操作
-    def rpush(self, key: str, *values: object) -> int:
-        with self._condition:
+    async def rpush(self, key: str, *values: object) -> int:
+        async with self._condition:
             items = self._get_list(key)
             items.extend(values)
             self._condition.notify_all()
             return len(items)
 
-    def lpush(self, key: str, *values: object) -> int:
-        with self._condition:
+    async def lpush(self, key: str, *values: object) -> int:
+        async with self._condition:
             items = self._get_list(key)
             for value in values:
                 items.insert(0, value)
             self._condition.notify_all()
             return len(items)
 
-    def lrange(self, key: str, start: int, end: int) -> list[object]:
-        with self._condition:
+    async def lrange(self, key: str, start: int, end: int) -> list[object]:
+        async with self._condition:
             lst = self._lists.get(key, [])
             if end == -1:
                 end = len(lst) - 1
             return list(lst[start : end + 1]) if lst else []
 
-    def llen(self, key: str) -> int:
-        with self._condition:
+    async def llen(self, key: str) -> int:
+        async with self._condition:
             return len(self._lists.get(key, []))
 
-    def lpop(self, key: str) -> object | None:
-        with self._condition:
+    async def lpop(self, key: str) -> object | None:
+        async with self._condition:
             lst = self._lists.get(key, [])
             if not lst:
                 return None
             return lst.pop(0)
 
-    def lindex(self, key: str, index: int) -> object | None:
-        with self._condition:
+    async def lindex(self, key: str, index: int) -> object | None:
+        async with self._condition:
             lst = self._lists.get(key, [])
             try:
                 return lst[index]
             except IndexError:
                 return None
 
-    def lset(self, key: str, index: int, value: object) -> None:
-        with self._condition:
+    async def lset(self, key: str, index: int, value: object) -> None:
+        async with self._condition:
             lst = self._get_list(key)
             if index < 0 or index >= len(lst):
                 raise IndexError("list index out of range")
             lst[index] = value
 
-    def lrem(self, key: str, count: int, value: object) -> int:
-        with self._condition:
+    async def lrem(self, key: str, count: int, value: object) -> int:
+        async with self._condition:
             lst = self._lists.get(key, [])
             if not lst:
                 return 0
@@ -244,18 +250,18 @@ class _InMemoryRedis:
                 self._lists[key] = new
             return removed
 
-    def queue_remove_at(self, key: str, index: int) -> bool:
+    async def queue_remove_at(self, key: str, index: int) -> bool:
         """在一个临界区内删除指定位置，语义与 Redis Lua 后端一致。"""
-        with self._condition:
+        async with self._condition:
             items = self._lists.get(key, [])
             if index < 0 or index >= len(items):
                 return False
             items.pop(index)
             return True
 
-    def queue_move_to_front(self, key: str, index: int) -> bool:
+    async def queue_move_to_front(self, key: str, index: int) -> bool:
         """在一个临界区内把指定元素移到队首。"""
-        with self._condition:
+        async with self._condition:
             items = self._lists.get(key, [])
             if index < 0 or index >= len(items):
                 return False
@@ -264,15 +270,15 @@ class _InMemoryRedis:
             self._condition.notify_all()
             return True
 
-    def queue_pop_random(self, key: str) -> object | None:
+    async def queue_pop_random(self, key: str) -> object | None:
         """在一个临界区内随机弹出一个列表元素。"""
-        with self._condition:
+        async with self._condition:
             items = self._lists.get(key, [])
             if not items:
                 return None
             return items.pop(random.randrange(len(items)))
 
-    def enqueue_song_and_notify(
+    async def enqueue_song_and_notify(
         self,
         queue_key: str,
         song: object,
@@ -289,7 +295,7 @@ class _InMemoryRedis:
         if not isinstance(command, dict) or not isinstance(command.get("payload"), dict):
             raise ValueError("Web 通知模板必须包含 payload 对象")
 
-        with self._condition:
+        async with self._condition:
             self._is_expired(queue_key)
             self._is_expired(commands_key)
             # Redis 脚本会在任何写入前校验两个键的类型；内存后端
@@ -316,12 +322,12 @@ class _InMemoryRedis:
             self._condition.notify_all()
             return position
 
-    def set_max_float(self, key: str, value: float) -> float:
+    async def set_max_float(self, key: str, value: float) -> float:
         """原子保存有限正浮点数的最大值，并返回最终值。"""
         if not isinstance(value, (int, float)) or not (0 < float(value) < float("inf")):
             raise ValueError("value must be a finite positive number")
         candidate = float(value)
-        with self._condition:
+        async with self._condition:
             if self._is_expired(key):
                 current = 0.0
             else:
@@ -337,7 +343,7 @@ class _InMemoryRedis:
             return final
 
     # 字符串 / 通用键
-    def set(
+    async def set(
         self,
         key: str,
         value: object,
@@ -345,7 +351,7 @@ class _InMemoryRedis:
         px: int | None = None,
         **kwargs: object,
     ) -> None:
-        with self._condition:
+        async with self._condition:
             self._kv[key] = value
             if px is not None:
                 self._expires_at[key] = time.time() + (float(px) / 1000.0)
@@ -354,20 +360,20 @@ class _InMemoryRedis:
             else:
                 self._expires_at.pop(key, None)
 
-    def get(self, key: str) -> object | None:
-        with self._condition:
+    async def get(self, key: str) -> object | None:
+        async with self._condition:
             if self._is_expired(key):
                 return None
             return self._kv.get(key)
 
-    def delete(self, *keys: str) -> int:
+    async def delete(self, *keys: str) -> int:
         """删除若干键，返回实际删掉的个数（与 redis-py 一致）。
 
         conversation_memory 用的是 ``delete(*keys)`` 并累加返回值，单键签名
         且返回 None 会让它在降级期直接抛 TypeError（被 try/except 吞成静默失败）。
         """
         removed = 0
-        with self._condition:
+        async with self._condition:
             for key in keys:
                 existed = key in self._kv or key in self._lists
                 self._kv.pop(key, None)
@@ -377,12 +383,12 @@ class _InMemoryRedis:
                     removed += 1
         return removed
 
-    def keys(self, pattern: str = "*") -> list[str]:
-        with self._condition:
+    async def keys(self, pattern: str = "*") -> list[str]:
+        async with self._condition:
             names = set(self._kv) | set(self._lists)
         return [k for k in names if fnmatch.fnmatchcase(k, pattern)]
 
-    def scan(
+    async def scan(
         self,
         cursor: int = 0,
         match: str | None = None,
@@ -393,7 +399,7 @@ class _InMemoryRedis:
         内存实现没有分批的必要；调用方的 ``while cursor != 0`` 循环会正常退出。
         ``match`` 走 fnmatch，与 Redis 的 glob 语义在本项目用到的范围内一致。
         """
-        return 0, self.keys(match or "*")
+        return 0, await self.keys(match or "*")
 
     def pipeline(self, transaction: bool = False) -> RedisPipeline:
         """返回顺序执行的管道。
@@ -403,10 +409,10 @@ class _InMemoryRedis:
         """
         return _InMemoryPipeline(self)
 
-    def blpop(self, key: str, timeout: int = 0) -> tuple[object, object] | None:
+    async def blpop(self, key: str, timeout: int = 0) -> tuple[object, object] | None:
         """阻塞弹出：使用 Condition 等待，避免 CPU 空转。"""
         deadline = time.monotonic() + max(timeout, 0)
-        with self._condition:
+        async with self._condition:
             while True:
                 lst = self._lists.get(key, [])
                 if lst:
@@ -416,7 +422,12 @@ class _InMemoryRedis:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return None
-                self._condition.wait(timeout=remaining)
+                # asyncio.Condition.wait() 不接受超时，超时后要把等待整体取消；
+                # wait_for 取消时会重新获取锁，退出 async with 仍能正确释放。
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    return None
 
 
 class _InMemoryPipeline:
@@ -451,9 +462,12 @@ class _InMemoryPipeline:
 
         return _record
 
-    def execute(self) -> list[object]:
+    async def execute(self) -> list[object]:
         queued, self._queued = self._queued, []
-        return [getattr(self._client, name)(*args, **kwargs) for name, args, kwargs in queued]
+        return [
+            await getattr(self._client, name)(*args, **kwargs)
+            for name, args, kwargs in queued
+        ]
 
     def reset(self) -> None:
         self._queued = []
@@ -474,21 +488,24 @@ class QueueManager:
         normalized_area = str(area or "").strip()
         if not normalized_area:
             raise ValueError("播放域不能为空")
-        self._redis: RedisDataStore = get_redis_client()
+        # 构造是同步的，拿客户端要走探测；延迟到首次实际使用时再解析。
+        self._redis: RedisDataStore | None = None
         self._area = normalized_area
 
     @property
     def area(self) -> str:
         return self._area
 
-    @property
-    def redis(self) -> RedisDataStore:
-        # 每次访问都对齐全局客户端：内存降级恢复为真实 Redis 后，
-        # 已创建的 QueueManager 实例也能自动切回。
-        client = get_redis_client()
+    async def client(self) -> RedisDataStore:
+        """返回当前应使用的客户端。
+
+        每次调用都对齐全局客户端：内存降级恢复为真实 Redis 后，已创建的
+        QueueManager 实例也能自动切回。
+        """
+        client = await get_redis_client()
         if client is not self._redis:
             self._redis = client
-        return self._redis
+        return client
 
     def _qkey(self) -> str:
         return _area_key(KEY_QUEUE, self._area)
@@ -509,51 +526,53 @@ class QueueManager:
     # 队列操作
     # ------------------------------------------------------------------
 
-    def add_to_queue(self, song_data: dict) -> int:
+    async def add_to_queue(self, song_data: dict) -> int:
         """添加歌曲到队列尾部，返回队列中的位置（0-based）"""
-        r = self.redis
+        r = await self.client()
         key = self._qkey()
         length = redis_int(
-            r.rpush(key, json.dumps(song_data, ensure_ascii=False)),
+            await r.rpush(key, json.dumps(song_data, ensure_ascii=False)),
             field="队列 RPUSH 返回值",
         )
         pos = length - 1
         logger.info(f"添加到队列: {song_data.get('name')} (位置 {pos})")
         return pos
 
-    def play_next(self) -> dict | None:
+    async def play_next(self) -> dict | None:
         """从队列头取出下一首"""
-        data = self.redis.lpop(self._qkey())
+        data = await (await self.client()).lpop(self._qkey())
         if data:
             song = redis_json_object(data, field="队首歌曲")
             logger.info(f"队列弹出: {song.get('name')}")
             return song
         return None
 
-    def peek_next(self) -> dict | None:
+    async def peek_next(self) -> dict | None:
         """查看队首下一首（不弹出），用于预加载"""
-        data = self.redis.lindex(self._qkey(), 0)
+        data = await (await self.client()).lindex(self._qkey(), 0)
         if data:
             return redis_json_object(data, field="队首歌曲")
         return None
 
-    def get_queue(self, start: int = 0, end: int = -1) -> list:
+    async def get_queue(self, start: int = 0, end: int = -1) -> list:
         """获取队列列表"""
-        items = self.redis.lrange(self._qkey(), start, end)
+        items = await (await self.client()).lrange(self._qkey(), start, end)
         return [redis_json_object(item, field="队列歌曲") for item in items]
 
-    def get_queue_length(self) -> int:
-        return self.redis.llen(self._qkey())
+    async def get_queue_length(self) -> int:
+        return await (await self.client()).llen(self._qkey())
 
-    def clear_queue(self):
+    async def clear_queue(self):
         """清空队列"""
-        self.redis.delete(self._qkey())
+        await (await self.client()).delete(self._qkey())
         logger.info("队列已清空")
 
-    def remove_from_queue(self, index: int) -> bool:
+    async def remove_from_queue(self, index: int) -> bool:
         """移除队列中指定位置的歌曲"""
         try:
-            removed = atomic_queue_remove_at(self.redis, self._qkey(), index)
+            removed = await atomic_queue_remove_at(
+                await self.client(), self._qkey(), index
+            )
             if not removed:
                 return False
             logger.info(f"移除队列位置 {index}")
@@ -562,10 +581,10 @@ class QueueManager:
             logger.warning("移除队列位置 %d 失败: %s", index, e)
             return False
 
-    def pop_random(self) -> dict | None:
+    async def pop_random(self) -> dict | None:
         """原子随机弹出队列中的一首（用于随机播放模式）。"""
         try:
-            data = atomic_queue_pop_random(self.redis, self._qkey())
+            data = await atomic_queue_pop_random(await self.client(), self._qkey())
             if not data:
                 return None
             song = redis_json_object(data, field="随机队列歌曲")
@@ -579,20 +598,22 @@ class QueueManager:
     # 当前播放
     # ------------------------------------------------------------------
 
-    def set_current(self, song_data: dict):
+    async def set_current(self, song_data: dict):
         """设置当前播放歌曲"""
-        self.redis.set(self._ckey(), json.dumps(song_data, ensure_ascii=False))
+        await (await self.client()).set(
+            self._ckey(), json.dumps(song_data, ensure_ascii=False)
+        )
 
-    def get_current(self) -> dict | None:
+    async def get_current(self) -> dict | None:
         """获取当前播放歌曲"""
-        data = self.redis.get(self._ckey())
+        data = await (await self.client()).get(self._ckey())
         if data:
             return redis_json_object(data, field="当前播放歌曲")
         return None
 
-    def clear_current(self):
+    async def clear_current(self):
         """清除当前播放"""
-        self.redis.delete(self._ckey())
+        await (await self.client()).delete(self._ckey())
 
     # ------------------------------------------------------------------
     # 默认频道
@@ -602,36 +623,36 @@ class QueueManager:
     # 播放状态（域隔离）
     # ------------------------------------------------------------------
 
-    def set_play_state(self, state: dict):
-        self.redis.set(self._pskey(), json.dumps(state))
+    async def set_play_state(self, state: dict):
+        await (await self.client()).set(self._pskey(), json.dumps(state))
 
-    def get_play_state(self) -> dict | None:
-        raw = self.redis.get(self._pskey())
+    async def get_play_state(self) -> dict | None:
+        raw = await (await self.client()).get(self._pskey())
         return redis_json_object(raw, field="播放状态") if raw else None
 
-    def clear_play_state(self):
-        self.redis.delete(self._pskey())
+    async def clear_play_state(self):
+        await (await self.client()).delete(self._pskey())
 
     # ------------------------------------------------------------------
     # 播放模式（域隔离）
     # ------------------------------------------------------------------
 
-    def get_play_mode(self) -> str | None:
-        val = self.redis.get(self._pmkey())
+    async def get_play_mode(self) -> str | None:
+        val = await (await self.client()).get(self._pmkey())
         return redis_optional_text(val, field="播放模式") or None
 
-    def set_play_mode(self, mode: str) -> None:
-        self.redis.set(self._pmkey(), mode)
+    async def set_play_mode(self, mode: str) -> None:
+        await (await self.client()).set(self._pmkey(), mode)
 
     # ------------------------------------------------------------------
     # 默认频道
     # ------------------------------------------------------------------
 
-    def set_default_channel(self, channel: str):
-        self.redis.set(self._dkey(), channel)
+    async def set_default_channel(self, channel: str):
+        await (await self.client()).set(self._dkey(), channel)
 
-    def get_default_channel(self) -> str | None:
-        val = self.redis.get(self._dkey())
+    async def get_default_channel(self) -> str | None:
+        val = await (await self.client()).get(self._dkey())
         return redis_optional_text(val, field="默认频道")
 
 
@@ -640,11 +661,11 @@ def _unique_queue_marker() -> str:
     return f"__oopz_queue_marker__:{uuid.uuid4().hex}"
 
 
-def atomic_queue_remove_at(redis_client: object, key: str, index: int) -> bool:
+async def atomic_queue_remove_at(redis_client: object, key: str, index: int) -> bool:
     """通过已知后端契约原子删除列表位置。"""
     if isinstance(redis_client, _InMemoryRedis):
-        return redis_client.queue_remove_at(key, index)
-    result = cast(RedisScriptExecutor, redis_client).eval(
+        return await redis_client.queue_remove_at(key, index)
+    result = await cast(RedisScriptExecutor, redis_client).eval(
         _QUEUE_REMOVE_AT_LUA,
         1,
         key,
@@ -654,11 +675,11 @@ def atomic_queue_remove_at(redis_client: object, key: str, index: int) -> bool:
     return redis_int(result, field="队列删除脚本返回值") == 0
 
 
-def atomic_queue_move_to_front(redis_client: object, key: str, index: int) -> bool:
+async def atomic_queue_move_to_front(redis_client: object, key: str, index: int) -> bool:
     """通过已知后端契约原子地把列表位置移到队首。"""
     if isinstance(redis_client, _InMemoryRedis):
-        return redis_client.queue_move_to_front(key, index)
-    result = cast(RedisScriptExecutor, redis_client).eval(
+        return await redis_client.queue_move_to_front(key, index)
+    result = await cast(RedisScriptExecutor, redis_client).eval(
         _QUEUE_MOVE_TO_FRONT_LUA,
         1,
         key,
@@ -668,11 +689,11 @@ def atomic_queue_move_to_front(redis_client: object, key: str, index: int) -> bo
     return redis_int(result, field="队列置顶脚本返回值") == 0
 
 
-def atomic_queue_pop_random(redis_client: object, key: str) -> object | None:
+async def atomic_queue_pop_random(redis_client: object, key: str) -> object | None:
     """通过已知后端契约原子随机弹出列表元素。"""
     if isinstance(redis_client, _InMemoryRedis):
-        return redis_client.queue_pop_random(key)
-    return cast(RedisScriptExecutor, redis_client).eval(
+        return await redis_client.queue_pop_random(key)
+    return await cast(RedisScriptExecutor, redis_client).eval(
         _QUEUE_POP_RANDOM_LUA,
         1,
         key,
@@ -681,7 +702,7 @@ def atomic_queue_pop_random(redis_client: object, key: str) -> object | None:
     )
 
 
-def atomic_enqueue_song_and_notify(
+async def atomic_enqueue_song_and_notify(
     redis_client: object,
     queue_key: str,
     song: object,
@@ -690,13 +711,13 @@ def atomic_enqueue_song_and_notify(
 ) -> int:
     """原子入队、返回 1-based 位置并按同一顺序写通知。"""
     if isinstance(redis_client, _InMemoryRedis):
-        return redis_client.enqueue_song_and_notify(
+        return await redis_client.enqueue_song_and_notify(
             queue_key,
             song,
             commands_key,
             notification_template,
         )
-    result = cast(RedisScriptExecutor, redis_client).eval(
+    result = await cast(RedisScriptExecutor, redis_client).eval(
         _ENQUEUE_SONG_AND_NOTIFY_LUA,
         2,
         queue_key,
@@ -707,7 +728,7 @@ def atomic_enqueue_song_and_notify(
     return redis_int(result, field="点歌入队脚本返回值")
 
 
-def _try_connect_redis() -> RedisDataStore | None:
+async def _try_connect_redis() -> RedisDataStore | None:
     """尝试建立真实 Redis 连接，失败返回 None。"""
     client = None
     try:
@@ -719,14 +740,17 @@ def _try_connect_redis() -> RedisDataStore | None:
         if options.get("socket_timeout") is None:
             options["socket_timeout"] = 5.0
         options.setdefault("health_check_interval", 30)
-        client = redis.Redis(**options)
-        client.ping()
-        return cast(RedisDataStore, client)
+        client = aioredis.Redis(**options)
+        # redis-py 的异步命令方法在类型上仍标成同步返回值，统一按本项目的
+        # 异步协议视图使用，避免逐处 cast。
+        store = cast(RedisDataStore, client)
+        await store.ping()
+        return store
     except Exception as e:
         logger.debug(f"Redis 连接尝试失败: {e}")
         if client is not None:
             try:
-                client.close()
+                await client.aclose()
             except Exception:
                 logger.debug("关闭失败的 Redis 探测连接失败", exc_info=True)
         return None
@@ -741,13 +765,14 @@ def is_degraded() -> bool:
     return isinstance(_redis_client, _InMemoryRedis)
 
 
-def _close_retired_redis_client(
+async def _close_retired_redis_client(
     client: RedisDataStore,
     *,
     retirement_generation: int,
 ) -> None:
     """在身份与 generation 复核后关闭已退役的真实 Redis 客户端。"""
-    with _redis_condition:
+    _cond = _condition()
+    async with _cond:
         if (
             _redis_generation < retirement_generation
             or _redis_client is client
@@ -755,14 +780,44 @@ def _close_retired_redis_client(
         ):
             return
     try:
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
+        # redis.asyncio 用 aclose()，旧版与内存实现可能只有 close()。
+        closer = getattr(client, "aclose", None) or getattr(client, "close", None)
+        if callable(closer):
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
     except Exception:
         logger.debug("关闭已退役 Redis 客户端失败", exc_info=True)
 
 
-def get_redis_client(force_reset: bool = False) -> RedisDataStore:
+def _condition() -> asyncio.Condition:
+    """返回绑定到当前事件循环的状态机条件变量。
+
+    ``asyncio.Condition`` 在首次使用时才绑定事件循环，之后换循环会直接抛
+    "bound to a different event loop"。应用正常只跑一个循环，但测试用例每个都新建
+    循环，重启运行时也会换循环，因此这里按循环重建。换循环意味着旧循环连同其上的
+    等待者都已消失，重建不会丢掉仍然有效的等待。
+    """
+    global _redis_condition, _redis_condition_loop
+    loop = asyncio.get_running_loop()
+    if _redis_condition_loop is not loop:
+        _redis_condition = asyncio.Condition()
+        _redis_condition_loop = loop
+    return _redis_condition
+
+
+async def _wait_for_probe(timeout: float) -> None:
+    """持有 ``_redis_condition`` 时限时等待探测结果。
+
+    ``asyncio.Condition.wait()`` 不接受超时，只能靠 ``wait_for`` 取消；被取消时
+    ``wait()`` 会先重新获取锁再抛出，因此返回后调用方仍然持有锁，可以安全地
+    继续在临界区内判断。超时本身不是错误，交由外层循环重新评估状态。
+    """
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(_condition().wait(), timeout=timeout)
+
+
+async def get_redis_client(force_reset: bool = False) -> RedisDataStore:
     """返回全局共享 Redis 客户端；连接失败时统一回退到内存实现。
 
     真实客户端会在交付前于全局锁外执行健康探测，运行期间断线时原子切入
@@ -786,7 +841,8 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
 
     while True:
         immediate_client: RedisDataStore | None = None
-        with _redis_condition:
+        _cond = _condition()
+        async with _cond:
             client_replaced = False
             if reset_pending:
                 previous_client = _redis_client
@@ -825,7 +881,7 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
                         wait_deadline = now + _REDIS_PROBE_WAIT_TIMEOUT
                     remaining = wait_deadline - now
                     if remaining > 0:
-                        _redis_condition.wait(timeout=remaining)
+                        await _wait_for_probe(remaining)
                         continue
 
                     # 探测超时：保留当前 fallback 及其已有写入，但让旧令牌
@@ -837,7 +893,7 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
                         _redis_probe_client = None
                         _redis_probe_in_flight = False
                         _last_redis_retry = now
-                        _redis_condition.notify_all()
+                        _cond.notify_all()
                     immediate_client = _redis_client
                 # 真实 Redis 的健康探测期间仍交付同一真实客户端。
                 # force_reset 创建的新 fallback 也不属于当前陈旧探测。
@@ -866,7 +922,7 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
                     _redis_probe_client = probe_client
 
         for retired_client, retirement_generation in retired_clients:
-            _close_retired_redis_client(
+            await _close_retired_redis_client(
                 retired_client,
                 retirement_generation=retirement_generation,
             )
@@ -884,7 +940,7 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
     fatal_probe_error: BaseException | None = None
     if probe_kind == "recovery":
         try:
-            candidate = _try_connect_redis()
+            candidate = await _try_connect_redis()
         except Exception:
             # _try_connect_redis 自身会吸收常规网络错误；这层兜底保证
             # 测试替身或意外实现异常也不会让等待者永久阻塞。
@@ -893,14 +949,15 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
             fatal_probe_error = exc
     elif probe_client is not None:
         try:
-            healthy = bool(probe_client.ping())
+            healthy = bool(await probe_client.ping())
         except Exception as e:
             logger.warning("Redis 运行时连接已中断，切换到内存队列: %s", e)
         except BaseException as exc:
             fatal_probe_error = exc
 
     discarded_client: RedisDataStore | None = None
-    with _redis_condition:
+    _cond = _condition()
+    async with _cond:
         probe_owns_state = probe_token is not None and _redis_probe_token is probe_token
         current_generation = _redis_generation
         probe_is_current = (
@@ -939,11 +996,11 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
             _redis_probe_token = None
             _redis_probe_client = None
             _redis_probe_in_flight = False
-            _redis_condition.notify_all()
+            _cond.notify_all()
         selected_client = _redis_client
 
     if discarded_client is not None:
-        _close_retired_redis_client(
+        await _close_retired_redis_client(
             discarded_client,
             retirement_generation=current_generation,
         )
@@ -954,5 +1011,5 @@ def get_redis_client(force_reset: bool = False) -> RedisDataStore:
     if not probe_owns_state:
         # 本 probe 在网络 I/O 期间已超时或被新一代状态取代。收尾后
         # 重新选择，不能把另一个正在探测的 fallback 直接交给调用方。
-        return get_redis_client()
+        return await get_redis_client()
     return selected_client

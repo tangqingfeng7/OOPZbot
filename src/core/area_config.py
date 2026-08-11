@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from core.logger_config import get_logger
 
@@ -13,7 +12,7 @@ _DEFAULT_WELCOME = "欢迎 {name} 加入域～\n请阅读频道规则，祝你�
 _DEFAULT_LEAVE = "{name} 已退出域"
 
 
-def _parse_optional_bool(raw: object) -> Optional[bool]:
+def _parse_optional_bool(raw: object) -> bool | None:
     """三态 bool 解析：None/空/"inherit" → None，其余按布尔解析。"""
     if raw is None:
         return None
@@ -48,10 +47,10 @@ class AreaConfig:
     plugins_disabled: tuple[str, ...] = ()
     profanity_enabled: bool = True
     # None = 跟随全局 OOPZ_CONFIG.use_announcement_style；True/False = 域级强制
-    use_announcement_style: Optional[bool] = None
+    use_announcement_style: bool | None = None
 
     @classmethod
-    def from_dict(cls, area_id: str, raw: dict) -> "AreaConfig":
+    def from_dict(cls, area_id: str, raw: dict) -> AreaConfig:
         return cls(
             area_id=area_id,
             name=str(raw.get("name", "") or ""),
@@ -198,7 +197,7 @@ class AreaConfigRegistry:
         return self._global_default_channel
 
 
-_registry: Optional[AreaConfigRegistry] = None
+_registry: AreaConfigRegistry | None = None
 
 
 def get_area_registry() -> AreaConfigRegistry:

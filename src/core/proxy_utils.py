@@ -8,7 +8,6 @@ import ipaddress
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
 from urllib.parse import unquote, urlparse
 
 _log = logging.getLogger("ProxyUtils")
@@ -125,12 +124,12 @@ _NO_PROXY_DEFAULTS = "localhost,127.0.0.1,::1,redis,netease-api"
 class ProxySettings:
     mode: str
     raw: str = ""
-    server: Optional[str] = None
-    scheme: Optional[str] = None
-    host: Optional[str] = None
-    port: Optional[int] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
+    server: str | None = None
+    scheme: str | None = None
+    host: str | None = None
+    port: int | None = None
+    username: str | None = None
+    password: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -233,7 +232,7 @@ def get_websocket_proxy_kwargs(proxy_value=None) -> dict:
     return kwargs
 
 
-def get_playwright_proxy(proxy_value=None) -> Optional[dict]:
+def get_playwright_proxy(proxy_value=None) -> dict | None:
     settings = resolve_proxy_settings_with_env(proxy_value)
     if not settings.enabled:
         return None
@@ -245,7 +244,7 @@ def get_playwright_proxy(proxy_value=None) -> Optional[dict]:
     return proxy
 
 
-def get_selenium_proxy_argument(proxy_value=None) -> Optional[str]:
+def get_selenium_proxy_argument(proxy_value=None) -> str | None:
     settings = resolve_proxy_settings_with_env(proxy_value)
     if not settings.enabled:
         return None

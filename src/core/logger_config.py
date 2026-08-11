@@ -1,12 +1,13 @@
 import glob
-import os
-import sys
 import io
 import logging
+import os
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 
-from core.paths import LOGS_DIR as LOG_DIR, LOG_FILE
+from core.paths import LOG_FILE
+from core.paths import LOGS_DIR as LOG_DIR
 
 LOG_RETENTION_DAYS = 7
 

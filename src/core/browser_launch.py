@@ -1,7 +1,7 @@
 """共享的 Chromium 启动参数。
 
 把语音推流与登录页共用的 Chromium 启动参数集中到 core 层，作为单一来源，
-避免认证模块（oopz.oopz_password_login）反向依赖音乐推流模块（music.voice_client）。
+供项目级浏览器后备能力复用，避免启动参数在各模块重复维护。
 """
 
 from __future__ import annotations
