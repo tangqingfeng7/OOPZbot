@@ -67,20 +67,25 @@ class LolBanPlugin(PluginCommandMixin, BotModule):
             )
         )
 
-    def on_load(self, handler, config=None):
+    async def on_load(self, handler, config=None):
         self._config = (config or {}).copy()
         from .query_service import LolQueryHandler
         self._handler = LolQueryHandler(self._config)
 
-    def dispatch_command(self, command_text, channel, area, user, handler) -> None:
+    async def on_unload(self) -> None:
+        if self._handler is not None:
+            await self._handler.close()
+        self._handler = None
+
+    async def dispatch_command(self, command_text, channel, area, user, handler) -> None:
         keyword = command_text.strip()
         if not keyword:
-            self._send(handler, _HELP_TEXT, channel, area)
+            await self._send(handler, _HELP_TEXT, channel, area)
             return
         query_handler = self._handler
         if query_handler is None:
-            self._send(handler, f"{Msg.ERR} 封号查询插件尚未初始化", channel, area)
+            await self._send(handler, f"{Msg.ERR} 封号查询插件尚未初始化", channel, area)
             return
-        self._send(handler, f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...", channel, area)
-        reply = query_handler.query_and_format(keyword)
-        self._send(handler, reply, channel, area)
+        await self._send(handler, f"{Msg.SEARCH} 正在查询 QQ {keyword} 的封号状态...", channel, area)
+        reply = await query_handler.query_and_format(keyword)
+        await self._send(handler, reply, channel, area)

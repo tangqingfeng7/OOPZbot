@@ -1,15 +1,17 @@
 ﻿from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-import requests
 from PIL import Image, ImageDraw, ImageFont
 
+from core.async_http import ManagedHttpClient
 from core.logger_config import get_logger
 from domain.plugins.base import (
     BotModule,
@@ -21,7 +23,6 @@ from domain.plugins.base import (
     parse_int,
     validate_min,
 )
-
 from plugins._shared.command_mixin import PluginCommandMixin
 
 logger = get_logger("ArcRaidersPlugin")
@@ -83,7 +84,7 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
     def __init__(self) -> None:
         self._handler = None
         self._config: dict[str, Any] = {}
-        self._session = requests.Session()
+        self._http = ManagedHttpClient()
         self._index_cache: list[dict[str, Any]] = []
         self._index_expire_at = 0.0
 
@@ -184,40 +185,41 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
             )
         )
 
-    def on_load(self, handler, config: PluginConfig | None = None) -> None:
+    async def on_load(self, handler, config: PluginConfig | None = None) -> None:
         self._handler = handler
         self._config = (config or {}).copy()
 
-    def handle_slash(self, command, subcommand, arg, channel, area, user, handler) -> bool:
+    async def on_unload(self) -> None:
+        await self._http.close()
+
+    async def handle_slash(self, command, subcommand, arg, channel, area, user, handler) -> bool:
         if (command or "").strip().lower() == "/arcevent":
             if not self._config.get("enabled", False):
-                self._send(
+                await self._send(
                     handler,
                     "arc_raiders 插件当前未启用，请在 config/plugins/arc_raiders/config.json 中设置 enabled=true 后重载插件配置。",
                     channel,
                     area,
                 )
                 return True
-            self._send(handler, "正在查询地图事件截图，请稍候...", channel, area)
-            img = self._render_card_from_url(str(self._config.get("zh_map_events_url") or "https://arctracker.io/zh-CN/map-events"))
+            await self._send(handler, "正在查询地图事件截图，请稍候...", channel, area)
+            img = await self._render_card_from_url(str(self._config.get("zh_map_events_url") or "https://arctracker.io/zh-CN/map-events"))
             if not img:
-                self._send(handler, "地图事件截图失败，请稍后重试。", channel, area)
+                await self._send(handler, "地图事件截图失败，请稍后重试。", channel, area)
                 return True
             try:
-                handler.sender.upload_and_send_image(img, channel=channel, area=area)
+                await handler.sender.upload_and_send_image(img, channel=channel, area=area)
             except Exception:
-                self._send(handler, "地图事件截图失败，请稍后重试。", channel, area)
+                await self._send(handler, "地图事件截图失败，请稍后重试。", channel, area)
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     Path(img).unlink(missing_ok=True)
-                except Exception:
-                    pass
             return True
-        return super().handle_slash(command, subcommand, arg, channel, area, user, handler)
+        return await super().handle_slash(command, subcommand, arg, channel, area, user, handler)
 
-    def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
+    async def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
         if not self._config.get("enabled", False):
-            self._send(
+            await self._send(
                 handler,
                 "arc_raiders 插件当前未启用，请在 config/plugins/arc_raiders/config.json 中设置 enabled=true 后重载插件配置。",
                 channel,
@@ -231,23 +233,23 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
             q = q[:-2].strip()
             force_text_mode = True
         elif q == "1":
-            self._send(handler, "用法: /arc <物品名> 或 /arc <物品名> 1（文字模式）", channel, area)
+            await self._send(handler, "用法: /arc <物品名> 或 /arc <物品名> 1（文字模式）", channel, area)
             return
 
         if not q or q.lower() in {"help", "帮助"}:
-            self._send(handler, "用法: @bot arc <物品名> 或 /arc <物品名>", channel, area)
+            await self._send(handler, "用法: @bot arc <物品名> 或 /arc <物品名>", channel, area)
             return
 
         try:
-            items = self._load_items()
+            items = await self._load_items()
         except Exception as exc:
             logger.warning("ArcRaiders: load index failed: %s", exc)
-            self._send(handler, "Arc物品索引加载失败，请稍后重试。", channel, area)
+            await self._send(handler, "Arc物品索引加载失败，请稍后重试。", channel, area)
             return
 
         matches = self._search_items(items, q)
         if not matches:
-            self._send(handler, f"未找到与“{q}”相关的物品。", channel, area)
+            await self._send(handler, f"未找到与“{q}”相关的物品。", channel, area)
             return
 
         max_candidates = int(self._config.get("max_candidates", 6) or 6)
@@ -257,48 +259,48 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
                 item_type_zh = self._to_type_zh(str(item.get("type") or "?"))
                 rarity_zh = self._to_rarity_zh(str(item.get("rarity") or "?"))
                 lines.append(f"{idx}. {item.get('name','?')} ({item_type_zh} / {rarity_zh})")
-            self._send(handler, "\n".join(lines), channel, area)
+            await self._send(handler, "\n".join(lines), channel, area)
             return
 
         item = matches[0]
         item_id = str(item.get("id") or "").strip()
         if not item_id:
-            self._send(handler, "命中物品缺少ID，暂时无法查询。", channel, area)
+            await self._send(handler, "命中物品缺少ID，暂时无法查询。", channel, area)
             return
 
-        stats = self._fetch_drop_stats(item_id)
-        locations = self._fetch_locations(item_id)
+        stats, locations = await asyncio.gather(
+            self._fetch_drop_stats(item_id),
+            self._fetch_locations(item_id),
+        )
         if bool(self._config.get("image_mode", True)) and not force_text_mode:
-            self._send(handler, "正在使用直观截图模式查询，查询时间可能较长，请耐心等待", channel, area)
-            if self._send_item_image(handler, item_id, channel, area):
+            await self._send(handler, "正在使用直观截图模式查询，查询时间可能较长，请耐心等待", channel, area)
+            if await self._send_item_image(handler, item_id, channel, area):
                 return
-            if self._send_fallback_card_image(handler, item, stats, locations, channel, area):
+            if await self._send_fallback_card_image(handler, item, stats, locations, channel, area):
                 return
-        self._send(handler, self._format_result(item, stats, locations), channel, area)
+        await self._send(handler, self._format_result(item, stats, locations), channel, area)
 
-    def _send_item_image(self, handler, item_id: str, channel: str, area: str) -> bool:
-        png_path = self._render_item_page_image(item_id)
+    async def _send_item_image(self, handler, item_id: str, channel: str, area: str) -> bool:
+        png_path = await self._render_item_page_image(item_id)
         if not png_path:
             return False
         try:
-            handler.sender.upload_and_send_image(png_path, channel=channel, area=area)
+            await handler.sender.upload_and_send_image(png_path, channel=channel, area=area)
             return True
         except Exception as exc:
             logger.warning("ArcRaiders: upload image failed: %s", exc)
             return False
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 Path(png_path).unlink(missing_ok=True)
-            except Exception:
-                pass
 
-    def _render_item_page_image(self, item_id: str) -> Optional[str]:
+    async def _render_item_page_image(self, item_id: str) -> str | None:
         base = str(self._config.get("zh_item_page_base") or "https://arctracker.io/zh-CN/items").rstrip("/")
-        return self._render_card_from_url(f"{base}/{item_id}", f"item_{item_id}")
+        return await self._render_card_from_url(f"{base}/{item_id}", f"item_{item_id}")
 
-    def _render_card_from_url(self, url: str, file_prefix: str = "page") -> Optional[str]:
+    async def _render_card_from_url(self, url: str, file_prefix: str = "page") -> str | None:
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.async_api import async_playwright
         except Exception as exc:
             logger.warning("ArcRaiders: playwright unavailable: %s", exc)
             return None
@@ -310,34 +312,30 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
         out_path = render_dir / f"{file_prefix}_{os.getpid()}_{int(time.time()*1000)}.png"
 
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(
                     headless=True,
                     channel="chromium",
                     args=["--no-sandbox", "--disable-dev-shm-usage"],
                 )
-                page = browser.new_page(
+                page = await browser.new_page(
                     viewport={"width": 1365, "height": 2400},
                     locale="zh-CN",
                 )
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=min(8000, timeout_ms // 2))
-                except Exception:
-                    pass
-                page.wait_for_timeout(1800)
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                with contextlib.suppress(Exception):
+                    await page.wait_for_load_state("networkidle", timeout=min(8000, timeout_ms // 2))
+                await page.wait_for_timeout(1800)
                 card = page.locator('[data-slot="card"]')
-                if card.count() > 0:
-                    card.first.screenshot(path=str(out_path))
+                if await card.count() > 0:
+                    await card.first.screenshot(path=str(out_path))
                 else:
                     raise RuntimeError("card element not found")
-                browser.close()
+                await browser.close()
         except Exception as exc:
             logger.warning("ArcRaiders: render screenshot failed: %s", exc)
-            try:
+            with contextlib.suppress(Exception):
                 out_path.unlink(missing_ok=True)
-            except Exception:
-                pass
             return None
 
         return str(out_path)
@@ -383,11 +381,11 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
         except Exception:
             return
 
-    def _send_fallback_card_image(
+    async def _send_fallback_card_image(
         self,
         handler,
         item: dict[str, Any],
-        stats: Optional[dict[str, Any]],
+        stats: dict[str, Any] | None,
         locations: list[str],
         channel: str,
         area: str,
@@ -396,23 +394,21 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
         if not img_path:
             return False
         try:
-            handler.sender.upload_and_send_image(img_path, channel=channel, area=area)
+            await handler.sender.upload_and_send_image(img_path, channel=channel, area=area)
             return True
         except Exception as exc:
             logger.warning("ArcRaiders: upload fallback image failed: %s", exc)
             return False
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 Path(img_path).unlink(missing_ok=True)
-            except Exception:
-                pass
 
     def _render_text_card(
         self,
         item: dict[str, Any],
-        stats: Optional[dict[str, Any]],
+        stats: dict[str, Any] | None,
         locations: list[str],
-    ) -> Optional[str]:
+    ) -> str | None:
         try:
             temp_root = Path(str(self._config.get("temp_dir") or "data/arc_raiders"))
             render_dir = temp_root / "renders"
@@ -462,7 +458,7 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
             logger.warning("ArcRaiders: render text card failed: %s", exc)
             return None
 
-    def _load_items(self) -> list[dict[str, Any]]:
+    async def _load_items(self) -> list[dict[str, Any]]:
         now = time.time()
         if self._index_cache and now < self._index_expire_at:
             return self._index_cache
@@ -472,9 +468,11 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
 
         payload = None
         if index_url.startswith("http://") or index_url.startswith("https://"):
-            resp = self._session.get(index_url, timeout=timeout)
-            resp.raise_for_status()
-            payload = resp.json()
+            _status, payload = await self._http.request_payload(
+                "GET",
+                index_url,
+                timeout=timeout,
+            )
         else:
             path = Path(index_url)
             if not path.is_absolute():
@@ -526,24 +524,32 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
             return [it for score, it in scored if score == 100][:1]
         return [it for _, it in scored]
 
-    def _fetch_drop_stats(self, item_id: str) -> Optional[dict[str, Any]]:
+    async def _fetch_drop_stats(self, item_id: str) -> dict[str, Any] | None:
         try:
             base = str(self._config.get("stats_api_base") or "").rstrip("/")
             timeout = int(self._config.get("request_timeout_sec", 12) or 12)
-            resp = self._session.get(f"{base}/{item_id}", timeout=timeout)
-            if resp.status_code != 200:
+            status, data = await self._http.request_payload(
+                "GET",
+                f"{base}/{item_id}",
+                timeout=timeout,
+                raise_for_status=False,
+            )
+            if status != 200:
                 return None
-            data = resp.json()
             return data if isinstance(data, dict) else None
         except Exception as exc:
             logger.debug("ArcRaiders: stats fetch failed: %s", exc)
             return None
 
-    def _fetch_locations(self, item_id: str) -> list[str]:
+    async def _fetch_locations(self, item_id: str) -> list[str]:
         try:
             base = str(self._config.get("item_page_base") or "").rstrip("/")
             timeout = int(self._config.get("request_timeout_sec", 12) or 12)
-            html = self._session.get(f"{base}/{item_id}", timeout=timeout).text
+            _status, html = await self._http.request_text(
+                "GET",
+                f"{base}/{item_id}",
+                timeout=timeout,
+            )
             marker = "Can be found in</h3>"
             i = html.find(marker)
             if i < 0:
@@ -560,7 +566,7 @@ class ArcRaidersPlugin(PluginCommandMixin, BotModule):
             logger.debug("ArcRaiders: location parse failed: %s", exc)
             return []
 
-    def _format_result(self, item: dict[str, Any], stats: Optional[dict[str, Any]], locations: list[str]) -> str:
+    def _format_result(self, item: dict[str, Any], stats: dict[str, Any] | None, locations: list[str]) -> str:
         name = item.get("name") or "未知"
         item_id = item.get("id") or ""
         rarity = self._to_rarity_zh(str(item.get("rarity") or "未知"))

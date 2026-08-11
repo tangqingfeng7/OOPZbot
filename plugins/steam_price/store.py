@@ -1,35 +1,37 @@
-"""Steam 价格插件的 SQLite 持久层。"""
+"""Steam 价格插件的异步 SQLite 持久层。"""
 
 from __future__ import annotations
 
-from typing import Optional
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from core.database import cn_now, get_connection
-from core.logger_config import get_logger
+import aiosqlite
 
-logger = get_logger("SteamPriceStore")
-
-
-def _dict_from_row(row) -> dict:
-    if row is None:
-        return {}
-    return dict(row)
+from core.database import DB_PATH, cn_now
 
 
 class SteamPriceStore:
     """管理个人关注、频道推送订阅与推送去重记录。"""
 
-    def __init__(self) -> None:
-        self._ensure_tables()
-
-    # ------------------------------------------------------------------
-    # 建表
-    # ------------------------------------------------------------------
-
-    def _ensure_tables(self) -> None:
-        conn = get_connection()
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        connection = await aiosqlite.connect(DB_PATH, timeout=5)
+        connection.row_factory = aiosqlite.Row
+        await connection.execute("PRAGMA journal_mode=WAL")
+        await connection.execute("PRAGMA busy_timeout=5000")
+        await connection.execute("PRAGMA synchronous=NORMAL")
         try:
-            conn.executescript("""
+            yield connection
+        except BaseException:
+            await connection.rollback()
+            raise
+        finally:
+            await connection.close()
+
+    async def setup(self) -> None:
+        async with self._connect() as connection:
+            await connection.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS steam_watch_personal (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id       TEXT    NOT NULL,
@@ -66,29 +68,23 @@ class SteamPriceStore:
                     ON steam_watch_personal (itad_id);
                 CREATE INDEX IF NOT EXISTS idx_steam_price_log_itad
                     ON steam_price_log (itad_id, recorded_at);
-            """)
-            conn.commit()
-        finally:
-            conn.close()
+                """
+            )
+            await connection.commit()
 
-    # ------------------------------------------------------------------
-    # 个人关注
-    # ------------------------------------------------------------------
-
-    def add_personal_watch(
+    async def add_personal_watch(
         self,
         user_id: str,
         itad_id: str,
-        app_id: Optional[int],
+        app_id: int | None,
         game_name: str,
-        current_price: Optional[float],
-        lowest_price: Optional[float],
+        current_price: float | None,
+        lowest_price: float | None,
         channel: str,
         area: str,
     ) -> int:
-        conn = get_connection()
-        try:
-            cursor = conn.execute(
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 """
                 INSERT INTO steam_watch_personal
                     (user_id, itad_id, app_id, game_name, current_price, lowest_price, channel, area, created_at)
@@ -96,83 +92,64 @@ class SteamPriceStore:
                 """,
                 (user_id, itad_id, app_id, game_name, current_price, lowest_price, channel, area, cn_now()),
             )
-            conn.commit()
-            return cursor.lastrowid or 0
-        finally:
-            conn.close()
+            await connection.commit()
+            return int(cursor.lastrowid or 0)
 
-    def remove_personal_watch(self, watch_id: int, user_id: str) -> bool:
-        conn = get_connection()
-        try:
-            cursor = conn.execute(
+    async def remove_personal_watch(self, watch_id: int, user_id: str) -> bool:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 "DELETE FROM steam_watch_personal WHERE id=? AND user_id=?",
                 (watch_id, user_id),
             )
-            conn.commit()
+            await connection.commit()
             return cursor.rowcount > 0
-        finally:
-            conn.close()
 
-    def get_personal_watches(self, user_id: str) -> list[dict]:
-        conn = get_connection()
-        try:
-            rows = conn.execute(
+    async def get_personal_watches(self, user_id: str) -> list[dict]:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 "SELECT * FROM steam_watch_personal WHERE user_id=? ORDER BY id",
                 (user_id,),
-            ).fetchall()
-            return [_dict_from_row(r) for r in rows]
-        finally:
-            conn.close()
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
-    def get_all_personal_watches(self) -> list[dict]:
-        conn = get_connection()
-        try:
-            rows = conn.execute("SELECT * FROM steam_watch_personal ORDER BY id").fetchall()
-            return [_dict_from_row(r) for r in rows]
-        finally:
-            conn.close()
+    async def get_all_personal_watches(self) -> list[dict]:
+        async with self._connect() as connection:
+            cursor = await connection.execute("SELECT * FROM steam_watch_personal ORDER BY id")
+            return [dict(row) for row in await cursor.fetchall()]
 
-    def count_personal_watches(self, user_id: str) -> int:
-        conn = get_connection()
-        try:
-            row = conn.execute(
+    async def count_personal_watches(self, user_id: str) -> int:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 "SELECT COUNT(*) AS cnt FROM steam_watch_personal WHERE user_id=?",
                 (user_id,),
-            ).fetchone()
+            )
+            row = await cursor.fetchone()
             return int(row["cnt"]) if row else 0
-        finally:
-            conn.close()
 
-    def is_watching(self, user_id: str, itad_id: str) -> bool:
-        conn = get_connection()
-        try:
-            row = conn.execute(
+    async def is_watching(self, user_id: str, itad_id: str) -> bool:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 "SELECT 1 FROM steam_watch_personal WHERE user_id=? AND itad_id=?",
                 (user_id, itad_id),
-            ).fetchone()
-            return row is not None
-        finally:
-            conn.close()
+            )
+            return await cursor.fetchone() is not None
 
-    def update_watch_price(self, watch_id: int, current_price: Optional[float], lowest_price: Optional[float]) -> None:
-        conn = get_connection()
-        try:
-            conn.execute(
+    async def update_watch_price(
+        self,
+        watch_id: int,
+        current_price: float | None,
+        lowest_price: float | None,
+    ) -> None:
+        async with self._connect() as connection:
+            await connection.execute(
                 "UPDATE steam_watch_personal SET current_price=?, lowest_price=? WHERE id=?",
                 (current_price, lowest_price, watch_id),
             )
-            conn.commit()
-        finally:
-            conn.close()
+            await connection.commit()
 
-    # ------------------------------------------------------------------
-    # 频道推送订阅
-    # ------------------------------------------------------------------
-
-    def subscribe_channel(self, channel: str, area: str, min_discount: int = 50) -> None:
-        conn = get_connection()
-        try:
-            conn.execute(
+    async def subscribe_channel(self, channel: str, area: str, min_discount: int = 50) -> None:
+        async with self._connect() as connection:
+            await connection.execute(
                 """
                 INSERT INTO steam_watch_channel (channel, area, min_discount, created_at)
                 VALUES (?, ?, ?, ?)
@@ -181,91 +158,62 @@ class SteamPriceStore:
                 """,
                 (channel, area, min_discount, cn_now()),
             )
-            conn.commit()
-        finally:
-            conn.close()
+            await connection.commit()
 
-    def unsubscribe_channel(self, channel: str, area: str) -> bool:
-        conn = get_connection()
-        try:
-            cursor = conn.execute(
+    async def unsubscribe_channel(self, channel: str, area: str) -> bool:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 "DELETE FROM steam_watch_channel WHERE channel=? AND area=?",
                 (channel, area),
             )
-            conn.commit()
+            await connection.commit()
             return cursor.rowcount > 0
-        finally:
-            conn.close()
 
-    def is_channel_subscribed(self, channel: str, area: str) -> bool:
-        conn = get_connection()
-        try:
-            row = conn.execute(
+    async def is_channel_subscribed(self, channel: str, area: str) -> bool:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 "SELECT 1 FROM steam_watch_channel WHERE channel=? AND area=?",
                 (channel, area),
-            ).fetchone()
-            return row is not None
-        finally:
-            conn.close()
+            )
+            return await cursor.fetchone() is not None
 
-    def get_channel_subscriptions(self) -> list[dict]:
-        conn = get_connection()
-        try:
-            rows = conn.execute("SELECT * FROM steam_watch_channel ORDER BY id").fetchall()
-            return [_dict_from_row(r) for r in rows]
-        finally:
-            conn.close()
+    async def get_channel_subscriptions(self) -> list[dict]:
+        async with self._connect() as connection:
+            cursor = await connection.execute("SELECT * FROM steam_watch_channel ORDER BY id")
+            return [dict(row) for row in await cursor.fetchall()]
 
-    def any_subscriptions(self) -> bool:
-        conn = get_connection()
-        try:
-            row = conn.execute(
+    async def any_subscriptions(self) -> bool:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 """
                 SELECT 1 FROM steam_watch_personal
                 UNION ALL
                 SELECT 1 FROM steam_watch_channel
                 LIMIT 1
                 """
-            ).fetchone()
-            return row is not None
-        finally:
-            conn.close()
+            )
+            return await cursor.fetchone() is not None
 
-    # ------------------------------------------------------------------
-    # 推送去重
-    # ------------------------------------------------------------------
-
-    def has_notified(self, itad_id: str, price: float) -> bool:
-        """检查同一 itad_id + 价格是否已经推送过。"""
-        conn = get_connection()
-        try:
-            row = conn.execute(
+    async def has_notified(self, itad_id: str, price: float) -> bool:
+        async with self._connect() as connection:
+            cursor = await connection.execute(
                 "SELECT 1 FROM steam_price_log WHERE itad_id=? AND price=?",
                 (itad_id, price),
-            ).fetchone()
-            return row is not None
-        finally:
-            conn.close()
+            )
+            return await cursor.fetchone() is not None
 
-    def mark_notified(self, itad_id: str, price: float, discount: int) -> None:
-        conn = get_connection()
-        try:
-            conn.execute(
+    async def mark_notified(self, itad_id: str, price: float, discount: int) -> None:
+        async with self._connect() as connection:
+            await connection.execute(
                 "INSERT INTO steam_price_log (itad_id, price, discount, recorded_at) VALUES (?, ?, ?, ?)",
                 (itad_id, price, discount, cn_now()),
             )
-            conn.commit()
-        finally:
-            conn.close()
+            await connection.commit()
 
-    def cleanup_old_logs(self, days: int = 90) -> None:
-        """清理超过指定天数的推送记录。"""
-        conn = get_connection()
-        try:
-            conn.execute(
+    async def cleanup_old_logs(self, days: int = 90) -> None:
+        async with self._connect() as connection:
+            await connection.execute(
                 "DELETE FROM steam_price_log WHERE recorded_at < datetime('now', ?)",
                 (f"-{days} days",),
             )
-            conn.commit()
-        finally:
-            conn.close()
+            await connection.commit()

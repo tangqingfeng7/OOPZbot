@@ -1,3 +1,5 @@
+import contextlib
+
 from core.constants import Msg
 from domain.plugins.base import (
     BotModule,
@@ -7,7 +9,6 @@ from domain.plugins.base import (
     PluginMetadata,
 )
 from plugins._shared.command_mixin import PluginCommandMixin
-
 
 _HELP_TEXT = (
     "请输入召唤师名称\n"
@@ -58,16 +59,14 @@ class LolFa8Plugin(PluginCommandMixin, BotModule):
             )
         )
 
-    def on_load(self, handler, config=None):
+    async def on_load(self, handler, config=None):
         self._config = (config or {}).copy()
         self._handler = None
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         if self._handler is not None:
-            try:
-                self._handler.close()
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                await self._handler.close()
         self._handler = None
 
     def _service(self):
@@ -76,11 +75,11 @@ class LolFa8Plugin(PluginCommandMixin, BotModule):
             self._handler = FA8Handler(self._config)
         return self._handler
 
-    def dispatch_command(self, command_text, channel, area, user, handler) -> None:
+    async def dispatch_command(self, command_text, channel, area, user, handler) -> None:
         keyword = command_text.strip()
         if not keyword:
-            self._send(handler, _HELP_TEXT, channel, area)
+            await self._send(handler, _HELP_TEXT, channel, area)
             return
-        self._send(handler, f"{Msg.SEARCH} 正在查询 {keyword} 的战绩...", channel, area)
-        reply = self._service().query_and_format(keyword)
-        self._send(handler, reply, channel, area)
+        await self._send(handler, f"{Msg.SEARCH} 正在查询 {keyword} 的战绩...", channel, area)
+        reply = await self._service().query_and_format(keyword)
+        await self._send(handler, reply, channel, area)

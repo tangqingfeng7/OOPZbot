@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
-
-import requests
+from typing import Any
 
 from core.logger_config import get_logger
 from plugins._shared.http_client import JsonHttpClient
@@ -180,7 +178,7 @@ def _contains_cjk(text: str) -> bool:
     return bool(_HAS_CJK.search(text))
 
 
-def _resolve_alias(keyword: str) -> Optional[int]:
+def _resolve_alias(keyword: str) -> int | None:
     """检查关键词是否匹配已知别名，返回 Steam appid 或 None。"""
     normalized = keyword.strip().lower()
     return _GAME_ALIASES.get(normalized)
@@ -194,7 +192,7 @@ class SteamPriceApiClient(JsonHttpClient):
 
     _LOG_NAME = "SteamPriceApi"
 
-    def __init__(self, config: dict, session: Optional[requests.Session] = None) -> None:
+    def __init__(self, config: dict, session=None) -> None:
         self._config = config or {}
         self._api_key = str(self._config.get("api_key") or "").strip()
         self._country = str(self._config.get("country") or "CN").strip().upper()
@@ -202,6 +200,7 @@ class SteamPriceApiClient(JsonHttpClient):
             session=session,
             timeout=int(self._config.get("request_timeout_sec", 15) or 15),
             retries=int(self._config.get("request_retries", 2) or 2),
+            proxy_value=self._config.get("proxy"),
         )
 
     @property
@@ -212,11 +211,11 @@ class SteamPriceApiClient(JsonHttpClient):
     # 通用请求
     # ------------------------------------------------------------------
 
-    def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> Any:
-        return self.request_json("GET", url, params=params or {})
+    async def _get(self, url: str, params: dict[str, Any] | None = None) -> Any:
+        return await self.request_json("GET", url, params=params or {})
 
-    def _post_json(self, url: str, body: Any, params: Optional[dict[str, Any]] = None) -> Any:
-        return self.request_json(
+    async def _post_json(self, url: str, body: Any, params: dict[str, Any] | None = None) -> Any:
+        return await self.request_json(
             "POST",
             url,
             params=params or {},
@@ -228,9 +227,9 @@ class SteamPriceApiClient(JsonHttpClient):
     # Steam Store 搜索 (无需 API Key，支持中文)
     # ------------------------------------------------------------------
 
-    def search_steam(self, keyword: str, limit: int = 5) -> list[dict]:
+    async def search_steam(self, keyword: str, limit: int = 5) -> list[dict]:
         """通过 Steam Store API 搜索游戏，返回 [{appid, name}, ...]。"""
-        data = self._get(_STEAM_SEARCH_URL, params={
+        data = await self._get(_STEAM_SEARCH_URL, params={
             "term": keyword, "l": "schinese", "cc": "cn",
         })
         if isinstance(data, dict) and data.get("_error"):
@@ -258,11 +257,11 @@ class SteamPriceApiClient(JsonHttpClient):
     # ITAD: 搜索 / Lookup
     # ------------------------------------------------------------------
 
-    def itad_search(self, title: str, limit: int = 5) -> list[dict]:
+    async def itad_search(self, title: str, limit: int = 5) -> list[dict]:
         """通过 ITAD 搜索游戏，返回 [{id, title, slug, type}, ...]。"""
         if not self._api_key:
             return []
-        data = self._get(f"{_ITAD_BASE}/games/search/v1", params={
+        data = await self._get(f"{_ITAD_BASE}/games/search/v1", params={
             "key": self._api_key, "title": title, "results": limit,
         })
         if isinstance(data, dict) and data.get("_error"):
@@ -280,11 +279,11 @@ class SteamPriceApiClient(JsonHttpClient):
             if isinstance(item, dict) and item.get("id")
         ][:limit]
 
-    def itad_lookup_by_appid(self, appid: int) -> Optional[dict]:
+    async def itad_lookup_by_appid(self, appid: int) -> dict | None:
         """通过 Steam appid 查找 ITAD 游戏条目。"""
         if not self._api_key:
             return None
-        data = self._get(f"{_ITAD_BASE}/games/lookup/v1", params={
+        data = await self._get(f"{_ITAD_BASE}/games/lookup/v1", params={
             "key": self._api_key, "appid": appid,
         })
         if not isinstance(data, dict) or not data.get("found"):
@@ -299,7 +298,7 @@ class SteamPriceApiClient(JsonHttpClient):
             "type": str(game.get("type") or "game"),
         }
 
-    def itad_get_steam_appids(self, itad_ids: list[str]) -> dict[str, int]:
+    async def itad_get_steam_appids(self, itad_ids: list[str]) -> dict[str, int]:
         """通过 ITAD game IDs 反查 Steam appid (shop_id=61)。
 
         响应格式: {itad_id: ["app/12345", "sub/67890"], ...}
@@ -307,7 +306,7 @@ class SteamPriceApiClient(JsonHttpClient):
         """
         if not itad_ids:
             return {}
-        data = self._post_json(
+        data = await self._post_json(
             f"{_ITAD_BASE}/lookup/shop/{STEAM_SHOP_ID}/id/v1",
             body=itad_ids[:200],
             params={"key": self._api_key} if self._api_key else {},
@@ -333,7 +332,7 @@ class SteamPriceApiClient(JsonHttpClient):
     # ITAD: 价格概览 (当前最低价 + 历史低价)
     # ------------------------------------------------------------------
 
-    def itad_price_overview(self, game_ids: list[str]) -> dict[str, dict]:
+    async def itad_price_overview(self, game_ids: list[str]) -> dict[str, dict]:
         """批量查询 ITAD 价格概览。"""
         if not self._api_key or not game_ids:
             return {}
@@ -341,7 +340,7 @@ class SteamPriceApiClient(JsonHttpClient):
         result: dict[str, dict] = {}
         for i in range(0, len(game_ids), batch_size):
             chunk = game_ids[i:i + batch_size]
-            data = self._post_json(
+            data = await self._post_json(
                 f"{_ITAD_BASE}/games/overview/v2",
                 body=chunk,
                 params={"key": self._api_key, "country": self._country},
@@ -365,11 +364,11 @@ class SteamPriceApiClient(JsonHttpClient):
     # ITAD: 全局史低
     # ------------------------------------------------------------------
 
-    def itad_history_low(self, game_ids: list[str]) -> dict[str, dict]:
+    async def itad_history_low(self, game_ids: list[str]) -> dict[str, dict]:
         """批量查询 ITAD 全网历史最低价。"""
         if not self._api_key or not game_ids:
             return {}
-        data = self._post_json(
+        data = await self._post_json(
             f"{_ITAD_BASE}/games/historylow/v1",
             body=game_ids[:200],
             params={"key": self._api_key, "country": self._country},
@@ -399,13 +398,13 @@ class SteamPriceApiClient(JsonHttpClient):
     # 组合查询：搜索 + 价格 (一次调用完成)
     # ------------------------------------------------------------------
 
-    def search_and_price(self, keyword: str) -> Optional[dict]:
+    async def search_and_price(self, keyword: str) -> dict | None:
         """搜索游戏并返回完整的价格信息。
 
         中文关键词优先走 Steam Store 搜索（对中文友好），再通过 ITAD lookup 关联。
         英文关键词优先走 ITAD 搜索。
         """
-        game_info = self._resolve_game(keyword)
+        game_info = await self._resolve_game(keyword)
         if not game_info:
             return None
 
@@ -413,14 +412,14 @@ class SteamPriceApiClient(JsonHttpClient):
         if not itad_id:
             return game_info
 
-        overview = self.itad_price_overview([itad_id])
+        overview = await self.itad_price_overview([itad_id])
         price_data = overview.get(itad_id, {})
 
-        history = self.itad_history_low([itad_id])
+        history = await self.itad_history_low([itad_id])
         history_data = history.get(itad_id, {})
 
         if not game_info.get("appid"):
-            appids = self.itad_get_steam_appids([itad_id])
+            appids = await self.itad_get_steam_appids([itad_id])
             if itad_id in appids:
                 game_info["appid"] = appids[itad_id]
 
@@ -441,19 +440,19 @@ class SteamPriceApiClient(JsonHttpClient):
         })
         return game_info
 
-    def _resolve_game(self, keyword: str) -> Optional[dict]:
+    async def _resolve_game(self, keyword: str) -> dict | None:
         """解析关键词为游戏信息。
 
         优先级: 别名精准匹配 -> 中文走 Steam 搜索 -> 英文走 ITAD 搜索 -> Steam 回退
         """
         alias_appid = _resolve_alias(keyword)
         if alias_appid is not None:
-            return self._resolve_by_appid(alias_appid)
+            return await self._resolve_by_appid(alias_appid)
 
         if _contains_cjk(keyword):
-            return self._resolve_via_steam(keyword)
+            return await self._resolve_via_steam(keyword)
 
-        itad_results = self.itad_search(keyword, limit=5)
+        itad_results = await self.itad_search(keyword, limit=5)
         if itad_results:
             first = itad_results[0]
             return {
@@ -465,16 +464,16 @@ class SteamPriceApiClient(JsonHttpClient):
                 "others": itad_results[1:],
             }
 
-        return self._resolve_via_steam(keyword)
+        return await self._resolve_via_steam(keyword)
 
-    def _resolve_by_appid(self, appid: int) -> Optional[dict]:
+    async def _resolve_by_appid(self, appid: int) -> dict | None:
         """通过 Steam appid 直接查找 ITAD 信息。"""
-        itad_info = self.itad_lookup_by_appid(appid)
+        itad_info = await self.itad_lookup_by_appid(appid)
         itad_id = itad_info["id"] if itad_info else ""
         title = (itad_info.get("title") or "") if itad_info else ""
 
         if not title:
-            steam_results = self.search_steam(str(appid), limit=1)
+            steam_results = await self.search_steam(str(appid), limit=1)
             if steam_results:
                 title = steam_results[0].get("name") or ""
 
@@ -487,16 +486,16 @@ class SteamPriceApiClient(JsonHttpClient):
             "others": [],
         }
 
-    def _resolve_via_steam(self, keyword: str) -> Optional[dict]:
+    async def _resolve_via_steam(self, keyword: str) -> dict | None:
         """通过 Steam Store 搜索再关联 ITAD。"""
-        steam_results = self.search_steam(keyword, limit=5)
+        steam_results = await self.search_steam(keyword, limit=5)
         if not steam_results:
             return None
 
         first = steam_results[0]
         appid = first["appid"]
 
-        itad_info = self.itad_lookup_by_appid(appid)
+        itad_info = await self.itad_lookup_by_appid(appid)
         itad_id = itad_info["id"] if itad_info else ""
         itad_title = itad_info.get("title", "") if itad_info else ""
 
@@ -529,7 +528,7 @@ class SteamPriceApiClient(JsonHttpClient):
         raw_lowest = entry.get("lowest")
         lowest = raw_lowest if isinstance(raw_lowest, dict) else {}
 
-        def _extract(block: dict) -> tuple[Optional[float], int, str, str, Optional[float], str]:
+        def _extract(block: dict) -> tuple[float | None, int, str, str, float | None, str]:
             if not block:
                 return None, 0, "", "", None, ""
             price_obj = block.get("price") or {}

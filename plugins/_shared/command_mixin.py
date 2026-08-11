@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, cast
+from typing import Any, Protocol, cast
 
 from core.logger_config import get_logger
 from domain.plugins.base import PluginCommandCapabilities
@@ -28,7 +28,7 @@ class PluginCommandMixin:
             command_error_prefix = "Foo 查询出错"
             command_log_name = "FooPlugin"
 
-            def dispatch_command(self, command_text, channel, area, user, handler):
+            async def dispatch_command(self, command_text, channel, area, user, handler):
                 ...
     """
 
@@ -44,18 +44,18 @@ class PluginCommandMixin:
         parent = cast(_CommandCapabilitiesProvider, super())
         return parent.command_capabilities
 
-    def handle_mention(self, text: str, channel: str, area: str, user: str, handler: Any) -> bool:
+    async def handle_mention(self, text: str, channel: str, area: str, user: str, handler: Any) -> bool:
         for prefix in self.command_capabilities.mention_prefixes:
             if text.startswith(prefix):
-                self._run_plugin_command(text[len(prefix):].strip(), channel, area, user, handler)
+                await self._run_plugin_command(text[len(prefix):].strip(), channel, area, user, handler)
                 return True
         return False
 
-    def handle_slash(
+    async def handle_slash(
         self,
         command: str,
-        subcommand: Optional[str],
-        arg: Optional[str],
+        subcommand: str | None,
+        arg: str | None,
         channel: str,
         area: str,
         user: str,
@@ -69,25 +69,25 @@ class PluginCommandMixin:
             parts.append(str(subcommand))
         if arg:
             parts.append(str(arg))
-        self._run_plugin_command(" ".join(parts).strip(), channel, area, user, handler)
+        await self._run_plugin_command(" ".join(parts).strip(), channel, area, user, handler)
         return True
 
-    def _run_plugin_command(
+    async def _run_plugin_command(
         self, command_text: str, channel: str, area: str, user: str, handler: Any
     ) -> None:
         try:
-            self.dispatch_command(command_text, channel, area, user, handler)
+            await self.dispatch_command(command_text, channel, area, user, handler)
         except Exception as exc:
             get_logger(self.command_log_name).exception(
                 "%s: command failed: %s", self.command_log_name, command_text
             )
-            self._send(handler, f"{self.command_error_prefix}: {exc}", channel, area)
+            await self._send(handler, f"{self.command_error_prefix}: {exc}", channel, area)
 
     @staticmethod
-    def _send(handler: Any, text: str, channel: str, area: str) -> None:
-        handler.sender.send_message(text, channel=channel, area=area)
+    async def _send(handler: Any, text: str, channel: str, area: str) -> None:
+        await handler.sender.send_message(text, channel=channel, area=area)
 
-    def dispatch_command(
+    async def dispatch_command(
         self, command_text: str, channel: str, area: str, user: str, handler: Any
     ) -> None:
         """子类实现：解析并执行具体命令。"""

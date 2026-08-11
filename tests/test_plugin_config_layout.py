@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
@@ -13,9 +12,14 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 
-from app.infrastructure.plugin_runtime import config_assets, loader, module_tools
-from domain.plugins.plugin_name import normalize_plugin_name
-from domain.plugins.base import BotModule, PluginConfigField, PluginConfigSpec, PluginMetadata
+from app.infrastructure.plugin_runtime import config_assets, loader, module_tools  # noqa: E402
+from domain.plugins.base import (  # noqa: E402
+    BotModule,
+    PluginConfigField,
+    PluginConfigSpec,
+    PluginMetadata,
+)
+from domain.plugins.plugin_name import normalize_plugin_name  # noqa: E402
 
 
 class _DemoPlugin(BotModule):

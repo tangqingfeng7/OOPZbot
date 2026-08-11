@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterable
 from datetime import datetime
 from html import escape
-from typing import Iterable, Optional
 
 from .assets import mode_name, pick_avatar_url, pick_nickname, qq_avatar_url
 
@@ -55,10 +56,8 @@ def _status_rows(role_info: dict, career_data: dict) -> list[tuple[str, object]]
     prop_capital = role_info.get("propcapital")
     haf_coin = role_info.get("hafcoinnum")
     total_assets = "-"
-    try:
+    with contextlib.suppress(TypeError, ValueError):
         total_assets = f"{(float(prop_capital or 0) + float(haf_coin or 0)) / 1_000_000:.2f}M"
-    except (TypeError, ValueError):
-        pass
     return [
         ("昵称", pick_nickname({"data": {"userData": {}}, "roleInfo": role_info})),
         ("UID", role_info.get("uid") or "-"),
@@ -103,7 +102,7 @@ def build_help_text() -> str:
     )
 
 
-def format_accounts(accounts: list[dict], active_token: Optional[str]) -> str:
+def format_accounts(accounts: list[dict], active_token: str | None) -> str:
     if not accounts:
         return "当前没有已绑定账号，请先执行三角洲登录。"
     lines = ["已绑定账号列表:"]

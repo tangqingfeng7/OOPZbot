@@ -1,11 +1,8 @@
-import time
+import asyncio
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from core.async_http import ManagedHttpClient
 from core.constants import Msg
 from core.logger_config import get_logger
-from core.proxy_utils import resolve_requests_proxies
 
 logger = get_logger("LolQuery")
 
@@ -26,25 +23,12 @@ class LolQueryHandler:
 
         self._api_url = self._config.get("api_url", "")
         self._token = self._config.get("token", "")
-        self._proxies = resolve_requests_proxies(self._config.get("proxy"))
+        self._http = ManagedHttpClient(proxy_value=self._config.get("proxy"))
 
     _MAX_RETRIES = 2
     _RETRY_DELAY = 1  # seconds
 
-    def _build_session(self) -> requests.Session:
-        """构建带自动重试的 requests Session。"""
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=self._MAX_RETRIES,
-            backoff_factor=1,
-            status_forcelist=[502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        return session
-
-    def check_ban(self, qq: str) -> dict:
+    async def check_ban(self, qq: str) -> dict:
         """
         查询 QQ 号对应的 LOL 账号封禁状态。
         连接异常时最多重试 _MAX_RETRIES 次。
@@ -53,46 +37,38 @@ class LolQueryHandler:
             {"ok": True, "data": {...}} 或 {"ok": False, "error": "..."}
         """
         last_err = None
-        session = self._build_session()
-        try:
-            for attempt in range(1, self._MAX_RETRIES + 2):  # 1 次正常 + N 次重试
-                try:
-                    resp = session.get(
-                        self._api_url,
-                        params={"qq": qq, "token": self._token},
-                        proxies=self._proxies,
-                        timeout=10,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-
-                    if data.get("code") == 200:
-                        return {"ok": True, "data": data}
-                    else:
-                        return {"ok": False, "error": data.get("msg", "查询失败")}
-
-                except requests.Timeout:
-                    logger.warning(f"封号查询超时 (第{attempt}次): qq={qq}")
-                    last_err = "查询超时，请稍后再试"
-                except (requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
-                    logger.warning(f"封号查询连接异常 (第{attempt}次): qq={qq}, {e}")
-                    last_err = "连接异常，请稍后再试"
-                except Exception as e:
-                    logger.error(f"封号查询失败: {e}")
-                    return {"ok": False, "error": f"查询异常: {e}"}
-
-                if attempt <= self._MAX_RETRIES:
-                    time.sleep(self._RETRY_DELAY)
-
-            logger.error(f"封号查询最终失败 (已重试{self._MAX_RETRIES}次): qq={qq}")
-            return {"ok": False, "error": last_err or "查询失败，请稍后再试"}
-        finally:
+        for attempt in range(1, self._MAX_RETRIES + 2):  # 1 次正常 + N 次重试
             try:
-                session.close()
-            except Exception:
-                pass
+                _status, data = await self._http.request_payload(
+                    "GET",
+                    self._api_url,
+                    params={"qq": qq, "token": self._token},
+                    timeout=10,
+                )
 
-    def query_and_format(self, qq: str) -> str:
+                if isinstance(data, dict) and data.get("code") == 200:
+                    return {"ok": True, "data": data}
+                if isinstance(data, dict):
+                    return {"ok": False, "error": data.get("msg", "查询失败")}
+                return {"ok": False, "error": "查询响应格式错误"}
+
+            except asyncio.TimeoutError:
+                logger.warning(f"封号查询超时 (第{attempt}次): qq={qq}")
+                last_err = "查询超时，请稍后再试"
+            except (OSError, RuntimeError) as e:
+                logger.warning(f"封号查询连接异常 (第{attempt}次): qq={qq}, {e}")
+                last_err = "连接异常，请稍后再试"
+            except Exception as e:
+                logger.error(f"封号查询失败: {e}")
+                return {"ok": False, "error": f"查询异常: {e}"}
+
+            if attempt <= self._MAX_RETRIES:
+                await asyncio.sleep(self._RETRY_DELAY)
+
+        logger.error(f"封号查询最终失败 (已重试{self._MAX_RETRIES}次): qq={qq}")
+        return {"ok": False, "error": last_err or "查询失败，请稍后再试"}
+
+    async def query_and_format(self, qq: str) -> str:
         """查询并格式化为可发送的消息文本。"""
         qq = qq.strip()
 
@@ -102,7 +78,7 @@ class LolQueryHandler:
         if not self._config.get("enabled", False):
             return "封号查询功能未启用"
 
-        result = self.check_ban(qq)
+        result = await self.check_ban(qq)
 
         if not result["ok"]:
             return f"查询失败: {result['error']}"
@@ -129,3 +105,6 @@ class LolQueryHandler:
             lines.append(f"\n[msg] {msg}")
 
         return "\n".join(lines)
+
+    async def close(self) -> None:
+        await self._http.close()

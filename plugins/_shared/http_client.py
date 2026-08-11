@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+import asyncio
+from collections.abc import Callable
+from typing import Any
 
-import requests
+import aiohttp
 
+from core.async_http import ManagedHttpClient
 from core.constants import USER_AGENT
 from core.logger_config import get_logger
 
@@ -26,26 +29,27 @@ class JsonHttpClient:
     def __init__(
         self,
         *,
-        session: Optional[requests.Session] = None,
+        session=None,
         timeout: int = 15,
         retries: int = 2,
-        proxies: Optional[dict] = None,
+        proxies: dict | None = None,
+        proxy_value: object = None,
     ) -> None:
-        self._session = session or requests.Session()
+        self._http = session or ManagedHttpClient(proxy_value=proxy_value)
         self._timeout = max(1, int(timeout))
         self._retries = max(1, int(retries))
         self._proxies = proxies
         self._logger = get_logger(self._LOG_NAME)
 
-    def request_json(
+    async def request_json(
         self,
         method: str,
         url: str,
         *,
-        params: Optional[dict] = None,
+        params: dict | None = None,
         json: Any = None,
-        headers: Optional[dict] = None,
-        on_status: Optional[Callable[[int], Any]] = None,
+        headers: dict | None = None,
+        on_status: Callable[[int], Any] | None = None,
     ) -> Any:
         """发起带重试的 JSON 请求。
 
@@ -58,24 +62,32 @@ class JsonHttpClient:
         last_error = ""
         for attempt in range(1, self._retries + 1):
             try:
-                resp = self._session.request(
+                status, payload = await self._http.request_payload(
                     method,
                     url,
                     params=params or {},
-                    json=json,
+                    json_body=json,
                     headers=merged_headers,
                     timeout=self._timeout,
-                    proxies=self._proxies,
+                    raise_for_status=False,
                 )
                 if on_status is not None:
-                    intercepted = on_status(resp.status_code)
+                    intercepted = on_status(status)
                     if intercepted is not None:
                         return intercepted
-                resp.raise_for_status()
-                return resp.json()
-            except requests.RequestException as exc:
+                if status >= 400:
+                    raise RuntimeError(f"HTTP {status}")
+                return payload
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError, RuntimeError) as exc:
                 last_error = str(exc)
                 self._logger.warning("%s %s attempt %d: %s", method, url, attempt, exc)
             except ValueError as exc:
                 return {"_error": f"JSON 解析失败: {exc}"}
+            if attempt < self._retries:
+                await asyncio.sleep(min(attempt, 3))
         return {"_error": last_error}
+
+    async def close(self) -> None:
+        closer = getattr(self._http, "close", None)
+        if closer is not None:
+            await closer()

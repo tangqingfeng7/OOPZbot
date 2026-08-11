@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from core.logger_config import get_logger
-
 from plugins._shared.background import IntervalWorker
 
 from .api import describe_common_failure
@@ -24,32 +21,32 @@ class DeltaForcePlacePushManager(IntervalWorker):
 
     def ensure_started(self, handler) -> None:
         self._handler = handler
-        self._start_thread()
+        self._start_task()
 
-    def stop(self, join_timeout: float = 2.0) -> None:
-        super().stop(join_timeout=join_timeout)
+    async def stop(self, timeout: float = 2.0) -> None:
+        await super().stop(timeout=timeout)
 
-    def subscribe(self, user_id: str, channel_id: str, area_id: str, initial_snapshot: Optional[list[dict]] = None) -> None:
-        self._store.upsert_place_push_subscription(user_id, channel_id, area_id, initial_snapshot or [])
+    async def subscribe(self, user_id: str, channel_id: str, area_id: str, initial_snapshot: list[dict] | None = None) -> None:
+        await self._store.upsert_place_push_subscription(user_id, channel_id, area_id, initial_snapshot or [])
 
-    def unsubscribe(self, user_id: str, channel_id: str, area_id: str) -> None:
-        self._store.remove_place_push_subscription(user_id, channel_id, area_id)
+    async def unsubscribe(self, user_id: str, channel_id: str, area_id: str) -> None:
+        await self._store.remove_place_push_subscription(user_id, channel_id, area_id)
 
-    def is_subscribed(self, user_id: str, channel_id: str, area_id: str) -> bool:
-        return self._store.has_place_push_subscription(user_id, channel_id, area_id)
+    async def is_subscribed(self, user_id: str, channel_id: str, area_id: str) -> bool:
+        return await self._store.has_place_push_subscription(user_id, channel_id, area_id)
 
-    def _tick(self) -> None:
+    async def _tick(self) -> None:
         if not self._handler:
             return
-        for sub in self._store.list_place_push_subscriptions():
+        for sub in await self._store.list_place_push_subscriptions():
             if self.stopping:
                 return
             try:
-                self._process_subscription(sub)
+                await self._process_subscription(sub)
             except Exception:
                 logger.exception("DeltaForcePlacePush: process subscription failed: %s", sub)
 
-    def _process_subscription(self, sub: dict) -> None:
+    async def _process_subscription(self, sub: dict) -> None:
         handler = self._handler
         if handler is None:
             return
@@ -58,11 +55,11 @@ class DeltaForcePlacePushManager(IntervalWorker):
         area_id = str(sub.get("area_id") or "")
         if not user_id or not channel_id or not area_id:
             return
-        token = self._store.get_active_token(user_id)
+        token = await self._store.get_active_token(user_id)
         if not token:
             return
 
-        payload = self._api.get_place_status(token)
+        payload = await self._api.get_place_status(token)
         if describe_common_failure(payload):
             return
         current_tasks = self.extract_active_tasks(payload)
@@ -74,10 +71,10 @@ class DeltaForcePlacePushManager(IntervalWorker):
         )
         for text in self.find_completed_messages(previous_tasks, current_tasks):
             try:
-                handler.sender.send_message(text, channel=channel_id, area=area_id)
+                await handler.sender.send_message(text, channel=channel_id, area=area_id)
             except Exception as exc:
                 logger.warning("DeltaForcePlacePush: send completion failed: %s", exc)
-        self._store.update_place_push_snapshot(user_id, channel_id, area_id, current_tasks)
+        await self._store.update_place_push_snapshot(user_id, channel_id, area_id, current_tasks)
 
     @staticmethod
     def extract_active_tasks(payload: dict) -> list[dict]:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from core.logger_config import get_logger
 from domain.plugins.base import (
     BotModule,
@@ -15,7 +13,6 @@ from domain.plugins.base import (
     validate_min,
     validate_range,
 )
-
 from plugins._shared.command_mixin import PluginCommandMixin
 
 from .api import SteamPriceApiClient
@@ -46,7 +43,7 @@ _HELP_TEXT = (
 )
 
 
-def _fmt_price(amount: Optional[float], currency: str = "") -> str:
+def _fmt_price(amount: float | None, currency: str = "") -> str:
     if amount is None:
         return "暂无"
     label = currency or "USD"
@@ -157,9 +154,9 @@ class SteamPricePlugin(PluginCommandMixin, BotModule):
 
     def __init__(self) -> None:
         self._config: dict = {}
-        self._api: Optional[SteamPriceApiClient] = None
-        self._store: Optional[SteamPriceStore] = None
-        self._monitor: Optional[SteamPriceMonitor] = None
+        self._api: SteamPriceApiClient | None = None
+        self._store: SteamPriceStore | None = None
+        self._monitor: SteamPriceMonitor | None = None
         self._handler = None
 
     @property
@@ -232,21 +229,24 @@ class SteamPricePlugin(PluginCommandMixin, BotModule):
     # 生命周期
     # ------------------------------------------------------------------
 
-    def on_load(self, handler, config=None) -> None:
+    async def on_load(self, handler, config=None) -> None:
         self._handler = handler
         self._config = (config or {}).copy()
         self._api = SteamPriceApiClient(self._config)
         self._store = SteamPriceStore()
         self._monitor = SteamPriceMonitor(self._config, self._api, self._store)
-        if self._store.any_subscriptions() and self._api.configured:
+        await self._store.setup()
+        if await self._store.any_subscriptions() and self._api.configured:
             try:
                 self._monitor.ensure_started(handler)
             except Exception as exc:
                 logger.warning("SteamPricePlugin: monitor preload skipped: %s", exc)
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         if self._monitor:
-            self._monitor.stop()
+            await self._monitor.stop()
+        if self._api:
+            await self._api.close()
 
     # ------------------------------------------------------------------
     # 命令入口
@@ -256,73 +256,73 @@ class SteamPricePlugin(PluginCommandMixin, BotModule):
     # 命令分发
     # ------------------------------------------------------------------
 
-    def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
+    async def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
         text = command_text.strip()
         lower = text.lower()
 
         if not text or lower in {"help", "帮助"}:
-            self._send(handler, _HELP_TEXT, channel, area)
+            await self._send(handler, _HELP_TEXT, channel, area)
             return
 
         if lower in {"watchlist", "关注列表", "我的关注", "列表"}:
-            self._show_watchlist(user, handler, channel, area)
+            await self._show_watchlist(user, handler, channel, area)
             return
 
         if lower.startswith("watch "):
             game_name = text.split(None, 1)[1].strip()
-            self._add_watch(game_name, user, handler, channel, area)
+            await self._add_watch(game_name, user, handler, channel, area)
             return
         if text.startswith("关注"):
             game_name = _strip_prefix(text, "关注").strip()
             if not game_name:
-                self._send(handler, "请提供游戏名称，例如: @bot steam 关注 Cyberpunk 2077", channel, area)
+                await self._send(handler, "请提供游戏名称，例如: @bot steam 关注 Cyberpunk 2077", channel, area)
                 return
-            self._add_watch(game_name, user, handler, channel, area)
+            await self._add_watch(game_name, user, handler, channel, area)
             return
 
         if lower.startswith("unwatch "):
             id_text = text.split(None, 1)[1].strip()
             if not id_text.isdigit():
-                self._send(handler, "请提供关注 ID，例如: @bot steam 取关 1\n先用 \"关注列表\" 查看 ID", channel, area)
+                await self._send(handler, "请提供关注 ID，例如: @bot steam 取关 1\n先用 \"关注列表\" 查看 ID", channel, area)
                 return
-            self._remove_watch(int(id_text), user, handler, channel, area)
+            await self._remove_watch(int(id_text), user, handler, channel, area)
             return
         if text.startswith("取关"):
             id_text = _strip_prefix(text, "取关").strip()
             if not id_text or not id_text.isdigit():
-                self._send(handler, "请提供关注 ID，例如: @bot steam 取关 1\n先用 \"关注列表\" 查看 ID", channel, area)
+                await self._send(handler, "请提供关注 ID，例如: @bot steam 取关 1\n先用 \"关注列表\" 查看 ID", channel, area)
                 return
-            self._remove_watch(int(id_text), user, handler, channel, area)
+            await self._remove_watch(int(id_text), user, handler, channel, area)
             return
 
         if lower in {"push on", "开启推送"}:
-            self._toggle_channel_push(True, handler, channel, area)
+            await self._toggle_channel_push(True, handler, channel, area)
             return
 
         if lower in {"push off", "关闭推送"}:
-            self._toggle_channel_push(False, handler, channel, area)
+            await self._toggle_channel_push(False, handler, channel, area)
             return
 
-        self._query_price(text, handler, channel, area)
+        await self._query_price(text, handler, channel, area)
 
     # ------------------------------------------------------------------
     # 价格查询
     # ------------------------------------------------------------------
 
-    def _query_price(self, keyword: str, handler, channel: str, area: str) -> None:
+    async def _query_price(self, keyword: str, handler, channel: str, area: str) -> None:
         if not self._api:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
         if not self._api.configured:
-            self._send(handler, "插件未配置 api_key，请先在配置中填写 IsThereAnyDeal API Key。", channel, area)
+            await self._send(handler, "插件未配置 api_key，请先在配置中填写 IsThereAnyDeal API Key。", channel, area)
             return
 
-        self._send(handler, f"正在搜索 \"{keyword}\" ...", channel, area)
+        await self._send(handler, f"正在搜索 \"{keyword}\" ...", channel, area)
 
-        detail = self._api.search_and_price(keyword)
+        detail = await self._api.search_and_price(keyword)
         if not detail:
-            self._send(handler, f"未找到与 \"{keyword}\" 相关的游戏。", channel, area)
+            await self._send(handler, f"未找到与 \"{keyword}\" 相关的游戏。", channel, area)
             return
 
         text = _format_game_detail(detail)
@@ -338,38 +338,38 @@ class SteamPricePlugin(PluginCommandMixin, BotModule):
             if other_lines:
                 text += "\n\n其他匹配:\n" + "\n".join(other_lines)
 
-        self._send(handler, text, channel, area)
+        await self._send(handler, text, channel, area)
 
     # ------------------------------------------------------------------
     # 个人关注
     # ------------------------------------------------------------------
 
-    def _add_watch(self, game_name: str, user: str, handler, channel: str, area: str) -> None:
+    async def _add_watch(self, game_name: str, user: str, handler, channel: str, area: str) -> None:
         if not self._api or not self._store:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
         if not self._api.configured:
-            self._send(handler, "插件未配置 api_key。", channel, area)
+            await self._send(handler, "插件未配置 api_key。", channel, area)
             return
 
         max_watches = int(self._config.get("max_watches_per_user", 20) or 20)
-        if self._store.count_personal_watches(user) >= max_watches:
-            self._send(handler, f"关注数已达上限 ({max_watches})，请先取消部分关注。", channel, area)
+        if await self._store.count_personal_watches(user) >= max_watches:
+            await self._send(handler, f"关注数已达上限 ({max_watches})，请先取消部分关注。", channel, area)
             return
 
-        detail = self._api.search_and_price(game_name)
+        detail = await self._api.search_and_price(game_name)
         if not detail:
-            self._send(handler, f"未找到与 \"{game_name}\" 相关的游戏。", channel, area)
+            await self._send(handler, f"未找到与 \"{game_name}\" 相关的游戏。", channel, area)
             return
 
         itad_id = detail.get("itad_id") or ""
         if not itad_id:
-            self._send(handler, "无法获取该游戏的 ITAD 标识，关注失败。", channel, area)
+            await self._send(handler, "无法获取该游戏的 ITAD 标识，关注失败。", channel, area)
             return
 
-        if self._store.is_watching(user, itad_id):
-            self._send(handler, f"你已经关注了 {detail.get('title', game_name)}。", channel, area)
+        if await self._store.is_watching(user, itad_id):
+            await self._send(handler, f"你已经关注了 {detail.get('title', game_name)}。", channel, area)
             return
 
         current_price = detail.get("current_price")
@@ -377,7 +377,7 @@ class SteamPricePlugin(PluginCommandMixin, BotModule):
         currency = detail.get("currency") or "USD"
         title = detail.get("title") or game_name
 
-        watch_id = self._store.add_personal_watch(
+        watch_id = await self._store.add_personal_watch(
             user_id=user,
             itad_id=itad_id,
             app_id=detail.get("appid"),
@@ -397,26 +397,26 @@ class SteamPricePlugin(PluginCommandMixin, BotModule):
             f"史低: {_fmt_price(history_low, currency)}",
             "价格达到史低时将自动提醒你。",
         ]
-        self._send(handler, "\n".join(lines), channel, area)
+        await self._send(handler, "\n".join(lines), channel, area)
 
-    def _remove_watch(self, watch_id: int, user: str, handler, channel: str, area: str) -> None:
+    async def _remove_watch(self, watch_id: int, user: str, handler, channel: str, area: str) -> None:
         if not self._store:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
-        if self._store.remove_personal_watch(watch_id, user):
-            self._send(handler, f"已取消关注 (ID: {watch_id})", channel, area)
+        if await self._store.remove_personal_watch(watch_id, user):
+            await self._send(handler, f"已取消关注 (ID: {watch_id})", channel, area)
         else:
-            self._send(handler, f"未找到关注 {watch_id}（可能不存在或不属于你）", channel, area)
+            await self._send(handler, f"未找到关注 {watch_id}（可能不存在或不属于你）", channel, area)
 
-    def _show_watchlist(self, user: str, handler, channel: str, area: str) -> None:
+    async def _show_watchlist(self, user: str, handler, channel: str, area: str) -> None:
         if not self._store:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
-        watches = self._store.get_personal_watches(user)
+        watches = await self._store.get_personal_watches(user)
         if not watches:
-            self._send(handler, "你还没有关注任何游戏。\n使用 \"@bot steam 关注 <游戏名>\" 添加关注。", channel, area)
+            await self._send(handler, "你还没有关注任何游戏。\n使用 \"@bot steam 关注 <游戏名>\" 添加关注。", channel, area)
             return
 
         lines = ["**我的 Steam 关注列表**", ""]
@@ -429,31 +429,30 @@ class SteamPricePlugin(PluginCommandMixin, BotModule):
                 f"[{w['id']}] {w['game_name']}  |  当前 {current_text}  |  史低 {lowest_text}"
             )
         lines.append(f"\n共 {len(watches)} 个关注  |  取消: @bot steam 取关 <ID>")
-        self._send(handler, "\n".join(lines), channel, area)
+        await self._send(handler, "\n".join(lines), channel, area)
 
     # ------------------------------------------------------------------
     # 频道推送
     # ------------------------------------------------------------------
 
-    def _toggle_channel_push(self, enable: bool, handler, channel: str, area: str) -> None:
+    async def _toggle_channel_push(self, enable: bool, handler, channel: str, area: str) -> None:
         if not self._store:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
         if enable:
             min_discount = int(self._config.get("min_discount_for_push", 50) or 50)
-            self._store.subscribe_channel(channel, area, min_discount)
+            await self._store.subscribe_channel(channel, area, min_discount)
             if self._monitor and self._api and self._api.configured:
                 self._monitor.ensure_started(self._handler or handler)
-            self._send(
+            await self._send(
                 handler,
                 f"已开启当前频道的 Steam 特惠推送 (折扣 >= {min_discount}% 时推送)。",
                 channel, area,
             )
         else:
-            if not self._store.is_channel_subscribed(channel, area):
-                self._send(handler, "当前频道尚未开启 Steam 特惠推送。", channel, area)
+            if not await self._store.is_channel_subscribed(channel, area):
+                await self._send(handler, "当前频道尚未开启 Steam 特惠推送。", channel, area)
                 return
-            self._store.unsubscribe_channel(channel, area)
-            self._send(handler, "已关闭当前频道的 Steam 特惠推送。", channel, area)
-
+            await self._store.unsubscribe_channel(channel, area)
+            await self._send(handler, "已关闭当前频道的 Steam 特惠推送。", channel, area)

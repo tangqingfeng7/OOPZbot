@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from domain.plugins.base import (
     BotModule,
     PluginCommandCapabilities,
@@ -14,7 +12,6 @@ from domain.plugins.base import (
     validate_min,
     validate_range,
 )
-
 from plugins._shared.command_mixin import PluginCommandMixin
 
 from .api import ApexApiClient
@@ -33,7 +30,7 @@ class ApexPlugin(PluginCommandMixin, BotModule):
 
     def __init__(self) -> None:
         self._config: dict = {}
-        self._api: Optional[ApexApiClient] = None
+        self._api: ApexApiClient | None = None
         self._handler = None
 
     @property
@@ -96,32 +93,33 @@ class ApexPlugin(PluginCommandMixin, BotModule):
             )
         )
 
-    def on_load(self, handler, config=None) -> None:
+    async def on_load(self, handler, config=None) -> None:
         self._handler = handler
         self._config = (config or {}).copy()
         self._api = ApexApiClient(self._config)
 
-    def on_unload(self) -> None:
-        pass
+    async def on_unload(self) -> None:
+        if self._api is not None:
+            await self._api.close()
 
-    def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
+    async def dispatch_command(self, command_text: str, channel: str, area: str, user: str, handler) -> None:
         text = command_text.strip()
         lower = text.lower()
 
         if not text or lower in {"help", "帮助"}:
-            self._send(handler, build_help_text(), channel, area)
+            await self._send(handler, build_help_text(), channel, area)
             return
 
         if lower in {"map", "地图", "地图轮换", "轮换"}:
-            self._send_map_rotation(handler, channel, area)
+            await self._send_map_rotation(handler, channel, area)
             return
 
         if lower in {"crafting", "合成", "复制器", "制造"}:
-            self._send_crafting(handler, channel, area)
+            await self._send_crafting(handler, channel, area)
             return
 
         if lower in {"predator", "猎杀者", "猎杀", "pred", "大师"}:
-            self._send_predator(handler, channel, area)
+            await self._send_predator(handler, channel, area)
             return
 
         if lower.startswith("player "):
@@ -129,9 +127,9 @@ class ApexPlugin(PluginCommandMixin, BotModule):
             player_name = args[1] if len(args) > 1 else ""
             platform = args[2] if len(args) > 2 else ""
             if player_name:
-                self._send_player(player_name, platform, handler, channel, area)
+                await self._send_player(player_name, platform, handler, channel, area)
                 return
-            self._send(handler, "请提供玩家名称，例如: /apex player Shroud PC", channel, area)
+            await self._send(handler, "请提供玩家名称，例如: /apex player Shroud PC", channel, area)
             return
 
         parts = text.rsplit(None, 1)
@@ -139,61 +137,61 @@ class ApexPlugin(PluginCommandMixin, BotModule):
             "pc", "origin", "steam", "ps", "ps4", "ps5",
             "playstation", "xbox", "x1", "xb", "switch", "ns",
         ):
-            self._send_player(parts[0], parts[1], handler, channel, area)
+            await self._send_player(parts[0], parts[1], handler, channel, area)
             return
 
-        self._send_player(text, "", handler, channel, area)
+        await self._send_player(text, "", handler, channel, area)
 
-    def _send_player(self, player_name: str, platform: str, handler, channel: str, area: str) -> None:
+    async def _send_player(self, player_name: str, platform: str, handler, channel: str, area: str) -> None:
         if not self._api:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
         if not self._api.configured:
-            self._send(handler, "插件未配置 api_key，请先在配置中填写 Apex Legends API Key。", channel, area)
+            await self._send(handler, "插件未配置 api_key，请先在配置中填写 Apex Legends API Key。", channel, area)
             return
 
         if not platform:
             platform = str(self._config.get("default_platform", "PC") or "PC")
 
-        self._send(handler, f"正在查询 \"{player_name}\" ({platform}) ...", channel, area)
+        await self._send(handler, f"正在查询 \"{player_name}\" ({platform}) ...", channel, area)
 
-        data = self._api.get_player(player_name, platform)
+        data = await self._api.get_player(player_name, platform)
         result = format_player_stats(data)
-        self._send(handler, result, channel, area)
+        await self._send(handler, result, channel, area)
 
-    def _send_map_rotation(self, handler, channel: str, area: str) -> None:
+    async def _send_map_rotation(self, handler, channel: str, area: str) -> None:
         if not self._api:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
         if not self._api.configured:
-            self._send(handler, "插件未配置 api_key。", channel, area)
+            await self._send(handler, "插件未配置 api_key。", channel, area)
             return
 
-        data = self._api.get_map_rotation()
-        self._send(handler, format_map_rotation(data), channel, area)
+        data = await self._api.get_map_rotation()
+        await self._send(handler, format_map_rotation(data), channel, area)
 
-    def _send_crafting(self, handler, channel: str, area: str) -> None:
+    async def _send_crafting(self, handler, channel: str, area: str) -> None:
         if not self._api:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
         if not self._api.configured:
-            self._send(handler, "插件未配置 api_key。", channel, area)
+            await self._send(handler, "插件未配置 api_key。", channel, area)
             return
 
-        data = self._api.get_crafting_rotation()
-        self._send(handler, format_crafting_rotation(data), channel, area)
+        data = await self._api.get_crafting_rotation()
+        await self._send(handler, format_crafting_rotation(data), channel, area)
 
-    def _send_predator(self, handler, channel: str, area: str) -> None:
+    async def _send_predator(self, handler, channel: str, area: str) -> None:
         if not self._api:
-            self._send(handler, "插件未正确初始化。", channel, area)
+            await self._send(handler, "插件未正确初始化。", channel, area)
             return
 
         if not self._api.configured:
-            self._send(handler, "插件未配置 api_key。", channel, area)
+            await self._send(handler, "插件未配置 api_key。", channel, area)
             return
 
-        data = self._api.get_predator()
-        self._send(handler, format_predator(data), channel, area)
+        data = await self._api.get_predator()
+        await self._send(handler, format_predator(data), channel, area)

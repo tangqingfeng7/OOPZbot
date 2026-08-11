@@ -1,11 +1,11 @@
+import asyncio
 import json
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -30,7 +30,7 @@ class _FakePlugin(BotModule):
         return self._metadata
 
 
-class PluginRuntimeStateTest(unittest.TestCase):
+class PluginRuntimeStateTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.state_path = Path(self.temp_dir.name) / "plugin_runtime_state.json"
@@ -38,15 +38,15 @@ class PluginRuntimeStateTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def _load_side_effect(self, registry, plugin_name, plugins_dir="plugins", handler=None):
-        registry.register(_FakePlugin(plugin_name))
+    async def _load_side_effect(self, registry, plugin_name, plugins_dir="plugins", handler=None):
+        await registry.register(_FakePlugin(plugin_name))
         return PluginOperationResult.success(f"已加载 {plugin_name}", plugin_name=plugin_name)
 
-    def _unload_side_effect(self, registry, plugin_name, handler=None):
-        registry.unregister(plugin_name)
+    async def _unload_side_effect(self, registry, plugin_name, handler=None):
+        await registry.unregister(plugin_name)
         return PluginOperationResult.success(f"已卸载 {plugin_name}", plugin_name=plugin_name)
 
-    def test_load_all_initializes_state_file_when_missing(self) -> None:
+    async def test_load_all_initializes_state_file_when_missing(self) -> None:
         from app.infrastructure.runtime import PluginRuntime
 
         runtime = PluginRuntime(state_path=self.state_path)
@@ -54,14 +54,14 @@ class PluginRuntimeStateTest(unittest.TestCase):
             patch("app.infrastructure.runtime.discover_plugins", return_value=["alpha", "beta"]),
             patch("app.infrastructure.runtime.load_plugin", side_effect=self._load_side_effect),
         ):
-            loaded = runtime.load_all()
+            loaded = await runtime.load_all()
 
         self.assertEqual(loaded, ["alpha", "beta"])
         self.assertTrue(self.state_path.exists())
         payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["enabled_plugins"], ["alpha", "beta"])
 
-    def test_load_all_respects_existing_state_file(self) -> None:
+    async def test_load_all_respects_existing_state_file(self) -> None:
         from app.infrastructure.runtime import PluginRuntime
 
         self.state_path.write_text(
@@ -73,13 +73,13 @@ class PluginRuntimeStateTest(unittest.TestCase):
             patch("app.infrastructure.runtime.discover_plugins", return_value=["alpha", "beta"]),
             patch("app.infrastructure.runtime.load_plugin", side_effect=self._load_side_effect) as load_plugin,
         ):
-            loaded = runtime.load_all()
+            loaded = await runtime.load_all()
 
         self.assertEqual(loaded, ["beta"])
         self.assertEqual(load_plugin.call_count, 1)
         self.assertEqual(runtime.enabled_plugin_names(), ["beta"])
 
-    def test_load_and_unload_refresh_state_file(self) -> None:
+    async def test_load_and_unload_refresh_state_file(self) -> None:
         from app.infrastructure.runtime import PluginRuntime
 
         runtime = PluginRuntime(state_path=self.state_path)
@@ -87,23 +87,23 @@ class PluginRuntimeStateTest(unittest.TestCase):
             patch("app.infrastructure.runtime.load_plugin", side_effect=self._load_side_effect),
             patch("app.infrastructure.runtime.unload_plugin", side_effect=self._unload_side_effect),
         ):
-            load_result = runtime.load("alpha")
-            unload_result = runtime.unload("alpha")
+            load_result = await runtime.load("alpha")
+            unload_result = await runtime.unload("alpha")
 
         self.assertTrue(load_result.ok)
         self.assertTrue(unload_result.ok)
         payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["enabled_plugins"], [])
 
-    def test_persistence_failure_returns_failure_but_keeps_memory_state(self) -> None:
+    async def test_persistence_failure_returns_failure_but_keeps_memory_state(self) -> None:
         from app.infrastructure.runtime import PluginRuntime
 
         runtime = PluginRuntime(state_path=self.state_path)
         with (
             patch("app.infrastructure.runtime.load_plugin", side_effect=self._load_side_effect),
-            patch.object(runtime, "_persist_enabled_plugins", return_value="disk error"),
+            patch.object(runtime, "_persist_enabled_plugins_sync", return_value="disk error"),
         ):
-            result = runtime.load("alpha")
+            result = await runtime.load("alpha")
 
         self.assertFalse(result.ok)
         self.assertEqual(result.code, PluginOperationCode.LOAD_FAILED)
@@ -114,7 +114,7 @@ class PluginRuntimeStateTest(unittest.TestCase):
         self.assertEqual(PluginOperationCode.SUCCESS, "success")
         self.assertEqual(str(PluginOperationCode.SUCCESS), "success")
 
-    def test_stop_unloads_plugins_once_without_disabling_next_start(self) -> None:
+    async def test_stop_unloads_plugins_once_without_disabling_next_start(self) -> None:
         from app.infrastructure.runtime import PluginRuntime
 
         self.state_path.write_text(
@@ -123,59 +123,59 @@ class PluginRuntimeStateTest(unittest.TestCase):
         )
         runtime = PluginRuntime(state_path=self.state_path)
         plugin = _FakePlugin("alpha")
-        runtime.registry.register(plugin)
+        await runtime.registry.register(plugin)
 
-        with patch.object(plugin, "on_unload") as on_unload:
-            runtime.stop()
-            runtime.stop()
+        with patch.object(plugin, "on_unload", new_callable=AsyncMock) as on_unload:
+            await runtime.stop()
+            await runtime.stop()
 
-        on_unload.assert_called_once_with()
+        on_unload.assert_awaited_once_with()
         self.assertEqual(runtime.enabled_plugin_names(), [])
         payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["enabled_plugins"], ["alpha"])
 
-    def test_stop_returns_within_budget_when_plugin_unload_blocks(self) -> None:
+    async def test_stop_returns_within_budget_when_plugin_unload_blocks(self) -> None:
         from app.infrastructure.runtime import PluginRuntime
 
         runtime = PluginRuntime(state_path=self.state_path)
         plugin = _FakePlugin("slow")
-        runtime.registry.register(plugin)
-        entered = threading.Event()
-        release = threading.Event()
+        await runtime.registry.register(plugin)
+        entered = asyncio.Event()
+        release = asyncio.Event()
 
-        def blocking_unload() -> None:
+        async def blocking_unload() -> None:
             entered.set()
-            release.wait(timeout=1)
+            await release.wait()
 
-        with patch.object(plugin, "on_unload", side_effect=blocking_unload):
+        with patch.object(plugin, "on_unload", new=AsyncMock(side_effect=blocking_unload)):
             started_at = time.monotonic()
-            runtime.stop(timeout=0.03)
+            await runtime.stop(timeout=0.03)
             elapsed = time.monotonic() - started_at
             self.assertTrue(entered.is_set())
             self.assertLess(elapsed, 0.15)
-            release.set()
-            if runtime._stop_thread:
-                runtime._stop_thread.join(timeout=1)
 
-    def test_stop_uses_reverse_order_and_isolates_plugin_failures(self) -> None:
+    async def test_stop_uses_reverse_order_and_isolates_plugin_failures(self) -> None:
         from app.infrastructure.runtime import PluginRuntime
 
         runtime = PluginRuntime(state_path=self.state_path)
         first = _FakePlugin("first")
         second = _FakePlugin("second")
-        runtime.registry.register(first)
-        runtime.registry.register(second)
+        await runtime.registry.register(first)
+        await runtime.registry.register(second)
         calls: list[str] = []
 
-        def fail_second() -> None:
+        async def unload_first() -> None:
+            calls.append("first")
+
+        async def fail_second() -> None:
             calls.append("second")
             raise RuntimeError("second unload failed")
 
         with (
-            patch.object(first, "on_unload", side_effect=lambda: calls.append("first")),
-            patch.object(second, "on_unload", side_effect=fail_second),
+            patch.object(first, "on_unload", new=AsyncMock(side_effect=unload_first)),
+            patch.object(second, "on_unload", new=AsyncMock(side_effect=fail_second)),
         ):
-            runtime.stop(timeout=1)
+            await runtime.stop(timeout=1)
 
         self.assertEqual(calls, ["second", "first"])
 

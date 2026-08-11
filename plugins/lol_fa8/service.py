@@ -1,14 +1,12 @@
+import asyncio
+import contextlib
 import hashlib
 import json
 import os
 import re
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
-from requests.adapters import HTTPAdapter
-
+from core.async_http import ManagedHttpClient
 from core.constants import USER_AGENT, Msg
 from core.logger_config import get_logger
 
@@ -78,7 +76,7 @@ _RE_SKIN = re.compile(r"皮肤:\s*(\d+)\s*个")
 
 _CHAMPION_NAMES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "champion_names.json")
 
-with open(_CHAMPION_NAMES_PATH, "r", encoding="utf-8") as _f:
+with open(_CHAMPION_NAMES_PATH, encoding="utf-8") as _f:
     CHAMPION_EN_TO_CN: dict[str, str] = json.load(_f)
 
 
@@ -135,157 +133,158 @@ def _parse_match_cards(html: str) -> list[dict]:
 
 
 class FA8Client:
-    """FA8 API 客户端，自动管理登录态，后台线程每 5 秒检查并保活"""
+    """FA8 API 异步客户端，自动管理登录态。"""
 
     _KEEPALIVE_INTERVAL = 5  # 秒
 
     def __init__(self, username: str = "", password: str = ""):
         self._user = (username or "").strip()
         self._pwd = (password or "").strip()
-        self._session = requests.Session()
-        adapter = HTTPAdapter(
-            pool_connections=10, pool_maxsize=10,
+        self._http = ManagedHttpClient(
+            headers={
+                "User-Agent": USER_AGENT,
+                "Origin": BASE_URL,
+                "Referer": f"{BASE_URL}/",
+            }
         )
-        self._session.mount("https://", adapter)
-        self._session.headers.update({
-            "User-Agent": USER_AGENT,
-            "Origin": BASE_URL,
-            "Referer": f"{BASE_URL}/",
-            "Connection": "keep-alive",
-        })
-        self._pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="FA8")
         self._logged_in = False
-        self._lock = threading.Lock()
-        self._keepalive_thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
+        self._lock = asyncio.Lock()
+        self._keepalive_task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
         self._start_keepalive()
 
     # ------------------------------------------------------------------
     # 登录保活
     # ------------------------------------------------------------------
 
-    def _start_keepalive(self):
-        """启动后台保活线程"""
+    def _start_keepalive(self) -> None:
+        """启动可取消的异步保活任务。"""
         if not self._user or not self._pwd:
             return
-        if self._keepalive_thread and self._keepalive_thread.is_alive():
+        if self._keepalive_task and not self._keepalive_task.done():
             return
         self._stop_event.clear()
-        self._keepalive_thread = threading.Thread(
-            target=self._keepalive_loop, daemon=True, name="FA8-keepalive",
+        self._keepalive_task = asyncio.create_task(
+            self._keepalive_loop(),
+            name="fa8-keepalive",
         )
-        self._keepalive_thread.start()
-        logger.info("FA8 保活线程已启动 (间隔 %ds)", self._KEEPALIVE_INTERVAL)
+        logger.info("FA8 异步保活已启动 (间隔 %ds)", self._KEEPALIVE_INTERVAL)
 
-    def _keepalive_loop(self):
+    async def _keepalive_loop(self) -> None:
         """后台循环：检查登录状态，失效则自动重新登录"""
         while not self._stop_event.is_set():
             try:
-                self._check_and_login()
+                await self._check_and_login()
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.debug(f"FA8 保活检查异常: {e}")
-            self._stop_event.wait(self._KEEPALIVE_INTERVAL)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self._KEEPALIVE_INTERVAL,
+                )
 
-    def _check_and_login(self):
+    async def _check_and_login(self) -> None:
         """检查 Cookie 是否有效，无效则重新登录"""
-        with self._lock:
-            cookies = {c.name: c.value for c in self._session.cookies}
+        async with self._lock:
+            session = await self._http.session()
+            cookies = {cookie.key: cookie.value for cookie in session.cookie_jar}
             if cookies.get("name") and cookies.get("sign"):
                 self._logged_in = True
                 return
             self._logged_in = False
-            self._do_login()
+            await self._do_login()
 
-    def _do_login(self) -> bool:
+    async def _do_login(self) -> bool:
         """执行登录请求（调用方需持有 _lock）"""
         try:
             ts = _ts()
-            resp = self._session.post(
+            _status, data = await self._http.request_payload(
+                "POST",
                 f"{BASE_URL}/api/api.php?act=login",
                 data={"user": self._user, "pwd": self._pwd, "time": ts},
                 timeout=15,
             )
-            data = resp.json()
-            if data.get("code") == 0:
+            if isinstance(data, dict) and data.get("code") == 0:
                 self._logged_in = True
                 logger.info("FA8 登录成功")
                 return True
-            logger.warning(f"FA8 登录失败: {data.get('msg', '未知错误')}")
+            message = data.get("msg", "未知错误") if isinstance(data, dict) else "响应格式错误"
+            logger.warning(f"FA8 登录失败: {message}")
             return False
         except Exception as e:
             logger.error(f"FA8 登录异常: {e}")
             return False
 
-    def _ensure_login(self) -> bool:
+    async def _ensure_login(self) -> bool:
         if self._logged_in:
             return True
-        with self._lock:
+        async with self._lock:
             if self._logged_in:
                 return True
             if not self._user or not self._pwd:
                 logger.error("FA8 账号或密码未配置")
                 return False
-            return self._do_login()
+            return await self._do_login()
 
-    def _post_api(self, endpoint: str, data: dict, retry: bool = True) -> dict:
+    async def _post_api(self, endpoint: str, data: dict, retry: bool = True) -> dict:
         """发送 API 请求，自动处理登录"""
-        if not self._ensure_login():
+        if not await self._ensure_login():
             return {"code": -1, "msg": "登录失败，请检查 FA8 账号配置"}
         try:
-            resp = self._session.post(
+            _status, result = await self._http.request_payload(
+                "POST",
                 f"{BASE_URL}/api/{endpoint}",
                 data=data,
                 timeout=10,
             )
-            result = resp.json()
+            if not isinstance(result, dict):
+                return {"code": -1, "msg": "响应格式错误"}
             msg = str(result.get("msg", ""))
             is_auth_error = result.get("code") != 0 and "登录" in msg
             if is_auth_error and retry:
                 self._logged_in = False
-                return self._post_api(endpoint, data, retry=False)
+                return await self._post_api(endpoint, data, retry=False)
             return result
         except Exception as e:
             logger.error(f"FA8 API 请求失败 [{endpoint}]: {e}")
             return {"code": -1, "msg": f"请求异常: {e}"}
 
-    def query_summoner(self, name: str, area: str) -> dict:
+    async def query_summoner(self, name: str, area: str) -> dict:
         """查询召唤师基本信息"""
         ts = _ts()
         sign = _md5(f"{name}{ts}{area}{ts}#6352")
-        return self._post_api("tyapi.php?act=cxinfo", {
+        return await self._post_api("tyapi.php?act=cxinfo", {
             "name": name, "area": area, "sign": sign, "time": ts,
         })
 
-    def query_games(self, puuid: str, area: str, tag: str = "all", page: str = "0") -> dict:
+    async def query_games(self, puuid: str, area: str, tag: str = "all", page: str = "0") -> dict:
         """查询历史战绩"""
         ts = _ts()
         sign = _md5(f"{puuid}{ts}{area}{ts}{tag}{page}#6662")
-        return self._post_api("tyapi.php?act=cxgame", {
+        return await self._post_api("tyapi.php?act=cxgame", {
             "puuid": puuid, "area": area, "page": page,
             "sign": sign, "tag": tag, "time": ts,
         })
 
-    def query_current_game(self, puuid: str, area: str) -> dict:
+    async def query_current_game(self, puuid: str, area: str) -> dict:
         """查询当前对局"""
         ts = _ts()
         sign = _md5(f"{puuid}{ts}{area}{ts}#6362")
-        return self._post_api("tyapi.php?act=nowcx", {
+        return await self._post_api("tyapi.php?act=nowcx", {
             "puuid": puuid, "area": area, "sign": sign, "time": ts,
         })
 
-    def stop(self):
-        """停止保活线程并释放网络/线程池资源。"""
+    async def stop(self) -> None:
+        """停止保活任务并释放网络资源。"""
         self._stop_event.set()
-        if self._keepalive_thread and self._keepalive_thread.is_alive():
-            self._keepalive_thread.join(timeout=2)
-        try:
-            self._pool.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
-        try:
-            self._session.close()
-        except Exception:
-            pass
+        task = self._keepalive_task
+        self._keepalive_task = None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await self._http.close()
 
 
 class FA8Handler:
@@ -300,12 +299,10 @@ class FA8Handler:
             password=self._config.get("password", ""),
         )
 
-    def close(self):
+    async def close(self):
         """释放内部客户端资源（插件卸载时调用）。"""
-        try:
-            self._client.stop()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            await self._client.stop()
 
     def _resolve_area(self, text: str) -> tuple[str, list[str]]:
         """
@@ -338,33 +335,47 @@ class FA8Handler:
 
         return text, [default_area]
 
-    def _search_summoner(self, name: str, areas: list[str]) -> tuple[str, dict] | None:
-        """在多个大区中并行搜索召唤师，返回 (area_id, info) 或 None"""
+    async def _search_summoner(self, name: str, areas: list[str]) -> tuple[str, dict] | None:
+        """在多个大区中并行搜索召唤师，返回 (area_id, info) 或 None。
+
+        全部大区并发发起，但**按 areas 顺序**逐个等待结果：
+
+        - 结果确定：同名召唤师存在于多个大区时，总是返回配置顺序靠前的那个，
+          不像「谁先响应谁赢」那样随机。
+        - 尽早返回：命中即返回并取消其余请求，不必像 ``gather`` 那样等最慢的大区
+          （单次查询超时 10s，区组搜索会同时查好几个区）。
+
+        既然要保证区序，就不可能在高优先大区出结果之前返回低优先大区的命中，
+        因此「按序等待」已经是确定性前提下最早的返回时机。
+        """
         if len(areas) == 1:
-            info = self._client.query_summoner(name, areas[0])
+            info = await self._client.query_summoner(name, areas[0])
             if info.get("code") == 0:
                 return areas[0], info
             return None
 
-        pool = self._client._pool
-        futures = {
-            pool.submit(self._client.query_summoner, name, a): a
-            for a in areas
-        }
+        tasks = [
+            asyncio.create_task(self._client.query_summoner(name, area))
+            for area in areas
+        ]
         try:
-            for fut in as_completed(futures):
+            for area, task in zip(areas, tasks, strict=False):
                 try:
-                    info = fut.result()
-                    if info.get("code") == 0:
-                        return futures[fut], info
-                except Exception:
-                    pass
+                    info = await task
+                except Exception as exc:
+                    logger.debug("FA8 大区 %s 查询失败: %s", area, exc)
+                    continue
+                if isinstance(info, dict) and info.get("code") == 0:
+                    return area, info
+            return None
         finally:
-            for fut in futures:
-                fut.cancel()
-        return None
+            # 命中后剩下的请求不再有意义；不取消会留下悬挂任务。
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    def query_and_format(self, raw_input: str) -> str:
+    async def query_and_format(self, raw_input: str) -> str:
         """查询召唤师战绩并格式化为消息文本"""
         if not self._config.get("enabled", False):
             return "战绩查询功能未启用，请在 config/plugins/lol_fa8/config.json 中配置"
@@ -387,7 +398,7 @@ class FA8Handler:
                     group_label = f"联盟{alias}"
                     break
 
-        result = self._search_summoner(name, areas)
+        result = await self._search_summoner(name, areas)
         if result is None:
             if is_group:
                 return f"{Msg.ERR} 在{group_label}所有服务器中均未找到该玩家"
@@ -468,11 +479,10 @@ class FA8Handler:
                 lines.append(f"    {i}. {c['name']} - {c['level']} ({c['points']:,})")
 
         if puuid:
-            pool = self._client._pool
-            games_fut = pool.submit(self._client.query_games, puuid, area)
-            current_fut = pool.submit(self._client.query_current_game, puuid, area)
-            games = games_fut.result()
-            current = current_fut.result()
+            games, current = await asyncio.gather(
+                self._client.query_games(puuid, area),
+                self._client.query_current_game(puuid, area),
+            )
 
             if games.get("code") == 0:
                 win = games.get("win", 0)

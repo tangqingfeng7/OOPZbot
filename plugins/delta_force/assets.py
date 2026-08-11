@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import unquote
 
-
 PLUGIN_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = PLUGIN_DIR / "assets"
 TEMPLATES_DIR = ASSETS_DIR / "templates"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -23,7 +23,6 @@ def _rank_display(rank_data: dict) -> str:
     name = _safe_str(rank_data.get("rankName"), "未知")
     div = _safe_str(rank_data.get("rankDiv"))
     score = _safe_int(rank_data.get("rankScore"))
-    img = _safe_str(rank_data.get("rankImg"))
     parts = [name]
     if div and div != "0":
         parts.append(div)
@@ -195,8 +194,6 @@ def format_crafting_rotation(data: Any) -> str:
         if not isinstance(bundle, dict):
             continue
         bundle_type = _safe_str(bundle.get("bundleType"), "未知")
-        start = _safe_str(bundle.get("startDate"))
-        end = _safe_str(bundle.get("endDate"))
         items = bundle.get("bundleContent") or []
 
         type_labels = {

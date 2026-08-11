@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from core.logger_config import get_logger
 
@@ -235,13 +235,15 @@ class DeltaForceRenderer:
         self._timeout_ms = max(5000, int(float(self._config.get("render_timeout_sec", 30) or 30) * 1000))
         self._temp_dir = Path(str(self._config.get("temp_dir") or "data/delta_force"))
         self._render_dir = self._temp_dir / "renders"
-        self._render_dir.mkdir(parents=True, exist_ok=True)
+
+    async def setup(self) -> None:
+        await asyncio.to_thread(self._render_dir.mkdir, parents=True, exist_ok=True)
 
     @property
     def render_dir(self) -> Path:
         return self._render_dir
 
-    def render_to_image(self, template_name: str, context: dict) -> Optional[str]:
+    async def render_to_image(self, template_name: str, context: dict) -> str | None:
         base_tpl_path = TEMPLATES_DIR / "base.html"
         if not base_tpl_path.is_file():
             logger.warning("DeltaForceRender: base template not found: %s", base_tpl_path)
@@ -251,7 +253,8 @@ class DeltaForceRenderer:
             return None
         try:
             theme_vars = {**_THEME_DEFAULTS, **THEMES[template_name]}
-            tpl = Template(base_tpl_path.read_text(encoding="utf-8"))
+            template_text = await asyncio.to_thread(base_tpl_path.read_text, encoding="utf-8")
+            tpl = Template(template_text)
             html = tpl.safe_substitute(
                 title=str(context.get("title") or ""),
                 subtitle=str(context.get("subtitle") or ""),
@@ -269,39 +272,39 @@ class DeltaForceRenderer:
         png_path = self._render_dir / f"{base_name}.png"
 
         try:
-            html_path.write_text(html, encoding="utf-8")
+            await asyncio.to_thread(html_path.write_text, html, encoding="utf-8")
         except OSError as exc:
             logger.warning("DeltaForceRender: failed to write html: %s", exc)
             return None
 
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.async_api import async_playwright
         except Exception as exc:
             logger.warning("DeltaForceRender: playwright unavailable: %s", exc)
-            self.safe_cleanup(html_path)
+            await self.safe_cleanup(html_path)
             return None
 
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True, channel="chromium", args=_PLAYWRIGHT_RENDER_ARGS)
-                page = browser.new_page(viewport={"width": self._width, "height": 2200})
-                page.goto(html_path.resolve().as_uri(), wait_until="networkidle", timeout=self._timeout_ms)
-                page.locator("#poster").screenshot(path=str(png_path))
-                browser.close()
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True, channel="chromium", args=_PLAYWRIGHT_RENDER_ARGS)
+                page = await browser.new_page(viewport={"width": self._width, "height": 2200})
+                await page.goto(html_path.resolve().as_uri(), wait_until="networkidle", timeout=self._timeout_ms)
+                await page.locator("#poster").screenshot(path=str(png_path))
+                await browser.close()
         except Exception as exc:
             logger.warning("DeltaForceRender: screenshot failed: %s", exc)
-            self.safe_cleanup(html_path)
-            self.safe_cleanup(png_path)
+            await self.safe_cleanup(html_path)
+            await self.safe_cleanup(png_path)
             return None
 
-        self.safe_cleanup(html_path)
+        await self.safe_cleanup(html_path)
         return str(png_path)
 
     @staticmethod
-    def safe_cleanup(path: os.PathLike | str | None) -> None:
+    async def safe_cleanup(path: os.PathLike | str | None) -> None:
         if not path:
             return
         try:
-            Path(path).unlink(missing_ok=True)
-        except Exception:
+            await asyncio.to_thread(Path(path).unlink, missing_ok=True)
+        except OSError:
             return
