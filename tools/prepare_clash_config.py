@@ -40,7 +40,7 @@ def _apply_updates(text: str, updates: list[tuple[str, str]]) -> str:
 
     missing = [f"{key}: {rendered[key]}" for key, _ in updates if not seen[key]]
     if missing:
-        output = missing + [""] + output
+        output = [*missing, "", *output]
 
     return "\n".join(output).rstrip() + "\n"
 

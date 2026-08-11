@@ -31,7 +31,7 @@ def _is_jwt_expired(token: str) -> bool:
 def ensure_playwright():
     """确保 playwright 和 chromium 已安装"""
     try:
-        from playwright.async_api import async_playwright  # noqa: F401
+        from playwright.async_api import async_playwright
         return True
     except ImportError:
         print("[!] playwright 未安装，正在安装...")
@@ -283,13 +283,17 @@ JS_GET_CAPTURED = """
 def jwk_to_pem(jwk_data):
     """将 JWK 格式的 RSA 私钥转换为 PEM"""
     try:
-        from cryptography.hazmat.primitives.asymmetric.rsa import (
-            RSAPrivateNumbers, RSAPublicNumbers,
-            rsa_crt_dmp1, rsa_crt_dmq1, rsa_crt_iqmp,
-        )
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.backends import default_backend
         import base64
+
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.rsa import (
+            RSAPrivateNumbers,
+            RSAPublicNumbers,
+            rsa_crt_dmp1,
+            rsa_crt_dmq1,
+            rsa_crt_iqmp,
+        )
 
         jwk = json.loads(jwk_data) if isinstance(jwk_data, str) else jwk_data
 
@@ -375,7 +379,7 @@ async def capture_credentials() -> dict[str, str | None]:
                 if _is_jwt_expired(sig):
                     if not request_warned_expired:
                         request_warned_expired = True
-                        print(f"  [!] 检测到过期 JWT，已跳过。请在浏览器中重新登录以获取新 Token")
+                        print("  [!] 检测到过期 JWT，已跳过。请在浏览器中重新登录以获取新 Token")
                 else:
                     credentials["jwt_token"] = sig
                     preview = sig[:50] + "..." if len(sig) > 50 else sig
@@ -408,7 +412,7 @@ async def capture_credentials() -> dict[str, str | None]:
                         if _is_jwt_expired(ws_sig):
                             if not frame_warned_expired:
                                 frame_warned_expired = True
-                                print(f"  [!] 检测到过期 JWT (ws)，已跳过。请在浏览器中重新登录以获取新 Token")
+                                print("  [!] 检测到过期 JWT (ws)，已跳过。请在浏览器中重新登录以获取新 Token")
                         else:
                             credentials["jwt_token"] = ws_sig
                             preview = ws_sig[:50] + "..." if len(ws_sig) > 50 else ws_sig
@@ -484,7 +488,7 @@ async def _try_extract_key(page) -> str | None:
 
         pem = captured.get("pem")
         if pem:
-            print(f"  [✓] RSA 私钥:  已通过 Crypto API 钩子捕获")
+            print("  [✓] RSA 私钥:  已通过 Crypto API 钩子捕获")
             return pem
     except Exception as exc:
         print(f"  [!] 读取钩子数据失败: {exc}")
@@ -510,7 +514,7 @@ async def _try_extract_key(page) -> str | None:
                 if jwk:
                     pem = jwk_to_pem(jwk)
                     if pem:
-                        print(f"  [✓] RSA 私钥:  已从 JWK 转换为 PEM")
+                        print("  [✓] RSA 私钥:  已从 JWK 转换为 PEM")
                         return pem
         else:
             print("  [i] 存储扫描未发现任何密钥数据")
@@ -578,7 +582,7 @@ async def _retry_with_clear(page) -> str | None:
             captured = await page.evaluate(JS_GET_CAPTURED)
             pem = captured.get("pem")
             if pem:
-                print(f"  [✓] RSA 私钥:  刷新后通过钩子成功捕获！")
+                print("  [✓] RSA 私钥:  刷新后通过钩子成功捕获！")
                 return pem
             events = captured.get("events", [])
             if events and i % 3 == 0:
@@ -622,7 +626,7 @@ def display_results(credentials):
         print(f"        {lines[0]}")
         if len(lines) > 2:
             print(f"        {lines[1][:60]}...")
-            print(f"        ...")
+            print("        ...")
         print(f"        {lines[-1]}")
 
     print()
@@ -638,7 +642,7 @@ def save_config(credentials):
     has_config = any(credentials.get(k) for k in ("person_uid", "device_id", "jwt_token"))
     if has_config:
         if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 content = f.read()
 
             replacements = {

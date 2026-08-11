@@ -1,4 +1,3 @@
-"""增量 Ruff/Pyright 门禁差异行定位测试。"""
 
 from __future__ import annotations
 
