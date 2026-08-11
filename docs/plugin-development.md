@@ -39,8 +39,8 @@ class FooPlugin(PluginCommandMixin, BotModule):
     command_error_prefix = "Foo 查询出错"
     command_log_name = "FooPlugin"
 
-    def dispatch_command(self, command_text, channel, area, user, handler):
-        ...
+    async def dispatch_command(self, command_text, channel, area, user, handler):
+        await self._send(handler, "处理完成", channel, area)
 ```
 
 只有需要特殊路由的插件（例如 arc 的 `/arcevent` 走独立截图逻辑）才自行覆盖 `handle_slash`；
@@ -107,8 +107,8 @@ python tools/export_plugin_config_assets.py delta_force lol_ban
 `plugins/_shared/` 提供了插件间复用的基类，避免每个插件重复造轮子：
 
 - `PluginCommandMixin`（`_shared/command_mixin.py`）：统一的 mention/slash 命令入口。插件继承它后只需实现 `dispatch_command`，前缀剥离、slash 匹配、异常包装与统一发送都由 mixin 完成。当前全部插件均采用此写法（参考 `apex`、`steam_price`、`lol_ban` 等），新插件请遵循。
-- `IntervalWorker`（`_shared/background.py`）：按固定间隔运行的守护线程基类，统一封装「启动一次 / 停止 / 间隔轮询」生命周期。子类只需实现 `_tick()`，并在合适时机调用 `_start_thread()` 与 `stop()`；线程以「先等待 `interval` 再执行一轮」驱动，`_tick` 抛出的异常会被记录而不致线程退出，长循环里可用 `self.stopping` 提前退出。适合做定时推送 / 轮询监控（参考 `delta_force/daily_push.py`、`steam_price/monitor.py`）。
-- `JsonHttpClient`（`_shared/http_client.py`）：带重试与 JSON 解析的 HTTP 客户端基类，统一封装 User-Agent、超时、代理与重试循环。通过 `request_json(method, url, ...)` 发起请求，成功返回解析后的 JSON，网络异常重试耗尽或 JSON 解析失败返回 `{"_error": ...}`；`on_status` 回调可在 `raise_for_status` 之前拦截 404/429 等状态码自定义返回（参考 `apex/api.py`、`steam_price/api.py`）。
+- `IntervalWorker`（`_shared/background.py`）：按固定间隔运行的可取消 `asyncio.Task` 基类，统一封装「启动一次 / 停止 / 间隔轮询」生命周期。子类实现 `async def _tick()`，在合适时机调用 `_start_task()`，卸载时 `await stop()`；长循环里可用 `self.stopping` 提前退出。适合定时推送和轮询监控（参考 `delta_force/daily_push.py`、`steam_price/monitor.py`）。
+- `JsonHttpClient`（`_shared/http_client.py`）：带重试与 JSON 解析的异步 HTTP 客户端基类，统一封装 User-Agent、超时、代理与重试循环。通过 `await request_json(method, url, ...)` 发起请求，成功返回解析后的 JSON，网络异常重试耗尽或 JSON 解析失败返回 `{"_error": ...}`；`on_status` 回调可拦截 404/429 等状态码（参考 `apex/api.py`、`steam_price/api.py`）。
 
 另外，默认值应以 `config_spec` 为单一来源——若需要在 service 层拿到默认配置，可从 `config_spec.fields` 派生，而不要再单独维护一份 `_DEFAULT_CONFIG` 字典（参考 `lol_ban` / `lol_fa8`）。
 
@@ -140,7 +140,7 @@ python tools/create_plugin_scaffold.py admin_demo --admin-only
 
 1. 先用脚手架创建插件骨架。
 2. 补充 `metadata`、`command_capabilities` 和 `config_spec`。
-3. 实现业务逻辑和 `on_load / on_unload`。
+3. 用 `async def` 实现业务逻辑和 `on_load / on_config_reload / on_unload`，所有发送、HTTP 与数据库调用都直接 `await`。
 4. 运行配置资产导出命令。
 5. 补测试，至少覆盖能力声明和配置资产一致性。
 

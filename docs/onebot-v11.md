@@ -1,6 +1,6 @@
-# OneBot v11 旁路适配
+# Oopz-SDK OneBot v11 适配
 
-OneBot v11 旁路服务会在现有 Oopz Bot 旁边额外启动一个 OneBot 接口。它不会替换当前的 Oopz 命令、插件、音乐播放、Web 播放器和管理后台。
+项目直接使用内置 Oopz-SDK v0.15.0 的 OneBot v11 adapter/server；本项目仅补齐消息历史、成员通知、管理员映射、成员列表上限和 heartbeat。它不会替换当前的 Oopz 命令、插件、音乐播放、Web 播放器和管理后台。
 
 默认是关闭的。启用后，Bot 仍然照常连接 Oopz；同时把收到的 Oopz 消息转换成 OneBot v11 事件，给 NoneBot、AstrBot、Hoshino 等支持 OneBot v11 的程序使用。
 
@@ -50,7 +50,7 @@ ONEBOT_V11_CONFIG = {
 python main.py
 ```
 
-启动成功后，日志里会出现 `OneBot v11 旁路服务已启动`。默认监听：
+启动成功后，SDK 会记录 `OneBot v11 server started`。默认监听：
 
 ```text
 http://127.0.0.1:6700
@@ -162,7 +162,7 @@ Oopz 的 ID 多数是字符串，但 OneBot v11 常用数字 ID。旁路服务�
 data/onebot_v11.sqlite3
 ```
 
-不要随便删除这个文件。删掉后数字 ID 会重新生成，外部程序里缓存的 `group_id`、`user_id`、`message_id` 可能失效。
+不要随便删除这个文件。删掉后数字 ID 会重新生成，外部程序里缓存的 `group_id`、`user_id`、`message_id` 可能失效。首次从旧实现迁移时，会先创建不覆盖的 `<数据库名>.pre-sdk-v0.15.0.bak`，随后在一个事务内迁移 ID 和消息记录；失败会回滚并停止 OneBot 启动。
 
 ## 事件格式
 
@@ -247,7 +247,7 @@ Oopz 域成员加入/退出会转成 OneBot v11 的 `notice.group_increase` / `n
 {
   "post_type": "meta_event",
   "meta_event_type": "heartbeat",
-  "status": {"online": true, "good": true, "self": {"platform": "oopz", "user_id": 12345678}},
+  "status": {"online": true, "good": true},
   "interval": 15000
 }
 ```
@@ -312,7 +312,7 @@ Oopz 好友请求会转成 OneBot v11 `request.friend`：
 | `get_group_list` | 获取已加入域下的频道列表 |
 | `get_group_info` | 获取频道信息 |
 | `get_group_member_info` | 获取域成员信息 |
-| `get_group_member_list` | 获取域成员列表 |
+| `get_group_member_list` | 获取域成员列表，最多返回 `member_list_max` 项 |
 | `set_group_name` | 修改 Oopz 频道名 |
 | `cleanup_message_mapping` | 清理旧消息映射 |
 

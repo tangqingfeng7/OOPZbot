@@ -160,8 +160,8 @@ POST /im/session/v1/sendGimMessage
 |------|-----|
 | 请求体字段 | `styleTags`，数组类型 |
 | 公告样式 | 传 `["IMPORTANT"]` 时，客户端会将该条消息以「重要/公告」气泡样式展示（与官方公告一致） |
-| 本 Bot 默认 | `OopzSender.send_message` 默认使用 `styleTags: ["IMPORTANT"]`，即所有 Bot 发送的消息均为公告样式 |
-| 关闭公告样式 | 调用时显式传入 `styleTags=[]` 即可恢复为普通气泡 |
+| 本 Bot 默认 | `AsyncOopzGateway.send_message` 未显式传 `styleTags` 时，按域配置决定：域级 `announcement_style` 优先，回落到全局 `OOPZ_CONFIG["use_announcement_style"]`（默认 `False`，即普通气泡） |
+| 强制指定 | 调用时显式传入 `styleTags=["IMPORTANT"]` 或 `styleTags=[]` 会跳过上述配置，直接生效 |
 | 正文排版 | 客户端支持 `**粗体**`、`*斜体*` 等 Markdown 式渲染（以实际展示为准） |
 
 **Web 端补充（带 @ 用户）：**
@@ -975,7 +975,7 @@ Bot 从响应 `data.logs` 列表中读取域成员变更；当前解析器使用
 
 **Bot 中的用途与调用位置：**
 
-- `src/oopz/oopz_api.py` 的 `OopzApiMixin.get_area_operate_logs` 封装请求，并对 429 执行限流重试。
+- `src/oopz/sdk_gateway.py` 的 `AsyncOopzGateway.get_area_operate_logs` 封装请求，并对 429 执行限流重试。
 - `src/services/area_join_notifier.py` 的 `fetch_operate_log_changes` 调用该封装；它是域成员加入/退出通知的默认数据源，解析结果也用于产生 OneBot v11 群成员增减事件。
 
 ### 获取域成员列表（含在线状态）
