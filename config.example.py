@@ -11,6 +11,7 @@ OOPZ_CONFIG = {
     "platform": "windows",
     "web": True,
     "base_url": "https://gateway.oopz.cn",
+    "ws_url": "wss://ws.oopz.cn",   # 事件推送的 WebSocket 地址，一般不改
 
     # === 账号密码登录是主要方式 ===
     # 填下面两项后，启动时会先用账号密码刷新登录凭据，并自动写入 device_id/person_uid/jwt_token 和 private_key.py。
