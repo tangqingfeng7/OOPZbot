@@ -93,9 +93,19 @@ def setup_logger(name: str, level=logging.DEBUG) -> logging.Logger:
         root.addHandler(file_handler)
         root.addHandler(console_handler)
 
+        _attach_sdk_logger(file_handler, console_handler)
         _initialized = True
 
     return logger
+
+
+def _attach_sdk_logger(*handlers: logging.Handler) -> None:
+    sdk_logger = logging.getLogger("oopz_sdk")
+    sdk_logger.setLevel(_env_level("BOT_SDK_LOG_LEVEL", logging.INFO))
+    existing = set(sdk_logger.handlers)
+    for handler in handlers:
+        if handler not in existing:
+            sdk_logger.addHandler(handler)
 
 
 def get_logger(name: str) -> logging.Logger:
