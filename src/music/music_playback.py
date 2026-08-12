@@ -195,6 +195,11 @@ class PlaybackMixin:
             stop_event = candidate if isinstance(candidate, asyncio.Event) else asyncio.Event()
         while not stop_event.is_set():
             wait_seconds = _AUTO_PLAY_CHECK_INTERVAL
+            # 本轮就要处理这次「播完」，先清掉标志；否则队列空时它一直置位，
+            # 等待会立即返回，循环变成空转。
+            ended = getattr(self.voice, "playback_ended", None)
+            if isinstance(ended, asyncio.Event):
+                ended.clear()
             try:
                 area = self._resolve_background_area()
                 if not area:
@@ -331,11 +336,23 @@ class PlaybackMixin:
                 logger.error(f"自动播放监控出错: {e}")
                 wait_seconds = _PLAY_FADE_DELAY
 
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=wait_seconds)
+            if await self._wait_next_check(stop_event, wait_seconds):
                 return
-            except asyncio.TimeoutError:
-                pass
+
+    async def _wait_next_check(self, stop_event: asyncio.Event, timeout: float) -> bool:
+        """等到下一轮检查，返回 True 表示收到停止信号。"""
+        waiters = [asyncio.ensure_future(stop_event.wait())]
+        ended = getattr(self.voice, "playback_ended", None)
+        if isinstance(ended, asyncio.Event):
+            waiters.append(asyncio.ensure_future(ended.wait()))
+        try:
+            await asyncio.wait(
+                waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        return stop_event.is_set()
 
     async def _preload_next_song_if_any(self, queue=None):
         """若队列中还有下一首且带 URL，则后台预加载其音频，减少切歌卡顿。"""

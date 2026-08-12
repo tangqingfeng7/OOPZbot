@@ -26,6 +26,7 @@ class SdkVoiceControllerTest(unittest.IsolatedAsyncioTestCase):
         self.voice.seek = AsyncMock(return_value=True)
         self.voice.set_volume = AsyncMock(return_value=True)
         self.voice.close = AsyncMock()
+        self.voice.get_state = AsyncMock(return_value="playing")
         self.controller = SdkVoiceController(self.voice, proxy_value=False)
 
     async def asyncTearDown(self) -> None:
@@ -81,6 +82,140 @@ class SdkVoiceControllerTest(unittest.IsolatedAsyncioTestCase):
 
         self.voice.close.assert_awaited_once_with()
         self.assertFalse(self.controller.available)
+
+
+class PlaybackEndDetectionTest(unittest.IsolatedAsyncioTestCase):
+    """一首歌自然播完后要能自己复位播放状态。
+
+    回归背景：SDK 播完不会回调，而 _playing 只有 stop/pause/leave/destroy 会清。
+    少了结束轮询，is_playing 会永远停在 True，自动播放监控就不再切下一首，
+    只能去 Web 播放器手动点。
+    """
+
+    def setUp(self) -> None:
+        self.voice = Mock()
+        self.voice.play_bytes = AsyncMock(return_value={"ok": True})
+        self.voice.stop = AsyncMock()
+        self.voice.leave = AsyncMock()
+        self.voice.close = AsyncMock()
+        self.voice.pause = AsyncMock(return_value=True)
+        self.voice.resume = AsyncMock(return_value=True)
+        self.voice.get_state = AsyncMock(return_value="playing")
+        self.controller = SdkVoiceController(self.voice, proxy_value=False)
+        self.controller._fetcher.fetch = Mock(return_value=(b"audio", "audio/mpeg"))
+        patcher = patch("music.sdk_voice._PLAY_POLL_INTERVAL", 0.01)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def asyncTearDown(self) -> None:
+        if not self.controller._closed:
+            await self.controller.destroy()
+
+    async def _play(self) -> None:
+        await self.controller.play_audio("https://example.com/song.mp3")
+
+    async def _wait_until(self, predicate, timeout: float = 2.0) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(0.01)
+        return predicate()
+
+    async def test_natural_end_clears_playing(self) -> None:
+        await self._play()
+        self.assertTrue(self.controller.is_playing, "刚开播时应为播放中")
+
+        self.voice.get_state.return_value = "finished"
+
+        self.assertTrue(
+            await self._wait_until(lambda: not self.controller.is_playing),
+            "浏览器报告 finished 后必须复位，否则自动播放监控永远不切下一首",
+        )
+
+    async def test_end_detected_when_transient_finished_is_missed(self) -> None:
+        await self._play()
+        self.voice.get_state.return_value = "joined"
+
+        self.assertTrue(
+            await self._wait_until(lambda: not self.controller.is_playing),
+            "错过 finished 也必须判定为已结束，否则自动播放永远不切下一首",
+        )
+
+    async def test_idle_state_also_counts_as_ended(self) -> None:
+        await self._play()
+        self.voice.get_state.return_value = "idle"
+
+        self.assertTrue(await self._wait_until(lambda: not self.controller.is_playing))
+
+    async def test_end_sets_wake_event_for_auto_play(self) -> None:
+        """播完要置位唤醒事件，自动播放监控靠它立刻切下一首而不是干等轮询。"""
+        await self._play()
+        self.assertFalse(self.controller.playback_ended.is_set(), "开播时应清空")
+
+        self.voice.get_state.return_value = "joined"
+        await asyncio.wait_for(self.controller.playback_ended.wait(), timeout=2)
+
+    async def test_new_playback_clears_wake_event(self) -> None:
+        await self._play()
+        self.voice.get_state.return_value = "joined"
+        await asyncio.wait_for(self.controller.playback_ended.wait(), timeout=2)
+
+        self.voice.get_state.return_value = "playing"
+        await self._play()
+        self.assertFalse(
+            self.controller.playback_ended.is_set(),
+            "新一首开播必须清位，否则监控会被旧事件反复唤醒",
+        )
+
+    async def test_paused_state_is_not_treated_as_ended(self) -> None:
+        await self._play()
+        self.voice.get_state.return_value = "paused"
+        await asyncio.sleep(0.05)
+
+        self.assertTrue(self.controller.is_playing, "暂停不是播完，不能当作结束")
+
+    async def test_still_playing_state_does_not_clear(self) -> None:
+        await self._play()
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.controller.is_playing, "状态仍是 playing 时不能提前判定播完")
+
+    async def test_state_query_failure_does_not_stick_forever(self) -> None:
+        await self._play()
+        self.voice.get_state.side_effect = RuntimeError("浏览器无响应")
+
+        self.assertTrue(
+            await self._wait_until(lambda: not self.controller.is_playing),
+            "查不到状态时应按已停止处理，让上层回退到按时长判定，而不是永久卡住",
+        )
+
+    async def test_stop_leave_destroy_leave_no_watcher_behind(self) -> None:
+        for label, action in (
+            ("stop", self.controller.stop_audio),
+            ("leave", self.controller.leave),
+        ):
+            await self._play()
+            await action()
+            watch = self.controller._playback_watch
+            self.assertIsNone(watch, f"{label} 之后不应残留结束轮询任务")
+
+        await self._play()
+        await self.controller.destroy()
+        self.assertIsNone(self.controller._playback_watch, "destroy 之后不应残留轮询任务")
+
+    async def test_resume_restarts_end_detection(self) -> None:
+        await self._play()
+        await self.controller.pause_audio()
+        self.assertFalse(self.controller.is_playing)
+
+        await self.controller.resume_audio()
+        self.assertTrue(self.controller.is_playing)
+        self.voice.get_state.return_value = "finished"
+
+        self.assertTrue(
+            await self._wait_until(lambda: not self.controller.is_playing),
+            "恢复播放后同样要能检测到播完",
+        )
 
 
 class SeleniumFallbackTest(unittest.IsolatedAsyncioTestCase):

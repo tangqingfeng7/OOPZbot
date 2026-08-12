@@ -30,6 +30,7 @@ class VoiceDestroyLeavesChannelTest(unittest.IsolatedAsyncioTestCase):
         controller._preloaded = {}
         controller._preload_tasks = {}
         controller._playing = False
+        controller._playback_watch = None
         controller._closed = False
         return controller, voice
 

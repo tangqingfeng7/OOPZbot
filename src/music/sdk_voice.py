@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -13,6 +14,15 @@ from oopz.remote_fetch import SafeRemoteFetcher
 
 logger = get_logger("SdkVoiceController")
 MAX_AUDIO_BYTES = 100 * 1024 * 1024
+# 这个间隔直接决定一首歌放完后的空档下限，浏览器里查一次状态只是一次 JS 求值，
+# 收紧到 0.5 秒的开销可以忽略
+_PLAY_POLL_INTERVAL = 0.5
+# 连续查不到状态就放弃轮询并当作已停止，让上层回退到按时长判定，
+_PLAY_POLL_MAX_FAILURES = 3
+# 播放页在曲目结束时只把状态短暂置为 finished，紧接着收尾流程就改成 joined，
+# 轮询几乎必然错过那一瞬；而 play_bytes 成功返回前状态已同步置为 playing，
+# 所以只要离开下面这两个状态，就说明这一首已经结束
+_ACTIVE_PLAYBACK_STATES = frozenset({"playing", "paused"})
 
 
 class SdkVoiceController:
@@ -25,6 +35,10 @@ class SdkVoiceController:
         self._preloaded: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
         self._preload_tasks: dict[str, asyncio.Task[None]] = {}
         self._playing = False
+        self._playback_watch: asyncio.Task[None] | None = None
+        # 播完立刻置位，供自动播放监控等待。没有它监控只能靠定时轮询发现，
+        # 一首歌结束后要白等最多一整个轮询周期才切下一首。
+        self.playback_ended = asyncio.Event()
         self._closed = False
 
     @property
@@ -67,6 +81,7 @@ class SdkVoiceController:
 
     async def leave(self) -> None:
         self._playing = False
+        self._cancel_playback_watch()
         await self._voice.leave()
 
     def preload_audio(self, url: str) -> None:
@@ -107,25 +122,80 @@ class SdkVoiceController:
             await asyncio.gather(pending, return_exceptions=True)
         cached = self._preloaded.pop(url, None)
         if cached is None:
+            # 没命中预加载就得现下，这段时间正是切歌空档的主要来源，记下来便于定位
+            started = time.monotonic()
             cached = await asyncio.to_thread(
                 self._fetcher.fetch,
                 url,
                 max_bytes=MAX_AUDIO_BYTES,
                 timeout=(10, HTTP_TIMEOUT_DOWNLOAD),
             )
+            logger.info("音频未命中预加载，现下载耗时 %.1fs", time.monotonic() - started)
         data, mime_type = cached
+        publish_started = time.monotonic()
         result = await self._voice.play_bytes(data, mime_type=mime_type or "audio/mpeg")
         if not result or not result.get("ok", False):
             raise RuntimeError(str((result or {}).get("error") or "SDK 语音播放失败"))
+        logger.info("推流到语音频道耗时 %.1fs", time.monotonic() - publish_started)
         self._playing = True
+        self.playback_ended.clear()
+        self._watch_playback_end()
         if on_started is not None:
             callback_result = on_started()
             if inspect.isawaitable(callback_result):
                 await callback_result
         return result
 
+    def _watch_playback_end(self) -> None:
+        """轮询浏览器状态，曲目自然播完时把 _playing 复位。
+
+        SDK 播完不会回调通知，而 _playing 只有 stop/pause/leave/destroy 会清。
+        少了这个轮询，一首歌放完后 is_playing 会永远停在 True，自动播放监控
+        据此认为「还在播」，于是不再切下一首，只能去 Web 播放器手动点。
+        """
+        self._cancel_playback_watch()
+        coroutine = self._await_playback_end()
+        self._playback_watch = (
+            self._supervisor.create(coroutine, name="voice-playback-end")
+            if self._supervisor is not None
+            else asyncio.create_task(coroutine, name="voice-playback-end")
+        )
+
+    def _cancel_playback_watch(self) -> None:
+        task = self._playback_watch
+        self._playback_watch = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _await_playback_end(self) -> None:
+        failures = 0
+        while self._playing and not self._closed:
+            await asyncio.sleep(_PLAY_POLL_INTERVAL)
+            if not self._playing or self._closed:
+                return
+            try:
+                state = await self._voice.get_state()
+            except Exception as exc:
+                failures += 1
+                if failures >= _PLAY_POLL_MAX_FAILURES:
+                    logger.debug("连续查询播放状态失败，按已停止处理: %s", exc)
+                    self._mark_playback_ended()
+                    return
+                continue
+            failures = 0
+            if state in _ACTIVE_PLAYBACK_STATES:
+                continue
+            logger.info("语音推流播放完成 (state=%s)", state)
+            self._mark_playback_ended()
+            return
+
+    def _mark_playback_ended(self) -> None:
+        self._playing = False
+        self.playback_ended.set()
+
     async def stop_audio(self) -> None:
         self._playing = False
+        self._cancel_playback_watch()
         await self._voice.stop()
 
     async def pause_audio(self) -> bool:
@@ -138,6 +208,7 @@ class SdkVoiceController:
         result = await self._voice.resume()
         if result:
             self._playing = True
+            self._watch_playback_end()
         return result
 
     async def seek_audio(self, seconds: float) -> bool:
@@ -150,6 +221,7 @@ class SdkVoiceController:
         if self._closed:
             return
         self._closed = True
+        self._cancel_playback_watch()
         for task in tuple(self._preload_tasks.values()):
             task.cancel()
         if self._preload_tasks:
