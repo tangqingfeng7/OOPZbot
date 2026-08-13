@@ -1,6 +1,7 @@
 # Oopz-SDK OneBot v11 适配
 
-项目直接使用内置 Oopz-SDK v0.15.0 的 OneBot v11 adapter/server；本项目仅补齐消息历史、成员通知、管理员映射、成员列表上限和 heartbeat。它不会替换当前的 Oopz 命令、插件、音乐播放、Web 播放器和管理后台。
+项目直接使用内置 Oopz-SDK v0.15.0 的 OneBot v11 adapter/server（注意 SDK 的
+本项目仅补齐消息历史、成员通知、管理员映射、成员列表上限和 heartbeat。它不会替换当前的 Oopz 命令、插件、音乐播放、Web 播放器和管理后台。
 
 默认是关闭的。启用后，Bot 仍然照常连接 Oopz；同时把收到的 Oopz 消息转换成 OneBot v11 事件，给 NoneBot、AstrBot、Hoshino 等支持 OneBot v11 的程序使用。
 

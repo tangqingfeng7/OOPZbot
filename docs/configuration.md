@@ -2,10 +2,21 @@
 
 ## 创建配置文件
 
+Linux / macOS：
+
 ```shell
-copy config.example.py config.py
-copy private_key.example.py private_key.py
+cp config.example.py config.py
+cp private_key.example.py private_key.py
 ```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item config.example.py config.py
+Copy-Item private_key.example.py private_key.py
+```
+
+用一键部署脚本（`./deploy.sh` 或 `deploy.bat`）的话这一步会自动完成。
 
 > 主要登录方式是管理后台账号密码登录；命令行 [凭据获取工具](credential-tool.md) 只作为后台登录不可用时的备用方案。
 
@@ -258,7 +269,8 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 | `auto_assign_role_name` | 或用身份组名称匹配（优先使用 `auto_assign_role_id`） |
 | `member_fetch_max` | `member_snapshot` 模式下单次成员快照翻页上限，超过该人数会跳过该域的快照对比并告警；`operate_logs` 模式不使用 |
 
-需配置 `default_area`、`default_channel`（或由 Bot 自动取第一个已加入域及第一个文字频道）。通知消息与 Bot 其他消息一致，默认使用**公告样式**。
+需配置 `default_area`、`default_channel`（或由 Bot 自动取第一个已加入域及第一个文字频道）。通知消息与 Bot 其他消息一致，默认是普通气泡；把 `use_announcement_style` 设为 `True`
+才会用公告样式（Bot 不是高级管理员时服务端会拒绝发公告）。
 
 ### 定时消息调度 (`SCHEDULER_CONFIG`)
 

@@ -77,8 +77,12 @@ NeteaseCloud API (:3000)
 
 ## 技术栈
 
-整个进程跑在**单个 asyncio 事件循环**上：平台通信、数据库、Redis、HTTP 与 Web 服务
-全部为异步实现，不再有工作线程与线程池。
+业务主干跑在**单个 asyncio 事件循环**上：平台通信、数据库、Redis、HTTP 与 Web 服务
+全部为异步实现，不再有自建的工作线程与线程池。
+
+少数确实阻塞的活儿仍会甩到线程里，文件下载、图片处理等走
+`asyncio.to_thread`；语音推流依赖的浏览器（Playwright / Selenium）由 SDK 在
+独立线程里驱动，因为它的同步 API 没法直接放进事件循环。
 
 | 类别 | 技术 |
 |------|------|
@@ -209,9 +213,9 @@ NeteaseCloud API (:3000)
 ### Oopz 通信层：内置 SDK + 项目适配
 
 平台协议本身（签名、WebSocket、事件模型、OneBot 适配器）由**SDK**
-`src/oopz_sdk/` 承担。该副本原则上与上游逐字一致，仅对已确认的上游缺陷打最小补丁，
-偏离项逐条登记在根目录 `THIRD_PARTY_NOTICES.md`，并由
-`tests/test_vendored_sdk_patches.py` 锁住，同步上游时补丁不会被静默覆盖。
+`src/oopz_sdk/` 承担。该副本原则上与上游逐字一致，仅对已确认的上游缺陷打最小补丁。每一处偏离都由
+`tests/test_vendored_sdk_patches.py` 锁住，同步上游时补丁不会被静默覆盖；
+打了什么补丁，看该测试文件里的用例说明。
 
 `src/oopz/` 只放 SDK 覆盖不到的项目侧适配：
 
