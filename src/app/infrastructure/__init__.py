@@ -1,4 +1,4 @@
-from .gateways import ChatGateway, SenderGateway
+from .gateways import SenderGateway
 from .runtime import (
     BotInfrastructure,
     MusicGateway,
@@ -9,7 +9,6 @@ from .runtime import (
 
 __all__ = [
     "BotInfrastructure",
-    "ChatGateway",
     "MusicGateway",
     "PluginHost",
     "PluginRuntime",

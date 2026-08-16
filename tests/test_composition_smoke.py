@@ -229,7 +229,6 @@ class CommandHandlerCompositionTest(unittest.IsolatedAsyncioTestCase):
         registry = Mock()
         registry.routing.message.build_context = Mock(return_value=ctx)
         registry.routing.message.remember_message = Mock()
-        registry.routing.message.handle_profanity = AsyncMock(return_value=False)
         registry.routing.message.reject_unauthorized_command = AsyncMock(return_value=False)
         registry.routing.command.route = AsyncMock()
 
@@ -252,35 +251,6 @@ class CommandHandlerCompositionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(registry.routing.message.remember_message.call_count, 2)
             self.assertEqual(registry.routing.command.route.await_count, 2)
 
-    async def test_profanity_short_circuit_skips_routing(self) -> None:
-        """脏话命中后必须直接返回，不能再把内容送进命令路由。"""
-        import bot.command_handler as command_handler_module
-
-        infrastructure = Mock()
-        infrastructure.plugins = AsyncMock()
-        ctx = SimpleNamespace(content="bad", channel="c", area="a", user="u")
-        registry = Mock()
-        registry.routing.message.build_context = Mock(return_value=ctx)
-        registry.routing.message.remember_message = Mock()
-        registry.routing.message.handle_profanity = AsyncMock(return_value=True)
-        registry.routing.message.reject_unauthorized_command = AsyncMock(return_value=False)
-        registry.routing.command.route = AsyncMock()
-
-        with (
-            patch.object(
-                command_handler_module, "build_bot_infrastructure", return_value=infrastructure
-            ),
-            patch.object(
-                command_handler_module, "build_command_service_registry", return_value=registry
-            ),
-            patch.object(command_handler_module, "PluginHost", return_value=sentinel.plugin_host),
-            patch.object(command_handler_module.MessageStatsDB, "increment", new=AsyncMock()),
-        ):
-            handler = command_handler_module.CommandHandler(sentinel.sender)
-            await handler.handle_message({"id": "message"})
-
-        registry.routing.message.reject_unauthorized_command.assert_not_awaited()
-        registry.routing.command.route.assert_not_awaited()
 
 
 class AppContextBuilderCompositionTest(unittest.IsolatedAsyncioTestCase):

@@ -23,6 +23,9 @@ _PLAY_POLL_MAX_FAILURES = 3
 # 轮询几乎必然错过那一瞬；而 play_bytes 成功返回前状态已同步置为 playing，
 # 所以只要离开下面这两个状态，就说明这一首已经结束
 _ACTIVE_PLAYBACK_STATES = frozenset({"playing", "paused"})
+# 等预热的上限。宁可等，也好过在浏览器没起来时进频道导致 bot 不显示；
+# 但不能无限等，超时后照常进，至少还能听到声音。
+_WARMUP_WAIT_TIMEOUT = 60.0
 
 
 class SdkVoiceController:
@@ -39,6 +42,8 @@ class SdkVoiceController:
         # 播完立刻置位，供自动播放监控等待。没有它监控只能靠定时轮询发现，
         # 一首歌结束后要白等最多一整个轮询周期才切下一首。
         self.playback_ended = asyncio.Event()
+        self._warmup_started = False
+        self._warmup_done = asyncio.Event()
         self._closed = False
 
     @property
@@ -48,10 +53,24 @@ class SdkVoiceController:
     async def warmup(self) -> None:
         if self._closed:
             return
+        self._warmup_started = True
+        started = time.monotonic()
         try:
             await self._voice.start()
         except Exception as exc:
             logger.warning("语音浏览器预热失败，首次进入语音频道可能变慢: %s", exc)
+        else:
+            logger.info("语音浏览器预热完成，耗时 %.1fs", time.monotonic() - started)
+        finally:
+            self._warmup_done.set()
+
+    async def _await_warmup(self) -> None:
+        if not self._warmup_started or self._warmup_done.is_set():
+            return
+        try:
+            await asyncio.wait_for(self._warmup_done.wait(), timeout=_WARMUP_WAIT_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("等待语音浏览器预热超时，仍继续进入语音频道")
 
     @property
     def is_playing(self) -> bool:
@@ -71,6 +90,7 @@ class SdkVoiceController:
         from_channel: str = "",
         rtc_uid: str | int | None = None,
     ):
+        await self._await_warmup()
         return await self._voice.join(
             area=area,
             channel=channel,
@@ -130,13 +150,13 @@ class SdkVoiceController:
                 max_bytes=MAX_AUDIO_BYTES,
                 timeout=(10, HTTP_TIMEOUT_DOWNLOAD),
             )
-            logger.info("音频未命中预加载，现下载耗时 %.1fs", time.monotonic() - started)
+            logger.debug("音频未命中预加载，现下载耗时 %.1fs", time.monotonic() - started)
         data, mime_type = cached
         publish_started = time.monotonic()
         result = await self._voice.play_bytes(data, mime_type=mime_type or "audio/mpeg")
         if not result or not result.get("ok", False):
             raise RuntimeError(str((result or {}).get("error") or "SDK 语音播放失败"))
-        logger.info("推流到语音频道耗时 %.1fs", time.monotonic() - publish_started)
+        logger.debug("推流到语音频道耗时 %.1fs", time.monotonic() - publish_started)
         self._playing = True
         self.playback_ended.clear()
         self._watch_playback_end()

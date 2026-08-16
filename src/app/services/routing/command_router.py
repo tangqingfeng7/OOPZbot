@@ -22,23 +22,19 @@ class CommandRouter:
 
     async def _route_mention(self, ctx: MessageContext) -> None:
         text = ctx.mention_text(self._bot_mention)
-        is_ai_chat = False
         if text:
-            # 仅在路由器显式返回 True 时，才把本次消息视为 AI 对话兜底。
-            # 这样测试桩或普通命令处理返回的真值对象不会误伤撤回链路。
-            is_ai_chat = await self._services.routing.mention.dispatch(
+            await self._services.routing.mention.dispatch(
                 text,
                 ctx.channel,
                 ctx.area,
                 ctx.user,
-            ) is True
-        if not is_ai_chat:
-            await self._services.safety.recall_scheduler.schedule_user_message_recall(
-                ctx.message_id,
-                ctx.channel,
-                ctx.area,
-                ctx.timestamp,
             )
+        await self._services.safety.recall_scheduler.schedule_user_message_recall(
+            ctx.message_id,
+            ctx.channel,
+            ctx.area,
+            ctx.timestamp,
+        )
 
     async def _route_slash(self, ctx: MessageContext) -> None:
         await self._services.routing.slash.dispatch(ctx.content, ctx.channel, ctx.area, ctx.user)

@@ -19,7 +19,6 @@ from app.services.runtime import CommandRuntimeView
 from app.services.safety.message_lookup_service import MessageLookupService
 from app.services.safety.message_recall_scheduler import MessageRecallScheduler
 from app.services.safety.moderation_service import ModerationService
-from app.services.safety.profanity_guard_service import ProfanityGuardService
 from app.services.safety.recall_service import RecallService
 from services.scheduler_service import ReminderService, ScheduledMessageService
 
@@ -53,7 +52,6 @@ class CommunityServices:
 @dataclass(frozen=True)
 class SafetyServices:
     moderation: ModerationService
-    profanity: ProfanityGuardService
     recall: RecallService
     message_lookup: MessageLookupService
     recall_scheduler: MessageRecallScheduler
@@ -112,7 +110,6 @@ def _build_community_services(runtime: CommandRuntimeView) -> CommunityServices:
 def _build_safety_services(runtime: CommandRuntimeView) -> SafetyServices:
     return SafetyServices(
         moderation=ModerationService(runtime),
-        profanity=ProfanityGuardService(runtime),
         recall=RecallService(runtime),
         message_lookup=MessageLookupService(runtime),
         recall_scheduler=MessageRecallScheduler(runtime),

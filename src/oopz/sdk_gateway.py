@@ -719,6 +719,13 @@ class AsyncOopzGateway:
             logger.warning("查询用户语音频道失败 uid=%s: %s", str(user_uid)[:8], exc)
             return None
 
+    async def get_voice_channel_for_user_strict(
+        self, user_uid: str, area: str | None = None
+    ) -> str | None:
+        return await self.bot.channels.get_voice_channel_for_user(
+            self._default_area(area), user_uid
+        )
+
     async def drag_member(
         self,
         target: str,

@@ -351,17 +351,41 @@ class MusicModeTest(unittest.IsolatedAsyncioTestCase):
         self.handler.voice.available = True
         self.handler.sender = AsyncMock()
         self.handler.sender.get_voice_channel_for_user.return_value = "voice-1"
+        # 服务端确认 bot 仍是该频道成员，这时才允许跳过重连
+        self.handler.sender.get_voice_channel_for_user_strict.return_value = "voice-1"
         self.handler._do_enter_voice = AsyncMock()
         self.handler._is_playing = AsyncMock(return_value=True)
         self.handler.names = AsyncMock()
 
-        result = await self.handler._check_and_enter_voice_channel(
-            user="user-1", channel="text-1", area="area-1",
-        )
+        with patch.dict("music.music.OOPZ_CONFIG", {"person_uid": "bot-uid"}):
+            result = await self.handler._check_and_enter_voice_channel(
+                user="user-1", channel="text-1", area="area-1",
+            )
 
         self.assertTrue(result)
         self.handler._do_enter_voice.assert_not_called()
         self.handler.sender.send_message.assert_not_called()
+
+    async def test_rejoins_when_server_dropped_the_membership(self) -> None:
+        """服务端已不认 bot 是成员时必须重进，否则只有音频没有人。"""
+        self.handler.voice = Mock()
+        self.handler.voice.available = True
+        self.handler.voice.leave = AsyncMock()
+        self.handler.sender = AsyncMock()
+        self.handler.sender.get_voice_channel_for_user.return_value = "voice-1"
+        self.handler.sender.get_voice_channel_for_user_strict.return_value = None
+        self.handler._do_enter_voice = AsyncMock(return_value={"status": True})
+        self.handler._is_playing = AsyncMock(return_value=True)
+        self.handler.names = Mock()
+        self.handler.names.channel = Mock(return_value="语音频道")
+
+        with patch.dict("music.music.OOPZ_CONFIG", {"person_uid": "bot-uid"}):
+            result = await self.handler._check_and_enter_voice_channel(
+                user="user-1", channel="text-1", area="area-1",
+            )
+
+        self.assertTrue(result)
+        self.handler._do_enter_voice.assert_awaited_once()
 
     async def test_same_channel_id_in_another_area_is_not_the_same_session(self) -> None:
         self.handler._playback_lock = asyncio.Lock()

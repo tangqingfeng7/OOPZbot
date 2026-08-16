@@ -389,7 +389,10 @@ class MusicHandler(PlaybackMixin):
             return False
 
         if self._voice_channel_id == voice_ch_id and self._voice_channel_area == area:
-            return True
+            if await self._still_registered_in_voice(voice_ch_id, area):
+                return True
+            logger.info("服务端已不再把 bot 记为语音频道成员，重新进入")
+            await self._leave_current_voice_channel()
         current_channel = self._voice_channel_id
         current_area = str(self._voice_channel_area or "").strip()
         if current_channel and (
@@ -471,6 +474,24 @@ class MusicHandler(PlaybackMixin):
             await self.sender.leave_voice_channel(channel=stale_ch, area=area)
         except Exception as e:
             logger.warning(f"清理残留语音状态失败: {e}")
+
+    async def _still_registered_in_voice(self, channel: str, area: str) -> bool:
+        """确认服务端仍把 bot 记在这个语音频道里。
+
+        Agora 只负责音频，Oopz 的频道成员身份是另一套，身份心跳走 Agora 信令
+        并不维持它。成员身份掉了之后本地仍以为在频道里，就不会重新进入——
+        表现就是听得到歌声、看不到 bot。查询失败按「仍在」处理，免得一次网络
+        抖动引发无谓的退出重进。
+        """
+        bot_uid = (OOPZ_CONFIG.get("person_uid") or "").strip()
+        if not bot_uid:
+            return True
+        try:
+            actual = await self.sender.get_voice_channel_for_user_strict(bot_uid, area=area)
+        except Exception as e:
+            logger.debug("校验语音成员身份失败，按仍在频道处理: %s", e)
+            return True
+        return str(actual or "") == channel
 
     async def _leave_current_voice_channel(self) -> None:
         """退出 Bot 当前所在的语音频道。"""

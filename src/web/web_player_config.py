@@ -33,12 +33,9 @@ CONFIG_GROUP_SOURCES: dict[str, str] = {
     "auto_recall": "AUTO_RECALL_CONFIG",
     "area_join_notify": "AREA_JOIN_NOTIFY",
     "chat": "CHAT_CONFIG",
-    "profanity": "PROFANITY_CONFIG",
     "oopz": "OOPZ_CONFIG",
     "netease": "NETEASE_CLOUD",
     "redis": "REDIS_CONFIG",
-    "doubao_chat": "DOUBAO_CONFIG",
-    "doubao_image": "DOUBAO_IMAGE_CONFIG",
     "scheduler": "SCHEDULER_CONFIG",
     "reminder": "REMINDER_CONFIG",
     "music": "MUSIC_CONFIG",
@@ -84,7 +81,6 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
     "auto_recall": {
         "enabled": {"type": "bool", "default": False},
         "delay": {"type": "int", "min": 1, "max": 3600, "default": 30},
-        "exclude_commands": {"type": "str_list", "max_len": 500, "default": ["ai_chat", "ai_image"]},
     },
     "area_join_notify": {
         "enabled": {"type": "bool", "default": False},
@@ -107,18 +103,6 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
                 "ping": "pong!",
             },
         },
-    },
-    "profanity": {
-        "enabled": {"type": "bool", "default": True},
-        "mute_duration": {"type": "int", "min": 1, "max": 10080, "default": 5},
-        "recall_message": {"type": "bool", "default": True},
-        "skip_admins": {"type": "bool", "default": True},
-        "warn_before_mute": {"type": "bool", "default": False},
-        "context_detection": {"type": "bool", "default": True},
-        "context_window": {"type": "int", "min": 5, "max": 300, "default": 30},
-        "context_max_messages": {"type": "int", "min": 1, "max": 50, "default": 10},
-        "ai_detection": {"type": "bool", "default": True},
-        "ai_min_length": {"type": "int", "min": 1, "max": 50, "default": 2},
     },
     "oopz": {
         "login_phone": {"type": "str", "max_len": 128, "sensitive": True, "expose_in_admin": True, "default": ""},
@@ -145,25 +129,6 @@ CONFIG_FIELD_SCHEMA: dict[str, dict[str, dict]] = {
         "socket_connect_timeout": {"type": "float", "min": 0.1, "max": 60, "default": 3.0},
         "socket_timeout": {"type": "float", "min": 0.1, "max": 300, "default": 5.0},
         "health_check_interval": {"type": "int", "min": 1, "max": 3600, "default": 30},
-    },
-    "doubao_chat": {
-        "enabled": {"type": "bool", "default": False},
-        "base_url": {"type": "str", "max_len": 300, "default": "https://ark.cn-beijing.volces.com/api/v3"},
-        "api_key": {"type": "str", "max_len": 256, "sensitive": True, "expose_in_admin": True, "default": ""},
-        "model": {"type": "str", "max_len": 120, "default": "doubao-1-5-pro-32k-250115"},
-        "system_prompt": {"type": "str", "max_len": 5000, "default": "你是 Oopz Bot，一个活泼有趣的聊天机器人。回复简洁友好，不超过100字。"},
-        "max_tokens": {"type": "int", "min": 1, "max": 8192, "default": 256},
-        "temperature": {"type": "float", "min": 0, "max": 2, "default": 0.7},
-        "context_max_rounds": {"type": "int", "min": 0, "max": 50, "default": 10},
-        "context_ttl_seconds": {"type": "int", "min": 0, "max": 86400, "default": 1800},
-    },
-    "doubao_image": {
-        "enabled": {"type": "bool", "default": False},
-        "base_url": {"type": "str", "max_len": 300, "default": "https://ark.cn-beijing.volces.com/api/v3"},
-        "api_key": {"type": "str", "max_len": 256, "sensitive": True, "expose_in_admin": True, "default": ""},
-        "model": {"type": "str", "max_len": 120, "default": "doubao-seedream-4-5-251128"},
-        "size": {"type": "str", "max_len": 30, "default": "1920x1920"},
-        "watermark": {"type": "bool", "default": False},
     },
     "scheduler": {
         "enabled": {"type": "bool", "default": True},
@@ -237,12 +202,9 @@ WEB_PLAYER_CONFIG = _GROUP_TARGETS["web_player"]
 AUTO_RECALL_CONFIG = _GROUP_TARGETS["auto_recall"]
 AREA_JOIN_NOTIFY = _GROUP_TARGETS["area_join_notify"]
 CHAT_CONFIG = _GROUP_TARGETS["chat"]
-PROFANITY_CONFIG = _GROUP_TARGETS["profanity"]
 OOPZ_CONFIG = _GROUP_TARGETS["oopz"]
 NETEASE_CLOUD = _GROUP_TARGETS["netease"]
 REDIS_CONFIG = _GROUP_TARGETS["redis"]
-DOUBAO_CONFIG = _GROUP_TARGETS["doubao_chat"]
-DOUBAO_IMAGE_CONFIG = _GROUP_TARGETS["doubao_image"]
 SCHEDULER_CONFIG = _GROUP_TARGETS["scheduler"]
 REMINDER_CONFIG = _GROUP_TARGETS["reminder"]
 MUSIC_CONFIG = _GROUP_TARGETS["music"]

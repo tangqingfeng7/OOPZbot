@@ -27,6 +27,7 @@ from domain.plugins.base import (  # noqa: E402
     PluginDescriptor,
     PluginMetadata,
 )
+from domain.plugins.plugin_operation import PluginOperationResult  # noqa: E402
 
 
 class _FakePlugins:
@@ -166,6 +167,37 @@ class WebPlayerAdminTest(unittest.IsolatedAsyncioTestCase):
         data = response.json()
         self.assertFalse(data["ok"])
         self.assertIn("插件名不合法", data["error"])
+
+    def test_plugin_runtime_operations_are_awaited(self) -> None:
+        import web.admin.plugins as plugin_routes
+
+        host = SimpleNamespace()
+        operations = (
+            ("load", "/admin/api/plugins/alpha/load", "已加载 alpha"),
+            ("unload", "/admin/api/plugins/alpha/unload", "已卸载 alpha"),
+            ("reload_config", "/admin/api/plugins/alpha/reload-config", "配置已重载 alpha"),
+        )
+
+        for method_name, path, message in operations:
+            with self.subTest(path=path):
+                operation = AsyncMock(
+                    return_value=PluginOperationResult.success(
+                        message,
+                        plugin_name="alpha",
+                    )
+                )
+                runtime = SimpleNamespace(**{method_name: operation})
+                with (
+                    patch.object(self.module, "_admin_enabled", return_value=True),
+                    patch.object(self.module, "_is_admin_authorized", return_value=True),
+                    patch.object(plugin_routes, "_get_plugin_runtime", return_value=runtime),
+                    patch.object(plugin_routes, "_get_plugin_host", return_value=host),
+                ):
+                    response = self.client.post(path)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"ok": True, "message": message})
+                operation.assert_awaited_once_with("alpha", handler=host)
 
     def test_member_endpoint_returns_503_when_sender_missing(self) -> None:
         import web.admin.shared._runtime as runtime

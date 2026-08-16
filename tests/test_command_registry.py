@@ -156,7 +156,6 @@ class SlashRouterAliasGoldenTest(unittest.TestCase):
         self.assertEqual(set(slash_of("clear_history")), {"/clear"})
         self.assertEqual(set(slash_of("remind")), {"/remind", "/提醒"})
         self.assertEqual(set(slash_of("schedule")), {"/schedule"})
-        self.assertEqual(set(slash_of("clear_ai_memory")), {"/clearai", "/清除记忆", "/重置对话"})
 
 
 class MentionRouterAliasGoldenTest(unittest.TestCase):
@@ -198,7 +197,6 @@ class MentionRouterAliasGoldenTest(unittest.TestCase):
                 "最近播放", "播放历史",
                 "定时消息列表", "定时消息",
                 "我的提醒", "提醒列表",
-                "清除记忆", "重置对话", "清除对话", "清空记忆",
             },
         )
 
@@ -216,7 +214,6 @@ class MentionRouterAliasGoldenTest(unittest.TestCase):
                 "加载插件", "启用插件", "loadplugin",
                 "卸载插件", "禁用插件", "unloadplugin",
                 "重载插件", "刷新插件", "reloadplugin",
-                "画", "画一个", "画一张", "生成图片", "生成", "画图",
             },
         )
 
@@ -337,7 +334,6 @@ class OverviewMenuDerivationTest(unittest.TestCase):
         "  帮助 管理  禁言、撤回、清理、身份组变更",
         "  帮助 定时  定时消息与提醒管理",
         "  帮助 插件  插件命令与管理",
-        "  帮助 AI    AI 聊天与画图",
         "  帮助 系统  系统体检与首启向导",
     )
 
@@ -416,9 +412,9 @@ class MentionAdminGateGuardTest(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(text=text):
                     router, runtime = self._build_router(is_admin=False)
 
-                    fell_into_ai_chat = await router.dispatch(text, "c", "a", "u")
+                    handled_as_special_case = await router.dispatch(text, "c", "a", "u")
 
-                    self.assertFalse(fell_into_ai_chat)
+                    self.assertFalse(handled_as_special_case)
                     self.assertEqual(
                         router._actions.mock_calls, [], f"管理命令 {text!r} 在非管理员身份下被执行"
                     )

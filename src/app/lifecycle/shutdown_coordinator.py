@@ -103,7 +103,6 @@ class ShutdownCoordinator:
             )
 
         if context is not None:
-            await attempt("AI HTTP 会话", context.handler.infrastructure.chat.close())
             from oopz.name_resolver import get_resolver
 
             await attempt("名称缓存", get_resolver().close())

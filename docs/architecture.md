@@ -23,20 +23,18 @@
                └────────┬─────────┘
                         ▼
                 ┌───────────────┐
-                │command_handler│  运行时组装 · 统计/安全预检 · 委托路由
-                └─┬──┬──┬──┬───┘
-                  │  │  │  │
-        ┌─────────┘  │  │  └──────────┐
-        ▼            ▼  ▼             ▼
-   ┌─────────┐  ┌──────────┐  ┌────────────┐
-   │ music   │  │  chat    │  │  plugins   │
-   │         │  │          │  │            │
-   │ 搜索/队列│  │ AI聊天   │  │ 扩展命令   │
-   │ 播放/缓存│  │ AI画图   │  └────────────┘
-   └────┬────┘  │ AI审核   │
-        │       └────┬─────┘
-  ┌─────┴─────┐      │
-  ▼           ▼      └──► 豆包 AI API
+                │command_handler│  运行时组装 · 统计预检 · 委托路由
+                └───────┬───────┘
+                        │
+              ┌─────────┴──────────┐
+              ▼                    ▼
+         ┌─────────┐          ┌────────────┐
+         │ music   │          │  plugins   │
+         │ 搜索/队列│          │  扩展命令   │
+         │ 播放/缓存│          └────────────┘
+         └────┬────┘
+        ┌─────┴─────┐
+        ▼           ▼
 netease    queue_manager
 (API)       (Redis)
   │
@@ -77,8 +75,12 @@ NeteaseCloud API (:3000)
 
 ## 技术栈
 
-整个进程跑在**单个 asyncio 事件循环**上：平台通信、数据库、Redis、HTTP 与 Web 服务
-全部为异步实现，不再有工作线程与线程池。
+业务主干跑在**单个 asyncio 事件循环**上：平台通信、数据库、Redis、HTTP 与 Web 服务
+全部为异步实现，不再有自建的工作线程与线程池。
+
+少数确实阻塞的活儿仍会甩到线程里，文件下载、图片处理等走
+`asyncio.to_thread`；语音推流依赖的浏览器（Playwright / Selenium）由 SDK 在
+独立线程里驱动，因为它的同步 API 没法直接放进事件循环。
 
 | 类别 | 技术 |
 |------|------|
@@ -89,7 +91,6 @@ NeteaseCloud API (:3000)
 | 数据库 | `aiosqlite`（缓存、统计） |
 | HTTP 客户端 | aiohttp（`core/async_http.py` 统一连接池、代理与超时） |
 | 加密签名 | cryptography（RSA PKCS1v15 + SHA256），由 SDK 完成 |
-| AI 接口 | 豆包（火山方舟，OpenAI 兼容） |
 | 音乐 API | NeteaseCloudMusicApi（Node.js） |
 | 语音推流 | Agora Web SDK（Playwright 优先，Selenium 回退） |
 
@@ -97,7 +98,7 @@ NeteaseCloud API (:3000)
 
 ```
 ├── main.py                      # 入口：初始化数据库、启动 Bot
-├── config.py                    # 集中配置（平台、Redis、AI、音乐等）
+├── config.py                    # 集中配置（平台、Redis、音乐等）
 ├── config.example.py            # 配置示例
 ├── private_key.py               # RSA 私钥（PEM 格式）
 ├── private_key.example.py       # 私钥示例
@@ -143,11 +144,9 @@ NeteaseCloud API (:3000)
 │   │   └── name_resolver.py     # ID → 名称解析
 │   ├── onebot_v11/              # OneBot v11：配置转换 + SDK 能力补丁 + 数据迁移
 │   ├── services/                # 独立服务
-│   │   ├── chat.py              # AI 聊天 + 图片生成
 │   │   ├── area_join_notifier.py # 域成员加入/退出通知
 │   │   ├── scheduler_service.py # 定时任务服务
-│   │   ├── scheduler_templates.py # 定时消息模板预设
-│   │   └── conversation_memory.py # AI 上下文记忆
+│   │   └── scheduler_templates.py # 定时消息模板预设
 │   ├── web/                     # Web 播放器与 Admin 后台
 │   │   ├── web_player.py        # FastAPI 主应用
 │   │   ├── web_player_admin.py  # Admin 路由入口（聚合 web.admin 包，对外稳定 facade）
@@ -209,9 +208,9 @@ NeteaseCloud API (:3000)
 ### Oopz 通信层：内置 SDK + 项目适配
 
 平台协议本身（签名、WebSocket、事件模型、OneBot 适配器）由**SDK**
-`src/oopz_sdk/` 承担。该副本原则上与上游逐字一致，仅对已确认的上游缺陷打最小补丁，
-偏离项逐条登记在根目录 `THIRD_PARTY_NOTICES.md`，并由
-`tests/test_vendored_sdk_patches.py` 锁住，同步上游时补丁不会被静默覆盖。
+`src/oopz_sdk/` 承担。该副本原则上与上游逐字一致，仅对已确认的上游缺陷打最小补丁。每一处偏离都由
+`tests/test_vendored_sdk_patches.py` 锁住，同步上游时补丁不会被静默覆盖；
+打了什么补丁，看该测试文件里的用例说明。
 
 `src/oopz/` 只放 SDK 覆盖不到的项目侧适配：
 

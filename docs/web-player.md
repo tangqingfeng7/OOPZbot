@@ -273,7 +273,7 @@ nginx/ssl/key.pem    # 私钥
 
 > 成员管理相关接口（`/admin/api/areas`、`/admin/api/members/*`、`/admin/api/send-message`、`/admin/api/send-announcement` 等）见 [命令文档 - 管理后台 API](commands.md#管理后台-api)。
 
-`/admin/api/config` 当前支持分组：`web_player`、`auto_recall`、`area_join_notify`、`chat`、`profanity`、`oopz`、`netease`、`redis`、`doubao_chat`、`doubao_image`、`scheduler`、`reminder`、`music`、`command_cooldown`、`qq_music`、`bilibili_music`、`message_stats`。
+`/admin/api/config` 当前支持分组：`web_player`、`auto_recall`、`area_join_notify`、`chat`、`oopz`、`netease`、`redis`、`scheduler`、`reminder`、`music`、`command_cooldown`、`qq_music`、`bilibili_music`、`message_stats`。
 
 ---
 

@@ -569,29 +569,6 @@ class RealRedisAtomicEnqueueTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.client.get(self.commands_key), "not-a-list")
 
 
-class ConversationMemoryProviderTest(unittest.IsolatedAsyncioTestCase):
-    """ConversationMemory 应通过 provider 现取客户端，跟随 Redis 恢复。"""
-
-    async def test_memory_follows_provider_swap(self) -> None:
-        from services.conversation_memory import ConversationMemory
-
-        first = AsyncMock(name="MemoryClient")
-        first.get = AsyncMock(return_value=None)
-        second = AsyncMock(name="RealClient")
-        second.get = AsyncMock(return_value=None)
-        current = {"client": first}
-
-        async def provider():
-            return current["client"]
-
-        memory = ConversationMemory(provider, max_rounds=5)
-
-        await memory.get_history("user-1", "channel-1")
-        first.get.assert_awaited_once()
-
-        current["client"] = second
-        await memory.get_history("user-1", "channel-1")
-        second.get.assert_awaited_once()
 
 
 if __name__ == "__main__":

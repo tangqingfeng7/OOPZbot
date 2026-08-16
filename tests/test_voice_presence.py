@@ -22,16 +22,12 @@ from services.area_join_notifier import (  # noqa: E402
 
 class VoiceDestroyLeavesChannelTest(unittest.IsolatedAsyncioTestCase):
     def _controller(self) -> tuple[SdkVoiceController, Mock]:
+        # 走正常构造，别用 __new__ 手工拼：新增字段时手工版会漏，
+        # 而且只有跑全量时才暴露，单跑这个文件是绿的。
         voice = Mock()
         voice.leave = AsyncMock()
         voice.close = AsyncMock()
-        controller = cast(Any, SdkVoiceController.__new__(SdkVoiceController))
-        controller._voice = voice
-        controller._preloaded = {}
-        controller._preload_tasks = {}
-        controller._playing = False
-        controller._playback_watch = None
-        controller._closed = False
+        controller = cast(Any, SdkVoiceController(voice, proxy_value=False))
         return controller, voice
 
     async def test_destroy_leaves_before_closing(self) -> None:
@@ -70,9 +66,7 @@ class VoiceWarmupTest(unittest.IsolatedAsyncioTestCase):
     def _controller(self) -> tuple[SdkVoiceController, Mock]:
         voice = Mock()
         voice.start = AsyncMock()
-        controller = cast(Any, SdkVoiceController.__new__(SdkVoiceController))
-        controller._voice = voice
-        controller._closed = False
+        controller = cast(Any, SdkVoiceController(voice, proxy_value=False))
         return controller, voice
 
     async def test_warmup_starts_the_browser_backend(self) -> None:

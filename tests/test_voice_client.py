@@ -218,6 +218,74 @@ class PlaybackEndDetectionTest(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class WarmupBeforeJoinTest(unittest.IsolatedAsyncioTestCase):
+    """首次进频道要等浏览器预热完成。
+
+    回归背景：预热是后台跑的，启动后很快点歌就会在浏览器没起来时进频道，
+    身份绑定赶不上，服务端不把 bot 显示为频道成员——听得到声音看不到人。
+    """
+
+    def setUp(self) -> None:
+        self.voice = Mock()
+        self.voice.join = AsyncMock(return_value={"ok": True})
+        self.voice.leave = AsyncMock()
+        self.voice.close = AsyncMock()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+        async def _start() -> None:
+            self.started.set()
+            await self.release.wait()
+
+        self.voice.start = AsyncMock(side_effect=_start)
+        self.controller = SdkVoiceController(self.voice, proxy_value=False)
+
+    async def _join(self):
+        return await self.controller.join(area="a1", channel="c1")
+
+    async def test_join_waits_for_inflight_warmup(self) -> None:
+        warm = asyncio.get_running_loop().create_task(self.controller.warmup())
+        await self.started.wait()
+
+        join = asyncio.get_running_loop().create_task(self._join())
+        await asyncio.sleep(0.05)
+        self.voice.join.assert_not_awaited()
+
+        self.release.set()
+        await asyncio.wait_for(join, timeout=2)
+        await warm
+        self.voice.join.assert_awaited_once()
+
+    async def test_join_does_not_wait_when_no_warmup_scheduled(self) -> None:
+        await asyncio.wait_for(self._join(), timeout=1)
+        self.voice.join.assert_awaited_once()
+
+    async def test_join_proceeds_after_warmup_finished(self) -> None:
+        self.release.set()
+        await self.controller.warmup()
+
+        await asyncio.wait_for(self._join(), timeout=1)
+        self.voice.join.assert_awaited_once()
+
+    async def test_failed_warmup_does_not_block_join(self) -> None:
+        self.voice.start = AsyncMock(side_effect=RuntimeError("浏览器起不来"))
+        await self.controller.warmup()
+
+        await asyncio.wait_for(self._join(), timeout=1)
+        self.voice.join.assert_awaited_once()
+
+    async def test_join_gives_up_waiting_after_timeout(self) -> None:
+        with patch("music.sdk_voice._WARMUP_WAIT_TIMEOUT", 0.05):
+            warm = asyncio.get_running_loop().create_task(self.controller.warmup())
+            await self.started.wait()
+
+            await asyncio.wait_for(self._join(), timeout=2)
+
+        self.voice.join.assert_awaited_once()
+        self.release.set()
+        await warm
+
+
 class SeleniumFallbackTest(unittest.IsolatedAsyncioTestCase):
     async def test_falls_back_when_playwright_initialization_fails(self) -> None:
         transport = ProjectBrowserVoiceTransport(Mock(), proxy_value=False)

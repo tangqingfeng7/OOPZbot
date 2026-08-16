@@ -61,7 +61,7 @@ def _validate_plugin_name(name: str) -> str | JSONResponse:
 
 
 @router.post("/admin/api/plugins/{name}/load")
-def admin_plugin_load(name: str):
+async def admin_plugin_load(name: str):
     plugin_name = _validate_plugin_name(name)
     if isinstance(plugin_name, JSONResponse):
         return plugin_name
@@ -69,14 +69,14 @@ def admin_plugin_load(name: str):
     host = _get_plugin_host()
     if not runtime:
         return JSONResponse({"ok": False, "error": "插件运行时未初始化"}, status_code=503)
-    result = runtime.load(plugin_name, handler=host)
+    result = await runtime.load(plugin_name, handler=host)
     if not result.ok:
         return JSONResponse({"ok": False, "error": result.message, "code": result.code.value})
     return JSONResponse({"ok": True, "message": result.message})
 
 
 @router.post("/admin/api/plugins/{name}/unload")
-def admin_plugin_unload(name: str):
+async def admin_plugin_unload(name: str):
     plugin_name = _validate_plugin_name(name)
     if isinstance(plugin_name, JSONResponse):
         return plugin_name
@@ -84,14 +84,14 @@ def admin_plugin_unload(name: str):
     host = _get_plugin_host()
     if not runtime:
         return JSONResponse({"ok": False, "error": "插件运行时未初始化"}, status_code=503)
-    result = runtime.unload(plugin_name, handler=host)
+    result = await runtime.unload(plugin_name, handler=host)
     if not result.ok:
         return JSONResponse({"ok": False, "error": result.message, "code": result.code.value})
     return JSONResponse({"ok": True, "message": result.message})
 
 
 @router.post("/admin/api/plugins/{name}/reload-config")
-def admin_plugin_reload_config(name: str):
+async def admin_plugin_reload_config(name: str):
     plugin_name = _validate_plugin_name(name)
     if isinstance(plugin_name, JSONResponse):
         return plugin_name
@@ -99,7 +99,7 @@ def admin_plugin_reload_config(name: str):
     host = _get_plugin_host()
     if not runtime:
         return JSONResponse({"ok": False, "error": "插件运行时未初始化"}, status_code=503)
-    result = runtime.reload_config(plugin_name, handler=host)
+    result = await runtime.reload_config(plugin_name, handler=host)
     if not result.ok:
         return JSONResponse({"ok": False, "error": result.message, "code": result.code.value})
     return JSONResponse({"ok": True, "message": result.message})

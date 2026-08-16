@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -72,24 +72,13 @@ class MessageContextTest(unittest.TestCase):
 class CommandMessageServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.sender = AsyncMock()
-        self.chat = Mock()
-        self.chat.ai_reply = AsyncMock()
-        self.chat.check_profanity = AsyncMock()
-        self.chat.close = AsyncMock()
-        self.chat.generate_image = AsyncMock()
         self.access = Mock()
-        self.profanity = Mock()
-        # 只有 handle_profanity 是协程，检测与缓冲区都是同步的
-        self.profanity.handle_profanity = AsyncMock()
         self.command = Mock()
         self.runtime = _runtime(
             sender=self.sender,
-            chat=self.chat,
-            bot_uid="bot-uid",
             bot_mention="(met)bot(met)",
             services=SimpleNamespace(
                 routing=SimpleNamespace(access=self.access, command=self.command),
-                safety=SimpleNamespace(profanity=self.profanity),
             ),
             recent_messages=_build_recent_store(),
         )
@@ -120,83 +109,6 @@ class CommandMessageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recent_messages[0]["messageId"], "id-5")
         self.assertEqual(recent_messages[-1]["messageId"], "id-54")
 
-    async def test_handle_profanity_short_circuits_on_direct_keyword_match(self) -> None:
-        import app.services.routing.command_message_service as module
-        from app.services.routing.command_message_service import MessageContext
-
-        service = self._build_service()
-        ctx = MessageContext(
-            raw={},
-            content="bad",
-            channel="channel",
-            area="area",
-            user="user-1",
-            message_id="msg-1",
-            timestamp="ts-1",
-        )
-        self.profanity.check_profanity.return_value = "bad"
-
-        with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": False}):
-            result = await service.handle_profanity(ctx)
-
-        self.assertTrue(result)
-        self.profanity.handle_profanity.assert_called_once_with(
-            "user-1",
-            "channel",
-            "area",
-            "bad",
-            [{"message_id": "msg-1", "channel": "channel", "area": "area", "timestamp": "ts-1"}],
-        )
-
-    async def test_handle_profanity_can_use_ai_context_detection(self) -> None:
-        import app.services.routing.command_message_service as module
-        from app.services.routing.command_message_service import MessageContext
-
-        service = self._build_service()
-        ctx = MessageContext(
-            raw={},
-            content="part-1",
-            channel="channel",
-            area="area",
-            user="user-1",
-            message_id="msg-1",
-            timestamp="ts-1",
-        )
-        self.profanity.check_profanity.return_value = None
-        self.profanity.check_context_profanity.return_value = None
-        self.profanity.clean_text.return_value = "part-1"
-        self.profanity.get_user_buffer.return_value = [
-            {"content": "part-1"},
-            {"content": "part-2"},
-        ]
-        self.chat.check_profanity.side_effect = [None, "joined violation"]
-
-        config = {
-            "enabled": True,
-            "skip_admins": False,
-            "context_detection": True,
-            "ai_detection": True,
-            "ai_min_length": 2,
-        }
-        with patch.object(module, "PROFANITY_CONFIG", config):
-            result = await service.handle_profanity(ctx)
-
-        self.assertTrue(result)
-        self.profanity.push_user_buffer.assert_called_once_with(
-            "user-1",
-            "part-1",
-            "msg-1",
-            "channel",
-            "area",
-            "ts-1",
-        )
-        self.profanity.handle_profanity.assert_called_once_with(
-            "user-1",
-            "channel",
-            "area",
-            "AI:joined violation",
-            list(self.profanity.get_user_buffer.return_value),
-        )
 
     async def test_reject_unauthorized_command_sends_denial_message(self) -> None:
         from app.services.routing.command_message_service import MessageContext
@@ -229,10 +141,6 @@ class CommandRouterTest(unittest.IsolatedAsyncioTestCase):
         self.slash.dispatch = AsyncMock(return_value=True)
         self.chat = Mock()
         self.chat.handle_plain_chat = AsyncMock(return_value=True)
-        self.chat.ai_reply = AsyncMock()
-        self.chat.check_profanity = AsyncMock()
-        self.chat.close = AsyncMock()
-        self.chat.generate_image = AsyncMock()
         self.recall_scheduler = Mock()
         self.recall_scheduler.cancel_all = AsyncMock()
         self.recall_scheduler.schedule_recall = AsyncMock()
@@ -321,7 +229,7 @@ class CommandRouterTest(unittest.IsolatedAsyncioTestCase):
 
 
 class MentionCommandRouterTest(unittest.IsolatedAsyncioTestCase):
-    async def test_unknown_command_prefers_hint_over_ai_fallback(self) -> None:
+    async def test_unknown_command_returns_hint(self) -> None:
         from app.services.routing.mention_command_router import MentionCommandRouter
 
         sender = Mock()
@@ -351,7 +259,6 @@ class MentionCommandRouterTest(unittest.IsolatedAsyncioTestCase):
         await router.dispatch("播发 稻香", "channel", "area", "user-1")
 
         chat.send_unknown_mention_command.assert_called_once()
-        chat.handle_mention_fallback.assert_not_called()
 
 
 if __name__ == "__main__":

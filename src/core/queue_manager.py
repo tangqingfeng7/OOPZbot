@@ -367,11 +367,7 @@ class _InMemoryRedis:
             return self._kv.get(key)
 
     async def delete(self, *keys: str) -> int:
-        """删除若干键，返回实际删掉的个数（与 redis-py 一致）。
-
-        conversation_memory 用的是 ``delete(*keys)`` 并累加返回值，单键签名
-        且返回 None 会让它在降级期直接抛 TypeError（被 try/except 吞成静默失败）。
-        """
+        """删除若干键，返回实际删掉的个数（与 redis-py 一致）。"""
         removed = 0
         async with self._condition:
             for key in keys:

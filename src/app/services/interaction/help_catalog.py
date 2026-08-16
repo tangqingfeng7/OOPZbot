@@ -30,20 +30,6 @@ HELP_TOPICS: dict[str, HelpTopic] = {
         aliases=("总览", "首页", "帮助", "help", "命令", "指令"),
         lines=(),
     ),
-    "ai": HelpTopic(
-        key="ai",
-        title="AI 功能",
-        description="AI 聊天、画图和对话记忆。",
-        aliases=("ai", "聊天", "画图", "图片", "绘图"),
-        menu_label="AI",
-        menu_blurb="AI 聊天与画图",
-        lines=(
-            "@bot 画<描述>  生成图片",
-            "@bot <任意内容>  AI 聊天",
-            "@bot 清除记忆  清除当前频道的对话记忆",
-            "/清除记忆  或  /clearai",
-        ),
-    ),
     "music": HelpTopic(
         key="music",
         title="音乐",
@@ -170,7 +156,7 @@ HELP_TOPICS: dict[str, HelpTopic] = {
 
 # 总览菜单展示顺序（单一来源）；列出的主题必须存在于 HELP_TOPICS。
 MENU_ORDER: tuple[str, ...] = (
-    "music", "query", "reminder", "admin", "schedule", "plugin", "ai", "setup",
+    "music", "query", "reminder", "admin", "schedule", "plugin", "setup",
 )
 
 

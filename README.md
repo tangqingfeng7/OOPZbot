@@ -7,7 +7,7 @@
 <p align="center">
   面向 <a href="https://web.oopz.cn">Oopz</a> 的多功能频道机器人。
   <br />
-  支持音乐点播、语音频道播放、AI 聊天、图片生成、频道管理、Web 播放器、管理后台和插件扩展。
+  支持音乐点播、语音频道播放、频道管理、Web 播放器、管理后台和插件扩展。
 </p>
 
 <p align="center">
@@ -50,7 +50,7 @@
     <td width="50%" align="center">
       <strong>Oopz 频道指令</strong>
       <br />
-      <sub>点歌、AI 回复、提醒和频道管理</sub>
+      <sub>点歌、提醒和频道管理</sub>
       <br /><br />
       <img src="docs/assets/readme/oopz-commands.png" alt="Oopz 频道指令" width="100%" />
     </td>
@@ -71,9 +71,8 @@
 | 音乐点播 | 网易云、QQ 音乐、B 站搜索播放，支持队列、切歌、随机播放、喜欢列表 |
 | 语音播放 | Bot 可进入 Oopz 语音频道，通过 Agora 推流播放音乐 |
 | Web 播放器 | 浏览器控制播放、搜索点歌、查看歌词、管理队列和音量 |
-| AI 功能 | 接入豆包 AI，支持聊天回复和 Seedream 文生图 |
 | 频道管理 | 成员查询、身份组、禁言、禁麦、踢出、封禁管理 |
-| 自动管理 | 脏话检测、自动禁言、自动撤回、成员加入/退出通知 |
+| 自动管理 | 自动撤回、成员加入/退出通知 |
 | 提醒统计 | 定时提醒、活跃排行、频道统计、点歌排行、最近播放 |
 | 插件系统 | 支持目录化插件，已有三角洲、LOL、Steam 等插件 |
 | 管理后台 | 提供 `/admin` 页面，方便查看状态、改配置、控音乐 |
@@ -81,10 +80,40 @@
 
 ## 启动方式
 
-### 先准备这些
+### 一键部署（推荐）
+
+只需要先装好 **Python 3.10+**。
+
+Windows：双击 `deploy.bat`
+
+Linux / macOS：
+
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+脚本会依次建好虚拟环境、装 Python 依赖和浏览器、生成配置文件、检查并安装 Redis
+与网易云音乐 API，然后问一次 Oopz 账号密码。首次运行会过一遍可选配置（后台密码、
+网易云 Cookie、代理、管理员 UID），每项都能直接回车跳过。
+
+装不上的东西一律降级：没有 Redis 就用内存队列（重启后队列丢失），
+没有网易云 API 就没有点歌，没有浏览器就没有语音——其余功能照常。只有缺少
+Oopz 凭据会拦住启动。
+
+常用参数：
+
+```bash
+./deploy.sh --check          # 体检
+./deploy.sh --no-input       # 适合服务器无人值守
+./deploy.sh --no-start       # 只准备环境，不启动
+./deploy.sh --skip-install   # 跳过依赖安装，快速启动
+```
+
+### 手动准备
 
 - Python 3.10+
-- Redis
+- Redis（可选：连不上会自动退到内存队列，功能可用但重启后队列丢失）
 - Node.js 18+（非 Docker 部署时用于网易云音乐 API）
 - Chrome / Edge 或 Playwright Chromium（语音频道播放会用到）
 
@@ -119,7 +148,7 @@ cp private_key.example.py private_key.py
 - `config.py`：写入 `app_version`、`device_id`、`person_uid`、`jwt_token`
 - `private_key.py`：写入 RSA 私钥
 
-这个方式对应项目里的 `src/oopz/oopz_password_login.py` 和 `/admin/api/oopz/login`，返回给页面的 Token 和私钥只展示脱敏状态。
+这个方式对应 SDK 的 `src/oopz_sdk/auth/password_login.py` 和管理端的 `/admin/api/oopz/login`，返回给页面的 Token 和私钥只展示脱敏状态。
 
 **备用方式：命令行网页抓取**
 
@@ -139,14 +168,14 @@ python tools/credential_tool.py --save
 
 ### Windows 启动
 
-先确认 Redis 已经启动，然后执行：
+建议先启动 Redis（没有也能跑，队列会存在内存里），然后执行：
 
 ```powershell
 pip install -r requirements.txt
 python -m playwright install chromium
 
-git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git NeteaseAPI_tmp
-Set-Location NeteaseAPI_tmp
+git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git NeteaseCloudMusicApi
+Set-Location NeteaseCloudMusicApi
 npm install
 node app.js
 ```
@@ -159,18 +188,34 @@ python main.py
 
 ### Linux / macOS 启动
 
-项目提供了 `start.sh`，会自动创建虚拟环境、安装依赖、安装 Playwright Chromium，并读取 `.env`、`.env.local`。运行前同样需要准备好 Redis。
+同样建议先启动 Redis，然后：
 
 ```bash
-chmod +x start.sh
-./start.sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m playwright install --with-deps chromium
+
+git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git NeteaseCloudMusicApi
+(cd NeteaseCloudMusicApi && npm install && node app.js &)
 ```
 
-第一次运行时，如果没有 `config.py` 或 `private_key.py`，脚本会自动复制模板并退出。填好配置后再运行一次：
+回到项目根目录启动 Bot：
 
 ```bash
-./start.sh
+python main.py
 ```
+
+### 需要走代理时
+
+`deploy.sh` / `deploy.bat` 会读取 `.env` 与 `.env.local`（已设好的环境变量优先，文件只补空缺）。
+配置 Clash 订阅后，脚本会在启动 Bot 前自动拉起代理内核，Bot 退出时一并收掉：
+
+```bash
+CLASH_SUBSCRIPTION_URL="https://example.com/clash.yaml" CLASH_AUTO_START=1 ./deploy.sh
+```
+
+可用的环境变量见 `.env.example`。没有代理需求就不用管这一段。
 
 ### 网易云音乐 API
 
@@ -179,7 +224,7 @@ chmod +x start.sh
 如果想让 Bot 启动时自动启动网易云音乐 API，在 `config.py` 里配置：
 
 ```python
-NETEASE_CLOUD["auto_start_path"] = "NeteaseAPI_tmp"
+NETEASE_CLOUD["auto_start_path"] = "NeteaseCloudMusicApi"
 ```
 
 启动后可用这个地址检查 Bot 是否正常：
@@ -209,7 +254,6 @@ docker compose up -d --build
 | 类型 | 示例 |
 | --- | --- |
 | 音乐 | `@bot 播放 稻香`、`@bot 下一首`、`@bot 队列`、`@bot 随机` |
-| AI | `@bot 画一只赛博猫`、`@bot 帮我写一句欢迎语` |
 | 提醒 | `@bot 提醒 30分钟后 开会`、`@bot 我的提醒` |
 | 管理 | `@bot 禁言 <用户> 5`、`@bot 解禁 <用户>`、`@bot 踢出 <用户>` |
 | 插件 | `@bot 三角洲帮助`、`@bot 战绩 区号 召唤师#编号`、`@bot steam 黑神话` |

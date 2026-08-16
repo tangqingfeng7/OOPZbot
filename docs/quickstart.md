@@ -1,9 +1,24 @@
 # 快速开始
 
-## 环境要求
+## 最快的方式：一键部署
+
+装好 Python 3.10+ 之后，Windows 双击 `deploy.bat`，Linux / macOS 执行：
+
+```shell
+chmod +x deploy.sh
+./deploy.sh
+```
+
+脚本会建虚拟环境、装依赖和浏览器、生成配置、检查并安装 Redis 与网易云音乐 API，
+再问一次 Oopz 账号密码就启动。装不上的组件会降级而不是中断（详见
+[README 的一键部署说明](../README.md#一键部署推荐)）。
+
+想自己控制每一步，或者只想装其中一部分，就按下面的手动流程来。
+
+## 环境要求（手动部署）
 
 - Python 3.10+
-- Redis 服务器
+- Redis 服务器（可选：连不上会自动退到内存队列，功能可用但重启后队列丢失）
 - Node.js 18+（运行网易云音乐 API 服务）
 - **语音频道推流**：Playwright + Chromium，或 Selenium + Chrome/Edge（见下方说明）
 
@@ -21,8 +36,8 @@ pip install -r requirements.txt
 ## 2. 部署网易云音乐 API
 
 ```shell
-git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git NeteaseAPI_tmp
-cd NeteaseAPI_tmp
+git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git NeteaseCloudMusicApi
+cd NeteaseCloudMusicApi
 npm install
 ```
 
@@ -38,7 +53,7 @@ npm install
 
 也可以手动配置，详见 [配置说明](configuration.md)。
 
-若需主程序启动时自动启动网易云 API，在 `config.py` 的 `NETEASE_CLOUD` 中设置 `auto_start_path`（如 `"NeteaseAPI_tmp"`）。
+若需主程序启动时自动启动网易云 API，在 `config.py` 的 `NETEASE_CLOUD` 中设置 `auto_start_path`（如 `"NeteaseCloudMusicApi"`）。
 
 LOL 功能使用插件配置文件：
 
@@ -54,28 +69,24 @@ python main.py
 ```
 
 - 若已配置 `auto_start_path` 且目录存在，主程序会自动启动网易云 API 并等待就绪
-- 否则需先手动启动：`cd NeteaseAPI_tmp && node app.js`，再运行 `python main.py`
+- 否则需先手动启动：`cd NeteaseCloudMusicApi && node app.js`，再运行 `python main.py`
 
 启动后 Bot 自动通过 WebSocket 连接 Oopz 平台。
 
 如果需要给 NoneBot、AstrBot、Hoshino 等外部程序提供 OneBot v11 接口，可在 `config.py` 中启用 `ONEBOT_V11_CONFIG["enabled"] = True`，默认地址为 `http://127.0.0.1:6700`。详见 [OneBot v11 旁路适配](onebot-v11.md)。
 
-Linux 上也可以使用一键脚本：
+### 需要走代理时
 
-```shell
-./start.sh
-```
-
-脚本会自动读取项目根目录下的 `.env`、`.env.local`。可先复制示例：
+一键脚本会读取项目根目录下的 `.env`、`.env.local`；已设好的环境变量优先，文件只补空缺。可先复制示例：
 
 ```shell
 cp .env.example .env
 ```
 
-如需自动下载 Clash 订阅并启动 mihomo/clash 内核：
+如需自动下载 Clash 订阅并启动 mihomo/clash 内核（Bot 退出时会一并停掉内核）：
 
 ```shell
-CLASH_SUBSCRIPTION_URL="https://example.com/clash.yaml" CLASH_AUTO_START=1 ./start.sh
+CLASH_SUBSCRIPTION_URL="https://example.com/clash.yaml" CLASH_AUTO_START=1 ./deploy.sh
 ```
 
 说明：

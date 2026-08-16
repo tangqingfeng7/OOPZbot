@@ -245,10 +245,6 @@ class SlashCommandRouter:
                 )
             return
 
-        if command in slash_of("clear_ai_memory"):
-            await self._actions.interaction.clear_ai_memory(user, channel, area)
-            return
-
         await self._services.interaction.chat.send_unknown_command(
             command,
             channel,

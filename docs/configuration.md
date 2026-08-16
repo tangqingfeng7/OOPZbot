@@ -2,10 +2,21 @@
 
 ## 创建配置文件
 
+Linux / macOS：
+
 ```shell
-copy config.example.py config.py
-copy private_key.example.py private_key.py
+cp config.example.py config.py
+cp private_key.example.py private_key.py
 ```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item config.example.py config.py
+Copy-Item private_key.example.py private_key.py
+```
+
+用一键部署脚本（`./deploy.sh` 或 `deploy.bat`）的话这一步会自动完成。
 
 > 主要登录方式是管理后台账号密码登录；命令行 [凭据获取工具](credential-tool.md) 只作为后台登录不可用时的备用方案。
 
@@ -91,30 +102,6 @@ copy private_key.example.py private_key.py
 | `auto_play_enabled` | 队列播完后是否自动随机播放喜欢列表（默认 `True`） |
 | `default_volume` | 默认音量 0-100（默认 `50`） |
 
-### 豆包 AI 聊天 (`DOUBAO_CONFIG`)
-
-| 配置项 | 说明 |
-|--------|------|
-| `enabled` | 是否启用（默认 `False`） |
-| `base_url` | 火山方舟 API 地址 |
-| `api_key` | 火山方舟 API Key |
-| `model` | 模型名称 |
-| `system_prompt` | 系统提示词 |
-| `max_tokens` | 最大生成 token 数 |
-| `temperature` | 生成温度 |
-| `context_max_rounds` | 每个用户+频道最多保留的对话轮数（`0`=不保留上下文，默认 `10`） |
-| `context_ttl_seconds` | 对话上下文过期时间（秒），`0`=不过期（默认 `1800`） |
-
-### 豆包图片生成 (`DOUBAO_IMAGE_CONFIG`)
-
-| 配置项 | 说明 |
-|--------|------|
-| `enabled` | 是否启用（默认 `False`） |
-| `api_key` | 火山方舟 API Key |
-| `model` | Seedream 模型名称 |
-| `size` | 图片尺寸（默认 `1920x1920`） |
-| `watermark` | 是否添加水印（默认 `False`） |
-
 ### LOL 封号查询插件 (`config/plugins/lol_ban/config.json`)
 
 | 配置项 | 说明 |
@@ -164,22 +151,6 @@ copy private_key.example.py private_key.py
 - `temp_dir/qrs` 会在插件加载时自动清理过期二维码文件。
 - 每日密码定时推送会按 `daily_keyword_push_time` 在所有已订阅频道每日推送一次。
 - 特勤处制造完成推送会按 `place_push_interval_sec` 周期轮询当前已订阅频道，并在检测到生产任务完成时推送到原频道。
-
-### 脏话自动禁言 (`PROFANITY_CONFIG`)
-
-| 配置项 | 说明 |
-|--------|------|
-| `enabled` | 是否启用（默认 `True`） |
-| `mute_duration` | 禁言时长（分钟），仅支持 `1`/`5`/`60`/`1440`/`4320`/`10080` |
-| `recall_message` | 是否自动撤回违规消息（默认 `True`） |
-| `skip_admins` | 管理员是否免检（默认 `True`） |
-| `warn_before_mute` | 是否先警告再禁言（默认 `False`，即直接禁言） |
-| `context_detection` | 上下文拆字检测（默认 `True`） |
-| `context_window` | 上下文时间窗口，秒（默认 `30`） |
-| `context_max_messages` | 上下文最多回溯消息条数（默认 `10`） |
-| `ai_detection` | AI 辅助检测，需启用豆包 AI（默认 `True`） |
-| `ai_min_length` | 触发 AI 检测的最短消息长度（默认 `2`） |
-| `keywords` | 敏感词列表，支持自定义扩展 |
 
 ### 聊天自动回复 (`CHAT_CONFIG`)
 
@@ -241,7 +212,6 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 | `enabled` | 是否启用自动撤回（默认 `False`） |
 | `delay` | 自动撤回延迟秒数（默认 `30`） |
 | `max_pending` | 最多等待撤回的消息数，防止刷屏占用内存（默认 `1000`） |
-| `exclude_commands` | 不自动撤回的命令类型列表，如 `ai_chat`、`ai_image` |
 
 ### 域成员加入/退出通知 (`AREA_JOIN_NOTIFY`)
 
@@ -258,7 +228,8 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 | `auto_assign_role_name` | 或用身份组名称匹配（优先使用 `auto_assign_role_id`） |
 | `member_fetch_max` | `member_snapshot` 模式下单次成员快照翻页上限，超过该人数会跳过该域的快照对比并告警；`operate_logs` 模式不使用 |
 
-需配置 `default_area`、`default_channel`（或由 Bot 自动取第一个已加入域及第一个文字频道）。通知消息与 Bot 其他消息一致，默认使用**公告样式**。
+需配置 `default_area`、`default_channel`（或由 Bot 自动取第一个已加入域及第一个文字频道）。通知消息与 Bot 其他消息一致，默认是普通气泡；把 `use_announcement_style` 设为 `True`
+才会用公告样式（Bot 不是高级管理员时服务端会拒绝发公告）。
 
 ### 定时消息调度 (`SCHEDULER_CONFIG`)
 
@@ -302,7 +273,6 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 | `auto_assign_role_id` / `auto_assign_role_name` | 新人自动分配的身份组 ID / 名称 |
 | `admin_uids` | 该域独立管理员，空则继承全局 `ADMIN_UIDS` |
 | `plugins_enabled` / `plugins_disabled` | 该域启用 / 禁用的插件名列表（`plugins_enabled` 为空=全部启用） |
-| `profanity_enabled` | 是否启用脏话检测 |
 
 ### 权限控制 (`ADMIN_UIDS`)
 
