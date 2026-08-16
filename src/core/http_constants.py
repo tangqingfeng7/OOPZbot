@@ -7,9 +7,6 @@
 - ``HTTP_TIMEOUT_MEDIA``：图片等中等体积资源下载。
 - ``HTTP_TIMEOUT_LOGIN``：启动时账号密码登录 / 凭据刷新。
 - ``HTTP_TIMEOUT_DOWNLOAD``：音频等较慢的大流量下载 / 上传。
-
-注：AI 审核 / 推理等领域特定超时由 ``services/chat.py`` 自带的局部常量管理，
-不在这里集中（语义与通用 HTTP 客户端不同）。
 """
 
 from __future__ import annotations

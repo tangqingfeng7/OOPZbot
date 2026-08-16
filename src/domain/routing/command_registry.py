@@ -83,9 +83,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     # --- 音乐候选选择（公开；其余音乐命令由音乐服务独立分发） ---
     CommandSpec("songsearch", ("/songsearch",), ("搜歌", "搜索歌曲"), help_topic="music"),
     CommandSpec("pick", ("/pick",), ("选择", "选歌"), help_topic="music"),
-    # --- AI / 系统（公开） ---
-    CommandSpec("generate_image", (), ("画", "画一个", "画一张", "生成图片", "生成", "画图"), help_topic="ai"),
-    CommandSpec("clear_ai_memory", ("/clearai", "/清除记忆", "/重置对话"), ("清除记忆", "重置对话", "清除对话", "清空记忆"), help_topic="ai"),
+    # --- 系统（公开） ---
     CommandSpec("help", ("/help",), ("帮助", "help", "指令", "命令"), help_topic="overview"),
     CommandSpec("health", ("/health", "/doctor"), ("体检", "系统体检", "健康检查"), help_topic="setup"),
     CommandSpec("setup", ("/setup", "/wizard"), ("首启向导", "向导"), help_topic="setup"),

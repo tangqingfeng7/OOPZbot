@@ -4,7 +4,6 @@
             <button class="cfg-tab is-active" data-tab="basic" type="button">基础设置</button>
             <button class="cfg-tab" data-tab="bot" type="button">机器人</button>
             <button class="cfg-tab" data-tab="music" type="button">音乐与平台</button>
-            <button class="cfg-tab" data-tab="ai" type="button">AI 服务</button>
             <button class="cfg-tab" data-tab="schedule" type="button">定时与通知</button>
           </div>
           <div id="msg" class="msg config-message" aria-live="polite"></div>
@@ -90,12 +89,11 @@
             <section id="section-behavior" class="field-section">
               <div class="section-head">
                 <h3 class="section-title">机器人行为</h3>
-                <p class="section-copy">自动撤回、进群通知、聊天与脏话检测。</p>
+                <p class="section-copy">自动撤回、进群通知与关键词自动回复。</p>
               </div>
               <div class="field-grid">
                 <div class="field field--check"><label><input id="cfg_auto_recall_enabled" type="checkbox" /> 启用自动撤回</label></div>
                 <div class="field"><label for="cfg_auto_recall_delay">自动撤回延迟（秒）</label><input id="cfg_auto_recall_delay" type="number" min="1" /></div>
-                <div class="field field--wide"><label for="cfg_auto_recall_exclude">撤回排除命令</label><input id="cfg_auto_recall_exclude" type="text" placeholder="ai_chat, ai_image（逗号分隔）" /></div>
                 <div class="field field--check"><label><input id="cfg_area_notify_enabled" type="checkbox" /> 启用区域加入通知</label></div>
                 <div class="field"><label for="cfg_area_poll">区域成员轮询间隔（秒）</label><input id="cfg_area_poll" type="number" min="2" /></div>
                 <div class="field"><label for="cfg_area_auto_role_id">新人自动分配身份组 ID</label><input id="cfg_area_auto_role_id" type="text" placeholder="留空不分配" /></div>
@@ -106,16 +104,6 @@
                   <div id="cfg_kw_list" class="kw-editor"></div>
                   <button type="button" class="kw-add-btn" data-action="kw-add">+ 添加关键词</button>
                 </div>
-                <div class="field field--check"><label><input id="cfg_profanity_enabled" type="checkbox" /> 启用脏话检测</label></div>
-                <div class="field field--check"><label><input id="cfg_profanity_recall" type="checkbox" /> 自动撤回脏话消息</label></div>
-                <div class="field"><label for="cfg_mute_duration">禁言时长（分钟）</label><input id="cfg_mute_duration" type="number" min="1" /></div>
-                <div class="field field--check"><label><input id="cfg_warn_before_mute" type="checkbox" /> 先警告后禁言</label></div>
-                <div class="field field--check"><label><input id="cfg_skip_admins" type="checkbox" /> 跳过管理员检测</label></div>
-                <div class="field field--check"><label><input id="cfg_context_detection" type="checkbox" /> 启用上下文检测</label></div>
-                <div class="field"><label for="cfg_context_window">上下文窗口（秒）</label><input id="cfg_context_window" type="number" min="5" /></div>
-                <div class="field"><label for="cfg_context_max_messages">上下文最大消息数</label><input id="cfg_context_max_messages" type="number" min="1" /></div>
-                <div class="field field--check"><label><input id="cfg_ai_detection" type="checkbox" /> 启用 AI 检测</label></div>
-                <div class="field"><label for="cfg_ai_min_length">AI 检测最短长度</label><input id="cfg_ai_min_length" type="number" min="1" /></div>
               </div>
             </section>
 
@@ -294,53 +282,6 @@
             </section>
           </div>
 
-          <!-- Tab: AI 服务 -->
-          <div class="cfg-panel" data-panel="ai">
-            <section id="section-doubao-chat" class="field-section">
-              <div class="section-head">
-                <h3 class="section-title">豆包聊天</h3>
-                <p class="section-copy">聊天模型、提示词、上下文记忆和密钥。</p>
-              </div>
-              <div class="field-grid">
-                <div class="field field--check"><label><input id="cfg_doubao_enabled" type="checkbox" /> 启用豆包聊天</label></div>
-                <div class="field"><label for="cfg_doubao_model">模型</label><input id="cfg_doubao_model" type="text" /></div>
-                <div class="field field--wide"><label for="cfg_doubao_base_url">Base URL</label><input id="cfg_doubao_base_url" type="text" /></div>
-                <div class="field"><label for="cfg_doubao_max_tokens">max_tokens</label><input id="cfg_doubao_max_tokens" type="number" min="1" /></div>
-                <div class="field"><label for="cfg_doubao_temperature">temperature</label><input id="cfg_doubao_temperature" type="number" min="0" max="2" step="0.1" /></div>
-                <div class="field field--wide"><label for="cfg_doubao_system_prompt">系统提示词</label><input id="cfg_doubao_system_prompt" type="text" /></div>
-                <div class="field"><label for="cfg_doubao_context_rounds">上下文记忆轮数</label><input id="cfg_doubao_context_rounds" type="number" min="0" max="50" /></div>
-                <div class="field"><label for="cfg_doubao_context_ttl">上下文记忆过期（秒）</label><input id="cfg_doubao_context_ttl" type="number" min="0" /></div>
-                <div class="field field--wide">
-                  <label for="cfg_doubao_api_key">API Key</label>
-                  <div class="secret-input">
-                    <input id="cfg_doubao_api_key" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_doubao_api_key">显示</button>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section id="section-doubao-image" class="field-section">
-              <div class="section-head">
-                <h3 class="section-title">豆包文生图</h3>
-                <p class="section-copy">图像模型、尺寸、水印和密钥。</p>
-              </div>
-              <div class="field-grid">
-                <div class="field field--check"><label><input id="cfg_doubao_img_enabled" type="checkbox" /> 启用豆包文生图</label></div>
-                <div class="field field--check"><label><input id="cfg_doubao_img_watermark" type="checkbox" /> 图片水印</label></div>
-                <div class="field field--wide"><label for="cfg_doubao_img_base_url">Base URL</label><input id="cfg_doubao_img_base_url" type="text" /></div>
-                <div class="field"><label for="cfg_doubao_img_model">模型</label><input id="cfg_doubao_img_model" type="text" /></div>
-                <div class="field"><label for="cfg_doubao_img_size">尺寸</label><input id="cfg_doubao_img_size" type="text" placeholder="1920x1920" /></div>
-                <div class="field field--wide">
-                  <label for="cfg_doubao_img_api_key">API Key</label>
-                  <div class="secret-input">
-                    <input id="cfg_doubao_img_api_key" type="password" placeholder="留空表示不修改" />
-                    <button class="btn btn-sm btn-ghost" type="button" data-action="toggle-secret" data-secret="cfg_doubao_img_api_key">显示</button>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </div>
 
           <!-- Tab: 定时与通知 -->
           <div class="cfg-panel" data-panel="schedule">

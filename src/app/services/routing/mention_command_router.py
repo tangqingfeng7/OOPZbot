@@ -90,7 +90,6 @@ class MentionCommandRouter:
             # 定时消息为「1 slash 命令 : 5 mention 动词」形态不对称，mention 子动作别名保留字面量（另见 _raw_rules）
             (("定时消息列表", "定时消息"), lambda: self._actions.scheduler.list_scheduled(channel, area)),
             (mention_of("reminders_list"), lambda: self._actions.scheduler.list_reminders(channel, area, user)),
-            (mention_of("clear_ai_memory"), lambda: self._actions.interaction.clear_ai_memory(user, channel, area)),
         )
 
     def _arg_rules(self, channel: str, area: str, user: str):
@@ -109,11 +108,6 @@ class MentionCommandRouter:
             (mention_of("plugin_load"), lambda name: self._actions.plugins.load_plugin(name, channel, area), "用法: @bot 加载插件 <名>"),
             (mention_of("plugin_unload"), lambda name: self._actions.plugins.unload_plugin(name, channel, area), "用法: @bot 卸载插件 <名>"),
             (mention_of("plugin_reload"), lambda name: self._actions.plugins.reload_plugin_config(name, channel, area), "用法: @bot 重载插件 <名>"),
-            (
-                mention_of("generate_image"),
-                lambda prompt: self._actions.interaction.generate_image(prompt, channel, area, user),
-                "请描述要画的内容，例如: @bot 画一只可爱的猫咪",
-            ),
         )
 
     def _pair_rules(self, channel: str, area: str):
@@ -187,7 +181,7 @@ class MentionCommandRouter:
         return True
 
     async def dispatch(self, text: str, channel: str, area: str, user: str) -> bool:
-        """分发 @bot 命令。返回 True 表示该消息落入了 AI 聊天（用户消息不应被撤回）。"""
+        """分发 @bot 命令；返回值保留给调用兼容，当前分支均返回 False。"""
         if await self._plugins.try_dispatch_mention(
             text,
             channel,
@@ -236,5 +230,5 @@ class MentionCommandRouter:
             )
             return False
 
-        await self._services.interaction.chat.handle_mention_fallback(text, channel, area, user=user)
-        return True
+        await self._services.interaction.chat.send_unknown_mention_command(text, channel, area)
+        return False

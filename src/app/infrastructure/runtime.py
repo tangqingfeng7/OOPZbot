@@ -9,9 +9,8 @@ from core.paths import DATA_DIR
 from domain.plugins.base import PluginDescriptor
 from domain.plugins.plugin_operation import PluginOperationCode, PluginOperationResult
 from oopz.sdk_gateway import AsyncOopzGateway
-from services.chat import ChatHandler
 
-from .gateways import ChatGateway, SenderGateway
+from .gateways import SenderGateway
 from .plugin_runtime import (
     PluginRegistry,
     discover_plugins,
@@ -211,10 +210,6 @@ class PluginHost:
         return self._infrastructure.sender
 
     @property
-    def chat(self) -> ChatGateway:
-        return self._infrastructure.chat
-
-    @property
     def music(self) -> MusicGateway:
         return self._infrastructure.music
 
@@ -228,7 +223,6 @@ class BotInfrastructure:
     """命令处理链路使用的外部依赖集合。"""
 
     sender: SenderGateway
-    chat: ChatGateway
     music: MusicGateway
     plugins: PluginRuntime
 
@@ -238,8 +232,6 @@ def build_bot_infrastructure(sender: AsyncOopzGateway, voice_client=None, superv
     sender_gateway = SenderGateway(sender)
     return BotInfrastructure(
         sender=sender_gateway,
-        # ChatHandler 足够轻量，可以在运行时初始化时直接创建。
-        chat=ChatGateway(ChatHandler()),
         music=MusicGateway(sender_gateway, voice_client=voice_client, supervisor=supervisor),
         plugins=PluginRuntime(),
     )

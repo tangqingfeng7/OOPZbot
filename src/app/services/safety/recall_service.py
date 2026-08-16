@@ -150,30 +150,15 @@ class RecallService:
         if not arg:
             enabled = AUTO_RECALL_CONFIG.get("enabled", False)
             delay = AUTO_RECALL_CONFIG.get("delay", 30)
-            raw_exclude = AUTO_RECALL_CONFIG.get("exclude_commands", [])
-            exclude = (
-                [item for item in raw_exclude if isinstance(item, str)]
-                if isinstance(raw_exclude, list)
-                else []
-            )
             status = "开启" if enabled else "关闭"
-            exclude_names = {
-                "ai_chat": "AI 聊天",
-                "ai_image": "AI 生成图片",
-            }
-            exclude_display = ", ".join(exclude_names.get(item, item) for item in exclude) or "无"
             await self._sender.send_message(
                 f"自动撤回状态\n---\n"
                 f"  状态: {status}\n"
                 f"  延迟: {delay} 秒\n"
-                f"  排除: {exclude_display}\n"
                 f"---\n"
                 f"用法:\n"
                 f"  自动撤回 开 [秒数]  开启（可选设置延迟）\n"
-                f"  自动撤回 关        关闭\n"
-                f"  自动撤回 排除 <类型>  添加排除\n"
-                f"  自动撤回 取消排除 <类型>  移除排除\n"
-                f"  类型: ai_chat / ai_image",
+                f"  自动撤回 关        关闭",
                 channel=channel,
                 area=area,
             )
@@ -211,34 +196,8 @@ class RecallService:
             await self._sender.send_message(f"{Msg.OK} 自动撤回延迟已设为 {seconds} 秒", channel=channel, area=area)
             return
 
-        if arg.startswith("排除"):
-            command_type = arg[2:].strip()
-            if not command_type:
-                await self._sender.send_message("用法: 自动撤回 排除 ai_chat", channel=channel, area=area)
-                return
-            exclude = AUTO_RECALL_CONFIG.setdefault("exclude_commands", [])
-            if command_type in exclude:
-                await self._sender.send_message(f"{Msg.INFO} {command_type} 已在排除列表中", channel=channel, area=area)
-            else:
-                exclude.append(command_type)
-                await self._sender.send_message(f"{Msg.OK} 已将 {command_type} 加入排除列表", channel=channel, area=area)
-            return
-
-        if arg.startswith("取消排除"):
-            command_type = arg[4:].strip()
-            if not command_type:
-                await self._sender.send_message("用法: 自动撤回 取消排除 ai_chat", channel=channel, area=area)
-                return
-            exclude = AUTO_RECALL_CONFIG.get("exclude_commands", [])
-            if command_type in exclude:
-                exclude.remove(command_type)
-                await self._sender.send_message(f"{Msg.OK} 已将 {command_type} 从排除列表移除", channel=channel, area=area)
-            else:
-                await self._sender.send_message(f"{Msg.INFO} {command_type} 不在排除列表中", channel=channel, area=area)
-            return
-
         await self._sender.send_message(
-            "用法: 自动撤回 开/关/秒数/排除/取消排除",
+            "用法: 自动撤回 开/关/秒数",
             channel=channel,
             area=area,
         )

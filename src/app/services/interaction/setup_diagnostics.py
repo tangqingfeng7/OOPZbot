@@ -47,8 +47,6 @@ class SetupDiagnostics:
                 self._check_default_area_channel(),
                 await self._check_netease_api(),
                 self._check_netease_cookie(),
-                self._check_ai_chat(),
-                self._check_ai_image(),
                 await self._check_plugins(),
             ]
         self._session = None
@@ -455,95 +453,6 @@ class SetupDiagnostics:
             page="/admin/config",
         )
 
-    def _check_ai_chat(self) -> dict[str, Any]:
-        ai = getattr(runtime_config, "DOUBAO_CONFIG", {})
-        enabled = bool(ai.get("enabled", False))
-        base_url = str(ai.get("base_url", "") or "").strip()
-        api_key = str(ai.get("api_key", "") or "").strip()
-        model = str(ai.get("model", "") or "").strip()
-        if not enabled:
-            return self._make_check(
-                check_id="ai_chat",
-                group="ai",
-                title="AI 聊天",
-                level="info",
-                summary="AI 聊天当前关闭",
-                detail="如果你不需要聊天兜底，可以保持关闭；否则建议补齐模型配置。",
-                action="需要时在配置中心开启豆包聊天",
-                page="/admin/config",
-            )
-        if base_url and api_key and model:
-            return self._make_check(
-                check_id="ai_chat",
-                group="ai",
-                title="AI 聊天",
-                level="pass",
-                summary="AI 聊天配置完整",
-                detail=f"模型: {model}",
-                page="/admin/config",
-            )
-        missing = []
-        if not base_url:
-            missing.append("base_url")
-        if not api_key:
-            missing.append("api_key")
-        if not model:
-            missing.append("model")
-        return self._make_check(
-            check_id="ai_chat",
-            group="ai",
-            title="AI 聊天",
-            level="warn",
-            summary="AI 聊天已开启但配置不完整",
-            detail=f"缺失项: {', '.join(missing)}",
-            action="补齐 doubao_chat 配置，或先关闭该功能",
-            page="/admin/config",
-        )
-
-    def _check_ai_image(self) -> dict[str, Any]:
-        image = getattr(runtime_config, "DOUBAO_IMAGE_CONFIG", {})
-        enabled = bool(image.get("enabled", False))
-        base_url = str(image.get("base_url", "") or "").strip()
-        api_key = str(image.get("api_key", "") or "").strip()
-        model = str(image.get("model", "") or "").strip()
-        if not enabled:
-            return self._make_check(
-                check_id="ai_image",
-                group="ai",
-                title="AI 绘图",
-                level="info",
-                summary="AI 绘图当前关闭",
-                detail="如果不需要文生图，可以保持关闭。",
-                action="需要时在配置中心开启豆包文生图",
-                page="/admin/config",
-            )
-        if base_url and api_key and model:
-            return self._make_check(
-                check_id="ai_image",
-                group="ai",
-                title="AI 绘图",
-                level="pass",
-                summary="AI 绘图配置完整",
-                detail=f"模型: {model}",
-                page="/admin/config",
-            )
-        missing = []
-        if not base_url:
-            missing.append("base_url")
-        if not api_key:
-            missing.append("api_key")
-        if not model:
-            missing.append("model")
-        return self._make_check(
-            check_id="ai_image",
-            group="ai",
-            title="AI 绘图",
-            level="warn",
-            summary="AI 绘图已开启但配置不完整",
-            detail=f"缺失项: {', '.join(missing)}",
-            action="补齐 doubao_image 配置，或先关闭该功能",
-            page="/admin/config",
-        )
 
     async def _check_plugins(self) -> dict[str, Any]:
         if self._plugins is None:
@@ -622,14 +531,6 @@ class SetupDiagnostics:
                 "page": "/admin/config",
                 "description": "如果要使用点歌、喜欢列表和播放器，建议先完成网易云相关配置。",
                 "check_ids": ["netease_api", "netease_cookie"],
-            },
-            {
-                "id": "ai",
-                "title": "按需开启 AI 能力",
-                "required": False,
-                "page": "/admin/config",
-                "description": "AI 聊天和绘图不是首启硬依赖，但建议在准备好密钥后一次配齐。",
-                "check_ids": ["ai_chat", "ai_image"],
             },
             {
                 "id": "plugins",

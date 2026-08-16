@@ -4,7 +4,6 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -93,41 +92,6 @@ class StatisticsPlatformCountTest(unittest.IsolatedAsyncioTestCase):
 
         source = inspect.getsource(database.Statistics.update_today)
         self.assertNotIn('json.dumps({platform: 1})', source)
-
-
-class ProfanityWarningExpiryTest(unittest.TestCase):
-    """过期清理原本只在 push_user_buffer 里做，两项检测都关时永不执行。"""
-
-    def _service(self):
-        from app.services.safety.profanity_guard_service import ProfanityGuardService
-
-        runtime = mock.Mock()
-        return ProfanityGuardService(runtime)
-
-    def test_expired_warning_is_treated_as_zero(self) -> None:
-        service = self._service()
-        now = 10_000.0
-        service._warnings["u"] = (1, now - service._WARN_EXPIRE_SECONDS - 1)
-
-        self.assertEqual(service._active_warning_count("u", now), 0)
-        self.assertNotIn("u", service._warnings, "过期项应顺手清掉")
-
-    def test_fresh_warning_is_kept(self) -> None:
-        service = self._service()
-        now = 10_000.0
-        service._warnings["u"] = (1, now - 1)
-
-        self.assertEqual(service._active_warning_count("u", now), 1)
-
-    def test_unknown_user_is_zero(self) -> None:
-        self.assertEqual(self._service()._active_warning_count("nobody", 1.0), 0)
-
-    def test_legacy_int_format_is_not_dropped(self) -> None:
-        # 无时间戳时无从判断是否过期，保守当作未过期，别静默丢掉计数
-        service = self._service()
-        service._warnings["u"] = cast(tuple[int, float], 1)
-
-        self.assertEqual(service._active_warning_count("u", 10_000.0), 1)
 
 
 class EditUserRoleLockTest(unittest.IsolatedAsyncioTestCase):

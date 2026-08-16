@@ -65,9 +65,6 @@ class CommandHandler:
         if not ctx.content:
             return
 
-        if await self.services.routing.message.handle_profanity(ctx):
-            return
-
         if await self.services.routing.message.reject_unauthorized_command(ctx):
             return
 

@@ -34,14 +34,6 @@ class MessageRecallScheduler:
         self._sequence = 0
         self._stopped = False
 
-    @staticmethod
-    def should_skip_auto_recall(command_type: str) -> bool | None:
-        if AUTO_RECALL_CONFIG.get("enabled"):
-            exclude = AUTO_RECALL_CONFIG.get("exclude_commands", [])
-            if command_type in exclude:
-                return False
-        return None
-
     async def schedule_user_message_recall(
         self,
         message_id: str,

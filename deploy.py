@@ -284,10 +284,10 @@ def write_login(phone: str, password: str) -> None:
 
 
 def _section_span(content: str, section: str) -> tuple[int, int] | None:
-    """定位某个顶层配置块的范围，例如 DOUBAO_CONFIG = { ... }。
+    """定位某个顶层配置块的范围，例如 NETEASE_CLOUD = { ... }。
 
     api_key / cookie 这类键名在好几个块里都有，不限定范围就会写错地方——
-    比如把豆包的 key 写进网易云配置。
+    比如把一个配置块的同名字段写进另一个配置块。
     """
     match = re.search(rf"^{re.escape(section)}\s*=\s*\{{", content, re.MULTILINE)
     if not match:
@@ -351,15 +351,6 @@ def prompt_optional_settings() -> None:
         if ok:
             content, _ = set_config_field(content, "WEB_PLAYER_CONFIG", "admin_enabled", True)
             changed.append("后台管理")
-
-    ai_key = ask("豆包 AI API Key", secret_hint="用于聊天和文生图，火山方舟申请")
-    if ai_key:
-        content, ok = set_config_field(content, "DOUBAO_CONFIG", "api_key", ai_key)
-        if ok:
-            content, _ = set_config_field(content, "DOUBAO_CONFIG", "enabled", True)
-            content, _ = set_config_field(content, "DOUBAO_IMAGE_CONFIG", "api_key", ai_key)
-            content, _ = set_config_field(content, "DOUBAO_IMAGE_CONFIG", "enabled", True)
-            changed.append("AI 聊天与画图")
 
     netease_cookie = ask("网易云 Cookie", secret_hint="填了才能听 VIP 音质，可留空")
     if netease_cookie:

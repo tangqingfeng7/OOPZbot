@@ -128,17 +128,17 @@ class SectionAwareConfigWriteTest(unittest.TestCase):
     SAMPLE = (
         'OOPZ_CONFIG = {\n    "proxy": "",\n}\n\n'
         'NETEASE_CLOUD = {\n    "cookie": "",   # 网易云\n}\n\n'
-        'DOUBAO_CONFIG = {\n    "enabled": False,\n    "api_key": "",\n}\n\n'
-        'DOUBAO_IMAGE_CONFIG = {\n    "enabled": False,\n    "api_key": "",\n}\n\n'
+        'WEB_PLAYER_CONFIG = {\n    "enabled": False,\n}\n\n'
+        'ONEBOT_V11_CONFIG = {\n    "enabled": False,\n}\n\n'
         'ADMIN_UIDS = [\n    # "用户UID",\n]\n'
     )
 
     def test_writes_into_the_right_section(self) -> None:
-        content, ok = deploy.set_config_field(self.SAMPLE, "DOUBAO_CONFIG", "api_key", "ark-key")
+        content, ok = deploy.set_config_field(self.SAMPLE, "WEB_PLAYER_CONFIG", "enabled", True)
 
         self.assertTrue(ok)
-        self.assertIn('DOUBAO_CONFIG = {\n    "enabled": False,\n    "api_key": "ark-key",', content)
-        self.assertIn('DOUBAO_IMAGE_CONFIG = {\n    "enabled": False,\n    "api_key": "",', content)
+        self.assertIn('WEB_PLAYER_CONFIG = {\n    "enabled": True,', content)
+        self.assertIn('ONEBOT_V11_CONFIG = {\n    "enabled": False,', content)
 
     def test_cookie_goes_to_netease_not_elsewhere(self) -> None:
         content, ok = deploy.set_config_field(self.SAMPLE, "NETEASE_CLOUD", "cookie", "MUSIC_U=x")
@@ -147,7 +147,7 @@ class SectionAwareConfigWriteTest(unittest.TestCase):
         self.assertIn('"cookie": "MUSIC_U=x",   # 网易云', content, "注释要留着")
 
     def test_boolean_field_is_written_without_quotes(self) -> None:
-        content, ok = deploy.set_config_field(self.SAMPLE, "DOUBAO_CONFIG", "enabled", True)
+        content, ok = deploy.set_config_field(self.SAMPLE, "WEB_PLAYER_CONFIG", "enabled", True)
 
         self.assertTrue(ok)
         self.assertIn('"enabled": True', content)
@@ -170,8 +170,7 @@ class SectionAwareConfigWriteTest(unittest.TestCase):
     def test_result_is_still_valid_python(self) -> None:
         content = self.SAMPLE
         for section, key, value in (
-            ("DOUBAO_CONFIG", "api_key", "k"),
-            ("DOUBAO_CONFIG", "enabled", True),
+            ("WEB_PLAYER_CONFIG", "enabled", True),
             ("NETEASE_CLOUD", "cookie", 'has "quotes" inside'),
             ("OOPZ_CONFIG", "proxy", "http://127.0.0.1:7890"),
         ):
@@ -180,8 +179,7 @@ class SectionAwareConfigWriteTest(unittest.TestCase):
 
         namespace: dict = {}
         exec(compile(content, "config.py", "exec"), namespace)
-        self.assertEqual(namespace["DOUBAO_CONFIG"]["api_key"], "k")
-        self.assertTrue(namespace["DOUBAO_CONFIG"]["enabled"])
+        self.assertTrue(namespace["WEB_PLAYER_CONFIG"]["enabled"])
         self.assertEqual(namespace["NETEASE_CLOUD"]["cookie"], 'has "quotes" inside')
         self.assertEqual(namespace["OOPZ_CONFIG"]["proxy"], "http://127.0.0.1:7890")
 

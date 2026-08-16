@@ -23,20 +23,18 @@
                └────────┬─────────┘
                         ▼
                 ┌───────────────┐
-                │command_handler│  运行时组装 · 统计/安全预检 · 委托路由
-                └─┬──┬──┬──┬───┘
-                  │  │  │  │
-        ┌─────────┘  │  │  └──────────┐
-        ▼            ▼  ▼             ▼
-   ┌─────────┐  ┌──────────┐  ┌────────────┐
-   │ music   │  │  chat    │  │  plugins   │
-   │         │  │          │  │            │
-   │ 搜索/队列│  │ AI聊天   │  │ 扩展命令   │
-   │ 播放/缓存│  │ AI画图   │  └────────────┘
-   └────┬────┘  │ AI审核   │
-        │       └────┬─────┘
-  ┌─────┴─────┐      │
-  ▼           ▼      └──► 豆包 AI API
+                │command_handler│  运行时组装 · 统计预检 · 委托路由
+                └───────┬───────┘
+                        │
+              ┌─────────┴──────────┐
+              ▼                    ▼
+         ┌─────────┐          ┌────────────┐
+         │ music   │          │  plugins   │
+         │ 搜索/队列│          │  扩展命令   │
+         │ 播放/缓存│          └────────────┘
+         └────┬────┘
+        ┌─────┴─────┐
+        ▼           ▼
 netease    queue_manager
 (API)       (Redis)
   │
@@ -93,7 +91,6 @@ NeteaseCloud API (:3000)
 | 数据库 | `aiosqlite`（缓存、统计） |
 | HTTP 客户端 | aiohttp（`core/async_http.py` 统一连接池、代理与超时） |
 | 加密签名 | cryptography（RSA PKCS1v15 + SHA256），由 SDK 完成 |
-| AI 接口 | 豆包（火山方舟，OpenAI 兼容） |
 | 音乐 API | NeteaseCloudMusicApi（Node.js） |
 | 语音推流 | Agora Web SDK（Playwright 优先，Selenium 回退） |
 
@@ -101,7 +98,7 @@ NeteaseCloud API (:3000)
 
 ```
 ├── main.py                      # 入口：初始化数据库、启动 Bot
-├── config.py                    # 集中配置（平台、Redis、AI、音乐等）
+├── config.py                    # 集中配置（平台、Redis、音乐等）
 ├── config.example.py            # 配置示例
 ├── private_key.py               # RSA 私钥（PEM 格式）
 ├── private_key.example.py       # 私钥示例
@@ -147,11 +144,9 @@ NeteaseCloud API (:3000)
 │   │   └── name_resolver.py     # ID → 名称解析
 │   ├── onebot_v11/              # OneBot v11：配置转换 + SDK 能力补丁 + 数据迁移
 │   ├── services/                # 独立服务
-│   │   ├── chat.py              # AI 聊天 + 图片生成
 │   │   ├── area_join_notifier.py # 域成员加入/退出通知
 │   │   ├── scheduler_service.py # 定时任务服务
-│   │   ├── scheduler_templates.py # 定时消息模板预设
-│   │   └── conversation_memory.py # AI 上下文记忆
+│   │   └── scheduler_templates.py # 定时消息模板预设
 │   ├── web/                     # Web 播放器与 Admin 后台
 │   │   ├── web_player.py        # FastAPI 主应用
 │   │   ├── web_player_admin.py  # Admin 路由入口（聚合 web.admin 包，对外稳定 facade）

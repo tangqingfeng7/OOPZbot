@@ -1,16 +1,13 @@
-from app.services.runtime import CommandRuntimeView, chat_of, music_of, sender_of
-from core.constants import Msg
-from oopz.name_resolver import NameResolver, get_resolver
+from app.services.runtime import CommandRuntimeView, music_of, sender_of
+from oopz.name_resolver import get_resolver
 
 
 class CommonCommandService:
-    """处理语音频道、每日一句和 AI 图片生成。"""
+    """处理语音频道和每日一句。"""
 
     def __init__(self, runtime: CommandRuntimeView):
-        self._runtime = runtime
         self._sender = sender_of(runtime)
         self._music = music_of(runtime)
-        self._chat = chat_of(runtime)
 
     async def show_voice_channels(self, channel: str, area: str) -> None:
         """查看各语音频道的在线成员。"""
@@ -95,38 +92,3 @@ class CommonCommandService:
             text = "暂无内容"
 
         await self._sender.send_message(text, channel=channel, area=area)
-
-    async def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
-        """调用 AI 生成图片并发送到频道。"""
-        names = NameResolver()
-        user_name = names.user(user) if user else "未知用户"
-
-        await self._sender.send_message(
-            f"{Msg.PAINT} {user_name} 请求生成图片，正在绘制中...",
-            channel=channel,
-            area=area,
-        )
-
-        image_url = await self._chat.generate_image(prompt)
-        if not image_url:
-            await self._sender.send_message("图片生成失败，请稍后再试", channel=channel, area=area)
-            return
-
-        upload_result = await self._sender.upload_file_from_url(image_url)
-        if upload_result.get("code") != "success":
-            await self._sender.send_message("图片上传失败，请稍后再试", channel=channel, area=area)
-            return
-
-        attachment = upload_result["data"]
-        text = (
-            f"![IMAGEw{attachment['width']}h{attachment['height']}]({attachment['fileKey']})\n"
-            f"{user_name} 生成的图片\n"
-            f"描述: {prompt}"
-        )
-        await self._sender.send_message(
-            text=text,
-            attachments=[attachment],
-            channel=channel,
-            area=area,
-            auto_recall=self._runtime.services.safety.recall_scheduler.should_skip_auto_recall("ai_image"),
-        )

@@ -13,7 +13,6 @@ class Msg:
     WARN = "[!]"
     INFO = "[info]"
     SYNC = "[sync]"
-    PAINT = "[paint]"
     SEARCH = "[search]"
 
 

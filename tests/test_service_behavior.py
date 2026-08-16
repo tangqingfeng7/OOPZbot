@@ -330,98 +330,6 @@ class ModerationCommandActionsTest(unittest.IsolatedAsyncioTestCase):
         self.sender.send_message.assert_called_once_with("用法: @bot 禁言 谁 10", channel="channel-1", area="area-1")
 
 
-class ProfanityGuardServiceTest(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self.sender = AsyncMock()
-        self.handler = _runtime(infrastructure=SimpleNamespace(sender=self.sender))
-
-    async def test_handle_profanity_warns_before_muting(self) -> None:
-        from app.services.safety.profanity_guard_service import ProfanityGuardService
-
-        config = {
-            "keywords": ["坏词"],
-            "mute_duration": 5,
-            "recall_message": False,
-            "warn_before_mute": True,
-        }
-
-        with patch("app.services.safety.profanity_guard_service.PROFANITY_CONFIG", config):
-            service = ProfanityGuardService(self.handler)
-            with patch("oopz.name_resolver.NameResolver") as resolver:
-                resolver.return_value.user.return_value = "测试用户"
-
-                await service.handle_profanity(
-                    "user-1",
-                    "channel-1",
-                    "area-1",
-                    "坏词",
-                    [{"message_id": "m1", "channel": "channel-1", "area": "area-1", "timestamp": "t1"}],
-                )
-
-        self.sender.mute_user.assert_not_called()
-        self.sender.send_message.assert_called_once()
-        message = self.sender.send_message.call_args.args[0]
-        self.assertIn("请文明发言", message)
-        self.assertIn("5 分钟", message)
-
-    async def test_handle_profanity_mutes_and_recalls_on_second_violation(self) -> None:
-        from app.services.safety.profanity_guard_service import ProfanityGuardService
-
-        config = {
-            "keywords": ["坏词"],
-            "mute_duration": 5,
-            "recall_message": True,
-            "warn_before_mute": True,
-        }
-        self.sender.mute_user.return_value = {"ok": True}
-
-        with patch("app.services.safety.profanity_guard_service.PROFANITY_CONFIG", config):
-            service = ProfanityGuardService(self.handler)
-            service._warnings["user-1"] = cast(tuple[int, float], 1)
-            with patch("oopz.name_resolver.NameResolver") as resolver:
-                resolver.return_value.user.return_value = "测试用户"
-
-                await service.handle_profanity(
-                    "user-1",
-                    "channel-1",
-                    "area-1",
-                    "坏词",
-                    [{"message_id": "m1", "channel": "channel-1", "area": "area-1", "timestamp": "t1"}],
-                )
-
-        self.sender.recall_message.assert_called_once_with("m1", area="area-1", channel="channel-1", timestamp="t1")
-        self.sender.mute_user.assert_called_once_with("user-1", area="area-1", duration=5)
-        message = self.sender.send_message.call_args.args[0]
-        self.assertIn("自动禁言", message)
-        self.assertIn("5 分钟", message)
-
-    async def test_handle_profanity_reports_mute_failure(self) -> None:
-        from app.services.safety.profanity_guard_service import ProfanityGuardService
-
-        config = {
-            "keywords": ["坏词"],
-            "mute_duration": 5,
-            "recall_message": False,
-            "warn_before_mute": False,
-        }
-        self.sender.mute_user.return_value = {"error": "权限不足"}
-
-        with patch("app.services.safety.profanity_guard_service.PROFANITY_CONFIG", config):
-            service = ProfanityGuardService(self.handler)
-            with patch("oopz.name_resolver.NameResolver") as resolver:
-                resolver.return_value.user.return_value = "测试用户"
-
-                await service.handle_profanity(
-                    "user-1",
-                    "channel-1",
-                    "area-1",
-                    "坏词",
-                    [{"message_id": "m1", "channel": "channel-1", "area": "area-1", "timestamp": "t1"}],
-                )
-
-        self.sender.mute_user.assert_called_once_with("user-1", area="area-1", duration=5)
-        message = self.sender.send_message.call_args.args[0]
-        self.assertIn("自动禁言失败", message)
 
 
 class RecallServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -477,7 +385,7 @@ class RecallServiceTest(unittest.IsolatedAsyncioTestCase):
         import app.services.safety.recall_service as module
 
         service = module.RecallService(self.handler)
-        config = {"enabled": False, "delay": 30, "exclude_commands": []}
+        config = {"enabled": False, "delay": 30}
 
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             await service.configure_auto_recall("开 15", "channel-1", "area-1")
@@ -503,7 +411,7 @@ class MessageRecallSchedulerTest(unittest.IsolatedAsyncioTestCase):
 
         import app.services.safety.message_recall_scheduler as module
 
-        config = {"enabled": True, "delay": 0.01, "max_pending": 10, "exclude_commands": []}
+        config = {"enabled": True, "delay": 0.01, "max_pending": 10}
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             service = module.MessageRecallScheduler(self.runtime)
             try:
@@ -525,7 +433,7 @@ class MessageRecallSchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_pending_limit_skips_extra_tasks(self) -> None:
         import app.services.safety.message_recall_scheduler as module
 
-        config = {"enabled": True, "delay": 30, "max_pending": 1, "exclude_commands": []}
+        config = {"enabled": True, "delay": 30, "max_pending": 1}
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             service = module.MessageRecallScheduler(self.runtime)
             try:
@@ -540,7 +448,7 @@ class MessageRecallSchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_schedule_after_stop_does_not_restart_worker(self) -> None:
         import app.services.safety.message_recall_scheduler as module
 
-        config = {"enabled": True, "delay": 30, "max_pending": 10, "exclude_commands": []}
+        config = {"enabled": True, "delay": 30, "max_pending": 10}
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             service = module.MessageRecallScheduler(self.runtime)
             await service.stop()
@@ -556,7 +464,7 @@ class MessageRecallSchedulerTest(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_schedule_uses_same_bounded_worker(self) -> None:
         import app.services.safety.message_recall_scheduler as module
 
-        config = {"enabled": True, "delay": 30, "max_pending": 1, "exclude_commands": []}
+        config = {"enabled": True, "delay": 30, "max_pending": 1}
         with patch.object(module, "AUTO_RECALL_CONFIG", config):
             service = module.MessageRecallScheduler(self.runtime)
             try:
@@ -673,16 +581,6 @@ class HelpServiceTest(unittest.IsolatedAsyncioTestCase):
         from domain.plugins.base import PluginCommandCapabilities, PluginDescriptor, PluginMetadata
 
         self.sender = AsyncMock()
-        self.chat = SimpleNamespace(
-            ai_enabled=True,
-            img_enabled=True,
-            _ai_key="key",
-            _ai_base="base",
-            _ai_model="model",
-            _img_key="img-key",
-            _img_base="img-base",
-            _img_model="img-model",
-        )
         self.plugins = Mock()
         self.plugins.load = AsyncMock()
         self.plugins.load_all = AsyncMock()
@@ -696,7 +594,7 @@ class HelpServiceTest(unittest.IsolatedAsyncioTestCase):
         self.plugin_metadata_cls = PluginMetadata
         self.plugin_capabilities_cls = PluginCommandCapabilities
         self.handler = _runtime(
-            infrastructure=SimpleNamespace(sender=self.sender, chat=self.chat, plugins=self.plugins),
+            infrastructure=SimpleNamespace(sender=self.sender, plugins=self.plugins),
             services=SimpleNamespace(
                 routing=SimpleNamespace(access=self.access),
             ),
@@ -723,7 +621,6 @@ class HelpServiceTest(unittest.IsolatedAsyncioTestCase):
         self.plugins.list_command_descriptors.assert_called_once_with(public_only=True)
         message = self.sender.send_message.call_args.args[0]
         self.assertIn("普通用户", message)
-        self.assertIn("AI 功能", message)
         self.assertIn("demo", message)
         self.assertIn("@bot 测试 / 测试二  |  /demo / /demo2", message)
         self.assertEqual(self.sender.send_message.call_args.kwargs["styleTags"], ["IMPORTANT"])
@@ -743,19 +640,6 @@ class HelpServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("插件扩展", message)
         self.assertIn("管理操作", message)
 
-    async def test_show_help_hides_ai_section_when_ai_is_unavailable(self) -> None:
-        from app.services.interaction.help_service import HelpService
-
-        self.access.is_admin.return_value = False
-        self.plugins.list_command_descriptors.return_value = []
-        self.chat.ai_enabled = False
-        self.chat.img_enabled = False
-
-        service = HelpService(self.handler)
-        await service.show_help("channel-1", "area-1", user="user-1")
-
-        message = self.sender.send_message.call_args.args[0]
-        self.assertNotIn("AI 功能", message)
 
     async def test_show_help_can_render_topic_view(self) -> None:
         from app.services.interaction.help_service import HelpService
@@ -866,21 +750,8 @@ class CommonCommandServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.sender = AsyncMock()
         self.music = AsyncMock()
-        self.chat = Mock()
-        self.chat.ai_reply = AsyncMock()
-        self.chat.check_profanity = AsyncMock()
-        self.chat.close = AsyncMock()
-        self.chat.generate_image = AsyncMock()
-        self.recall_scheduler = Mock()
-        self.recall_scheduler.cancel_all = AsyncMock()
-        self.recall_scheduler.schedule_recall = AsyncMock()
-        self.recall_scheduler.schedule_user_message_recall = AsyncMock()
-        self.recall_scheduler.stop = AsyncMock()
         self.handler = _runtime(
-            infrastructure=SimpleNamespace(sender=self.sender, music=self.music, chat=self.chat),
-            services=SimpleNamespace(
-                safety=SimpleNamespace(recall_scheduler=self.recall_scheduler),
-            ),
+            infrastructure=SimpleNamespace(sender=self.sender, music=self.music),
         )
 
     async def test_show_voice_channels_reports_empty_state(self) -> None:
@@ -918,75 +789,24 @@ class CommonCommandServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("共 2 人在线", message)
         self.assertIn("机器人2 [Bot]", message)
 
-    async def test_generate_image_reports_failure_when_generation_fails(self) -> None:
-        from app.services.interaction.common_command_service import CommonCommandService
-
-        self.chat.generate_image.return_value = ""
-
-        with patch("app.services.interaction.common_command_service.NameResolver") as resolver_cls:
-            resolver_cls.return_value.user.return_value = "测试用户"
-
-            service = CommonCommandService(self.handler)
-            await service.generate_image("一只猫", "channel-1", "area-1", "user-1")
-
-        self.assertEqual(self.sender.send_message.call_count, 2)
-        self.assertIn("正在绘制中", self.sender.send_message.call_args_list[0].args[0])
-        self.assertIn("图片生成失败", self.sender.send_message.call_args_list[1].args[0])
-
-    async def test_generate_image_sends_attachment_message_on_success(self) -> None:
-        from app.services.interaction.common_command_service import CommonCommandService
-
-        self.chat.generate_image.return_value = "https://example.com/demo.png"
-        self.sender.upload_file_from_url.return_value = {
-            "code": "success",
-            "data": {
-                "width": 512,
-                "height": 512,
-                "fileKey": "demo-key",
-            },
-        }
-        self.recall_scheduler.should_skip_auto_recall.return_value = True
-
-        with patch("app.services.interaction.common_command_service.NameResolver") as resolver_cls:
-            resolver_cls.return_value.user.return_value = "测试用户"
-
-            service = CommonCommandService(self.handler)
-            await service.generate_image("一只猫", "channel-1", "area-1", "user-1")
-
-        self.sender.upload_file_from_url.assert_called_once_with("https://example.com/demo.png")
-        final_call = self.sender.send_message.call_args_list[-1]
-        self.assertIn("测试用户 生成的图片", final_call.kwargs["text"])
-        self.assertEqual(final_call.kwargs["attachments"][0]["fileKey"], "demo-key")
-        self.assertTrue(final_call.kwargs["auto_recall"])
 
 
 class ChatInteractionServiceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.sender = AsyncMock()
-        self.chat = Mock()
-        self.chat.ai_reply = AsyncMock()
-        self.chat.check_profanity = AsyncMock()
-        self.chat.close = AsyncMock()
-        self.chat.generate_image = AsyncMock()
-        self.recall_scheduler = Mock()
-        self.recall_scheduler.cancel_all = AsyncMock()
-        self.recall_scheduler.schedule_recall = AsyncMock()
-        self.recall_scheduler.schedule_user_message_recall = AsyncMock()
-        self.recall_scheduler.stop = AsyncMock()
         self.handler = _runtime(
-            infrastructure=SimpleNamespace(sender=self.sender, chat=self.chat),
-            services=SimpleNamespace(
-                safety=SimpleNamespace(recall_scheduler=self.recall_scheduler),
-            ),
+            infrastructure=SimpleNamespace(sender=self.sender),
         )
 
     async def test_handle_plain_chat_returns_false_when_no_reply(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
 
-        self.chat.try_reply.return_value = ""
-
-        service = ChatInteractionService(self.handler)
-        result = await service.handle_plain_chat("hello", "channel-1", "area-1")
+        with patch(
+            "app.services.interaction.chat_interaction_service.CHAT_CONFIG",
+            {"enabled": True, "keyword_replies": {}},
+        ):
+            service = ChatInteractionService(self.handler)
+            result = await service.handle_plain_chat("hello", "channel-1", "area-1")
 
         self.assertFalse(result)
         self.sender.send_message.assert_not_called()
@@ -994,40 +814,16 @@ class ChatInteractionServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_handle_plain_chat_sends_reply_when_available(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
 
-        self.chat.try_reply.return_value = "自动回复"
-
-        service = ChatInteractionService(self.handler)
-        result = await service.handle_plain_chat("hello", "channel-1", "area-1")
+        with patch(
+            "app.services.interaction.chat_interaction_service.CHAT_CONFIG",
+            {"enabled": True, "keyword_replies": {"hello": "自动回复"}},
+        ):
+            service = ChatInteractionService(self.handler)
+            result = await service.handle_plain_chat("hello", "channel-1", "area-1")
 
         self.assertTrue(result)
         self.sender.send_message.assert_called_once_with("自动回复", channel="channel-1", area="area-1")
 
-    async def test_handle_mention_fallback_uses_ai_reply_when_available(self) -> None:
-        from app.services.interaction.chat_interaction_service import ChatInteractionService
-
-        self.chat.ai_reply.return_value = "AI 回复"
-        self.recall_scheduler.should_skip_auto_recall.return_value = False
-
-        service = ChatInteractionService(self.handler)
-        await service.handle_mention_fallback("未知问题", "channel-1", "area-1")
-
-        self.sender.send_message.assert_called_once_with(
-            "AI 回复",
-            channel="channel-1",
-            area="area-1",
-            auto_recall=False,
-        )
-
-    async def test_handle_mention_fallback_sends_default_hint_when_ai_fails(self) -> None:
-        from app.services.interaction.chat_interaction_service import ChatInteractionService
-
-        self.chat.ai_reply.return_value = ""
-
-        service = ChatInteractionService(self.handler)
-        await service.handle_mention_fallback("未知问题", "channel-1", "area-1")
-
-        self.sender.send_message.assert_called_once()
-        self.assertIn("@bot 帮助", self.sender.send_message.call_args.args[0])
 
     async def test_send_unknown_command_sends_help_hint(self) -> None:
         from app.services.interaction.chat_interaction_service import ChatInteractionService
@@ -1327,59 +1123,6 @@ class SetupServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("个人信息", message)
 
 
-class ProfanitySelfLockTest(unittest.IsolatedAsyncioTestCase):
-    """未配置管理员时必须全员免检，否则服主自己会被自动禁言且无法解禁。"""
-
-    def _service(self, *, has_admins: bool):
-        from app.services.routing.command_message_service import CommandMessageService
-
-        access = Mock()
-        access.has_configured_admins.return_value = has_admins
-        access.is_admin.return_value = False
-        runtime = Mock()
-        runtime.services.routing.access = access
-        # 权限判定是同步的，脏话检测本身是异步的，两者的桩不能混用
-        runtime.services.safety.profanity.handle_profanity = AsyncMock(return_value=False)
-        return CommandMessageService(runtime), access
-
-    async def test_empty_admin_list_skips_profanity_for_everyone(self) -> None:
-        import app.services.routing.command_message_service as module
-        from app.services.routing.command_message_service import MessageContext
-
-        service, _ = self._service(has_admins=False)
-        ctx = MessageContext(
-            raw={},
-            user="someone",
-            message_id="m1",
-            content="x",
-            channel="c",
-            area="a",
-            timestamp="",
-        )
-
-        with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):
-            self.assertFalse(await service.handle_profanity(ctx))
-
-    async def test_configured_admin_list_still_checks_non_admins(self) -> None:
-        import app.services.routing.command_message_service as module
-        from app.services.routing.command_message_service import MessageContext
-
-        service, access = self._service(has_admins=True)
-        ctx = MessageContext(
-            raw={},
-            user="someone",
-            message_id="m1",
-            content="x",
-            channel="c",
-            area="a",
-            timestamp="0",
-        )
-
-        with patch.object(module, "PROFANITY_CONFIG", {"enabled": True, "skip_admins": True}):
-            await service.handle_profanity(ctx)
-
-        # 名单已配置时不再全员免检，必须逐个判定身份
-        access.is_admin.assert_called_with("someone")
 
 
 if __name__ == "__main__":

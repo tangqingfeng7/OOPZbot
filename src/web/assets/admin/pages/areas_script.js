@@ -196,7 +196,6 @@
         setAcVal("ac_admin_uids", (c.admin_uids || []).join(", "));
         setAcVal("ac_plugins_enabled", (c.plugins_enabled || []).join(", "));
         setAcVal("ac_plugins_disabled", (c.plugins_disabled || []).join(", "));
-        setAcVal("ac_profanity", c.profanity_enabled !== false);
         const ann = c.use_announcement_style;
         const annVal = ann === true ? "true" : (ann === false ? "false" : "");
         setAcVal("ac_announcement_style", annVal);
@@ -230,7 +229,6 @@
         admin_uids: splitList(AdminShell.byId("ac_admin_uids").value || ""),
         plugins_enabled: splitList(AdminShell.byId("ac_plugins_enabled").value || ""),
         plugins_disabled: splitList(AdminShell.byId("ac_plugins_disabled").value || ""),
-        profanity_enabled: !!AdminShell.byId("ac_profanity").checked,
         use_announcement_style: annVal,
       };
       try {

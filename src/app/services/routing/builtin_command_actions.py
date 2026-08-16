@@ -60,17 +60,6 @@ class InteractionCommandActions:
     async def show_setup_wizard(self, channel: str, area: str, user: str = "") -> None:
         await self._services.interaction.setup.show_setup_wizard(channel, area, user)
 
-    async def generate_image(self, prompt: str, channel: str, area: str, user: str) -> None:
-        await self._services.interaction.common.generate_image(prompt, channel, area, user)
-
-    async def clear_ai_memory(self, user: str, channel: str, area: str) -> None:
-        """清除用户在当前频道的 AI 对话记忆（mention/slash 共用）。"""
-        cleared = await self._services.interaction.chat.clear_memory(user, channel)
-        if cleared:
-            await self._sender.send_message("对话记忆已清除", channel=channel, area=area)
-        else:
-            await self._sender.send_message("当前没有对话记忆", channel=channel, area=area)
-
     async def handle_pick(self, raw: str, channel: str, area: str, user: str, usage: str) -> None:
         """选择候选编号：先试点歌候选，再试成员候选（mention/slash 共用）。"""
         token = (raw or "").strip()

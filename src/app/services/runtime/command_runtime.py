@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.infrastructure import (
     BotInfrastructure,
-    ChatGateway,
     MusicGateway,
     PluginHost,
     PluginRuntime,
@@ -82,7 +81,6 @@ class CommandRuntimeView(Protocol):
     bot_uid: str
     bot_mention: str
     sender: Any
-    chat: Any
     music: Any
     plugins: Any
 
@@ -115,10 +113,6 @@ class CommandRuntime:
     @property
     def sender(self):
         return self.infrastructure.sender
-
-    @property
-    def chat(self):
-        return self.infrastructure.chat
 
     @property
     def music(self):
@@ -158,10 +152,6 @@ def _view_attr(runtime_view, name: str) -> Any:
 
 def sender_of(runtime_view) -> SenderGateway:
     return _view_attr(runtime_view, "sender")
-
-
-def chat_of(runtime_view) -> ChatGateway:
-    return _view_attr(runtime_view, "chat")
 
 
 def music_of(runtime_view) -> MusicGateway:

@@ -643,16 +643,6 @@
 
       { id: "cfg_chat_enabled", path: "chat.enabled" },
 
-      { id: "cfg_profanity_enabled", path: "profanity.enabled" },
-      { id: "cfg_profanity_recall", path: "profanity.recall_message" },
-      { id: "cfg_mute_duration", path: "profanity.mute_duration" },
-      { id: "cfg_warn_before_mute", path: "profanity.warn_before_mute" },
-      { id: "cfg_skip_admins", path: "profanity.skip_admins" },
-      { id: "cfg_context_detection", path: "profanity.context_detection" },
-      { id: "cfg_context_window", path: "profanity.context_window" },
-      { id: "cfg_context_max_messages", path: "profanity.context_max_messages" },
-      { id: "cfg_ai_detection", path: "profanity.ai_detection" },
-      { id: "cfg_ai_min_length", path: "profanity.ai_min_length" },
 
       { id: "cfg_oopz_default_area", path: "oopz.default_area" },
       { id: "cfg_oopz_default_channel", path: "oopz.default_channel" },
@@ -670,20 +660,6 @@
       { id: "cfg_redis_db", path: "redis.db" },
       { id: "cfg_redis_decode", path: "redis.decode_responses" },
 
-      { id: "cfg_doubao_enabled", path: "doubao_chat.enabled" },
-      { id: "cfg_doubao_base_url", path: "doubao_chat.base_url" },
-      { id: "cfg_doubao_model", path: "doubao_chat.model" },
-      { id: "cfg_doubao_max_tokens", path: "doubao_chat.max_tokens" },
-      { id: "cfg_doubao_temperature", path: "doubao_chat.temperature", nullish: true },
-      { id: "cfg_doubao_system_prompt", path: "doubao_chat.system_prompt" },
-      { id: "cfg_doubao_context_rounds", path: "doubao_chat.context_max_rounds", nullish: true },
-      { id: "cfg_doubao_context_ttl", path: "doubao_chat.context_ttl_seconds", nullish: true },
-
-      { id: "cfg_doubao_img_enabled", path: "doubao_image.enabled" },
-      { id: "cfg_doubao_img_base_url", path: "doubao_image.base_url" },
-      { id: "cfg_doubao_img_model", path: "doubao_image.model" },
-      { id: "cfg_doubao_img_size", path: "doubao_image.size" },
-      { id: "cfg_doubao_img_watermark", path: "doubao_image.watermark" },
 
       { id: "cfg_music_auto_play", path: "music.auto_play_enabled" },
       { id: "cfg_music_volume", path: "music.default_volume", nullish: true },
@@ -754,8 +730,7 @@
         _loadField(config, field);
       });
 
-      // 特殊字段：撤回排除命令以逗号串展示，关键词回复用键值编辑器渲染，代理拆成开关组。
-      setVal("cfg_auto_recall_exclude", (config.auto_recall?.exclude_commands || []).join(", "));
+      // 特殊字段：关键词回复用键值编辑器渲染，代理拆成开关组。
       window._kwRender(config.chat?.keyword_replies || {});
       _loadProxy(config);
 
@@ -764,8 +739,6 @@
       setSecretState("cfg_oopz_login_password", config.oopz?.login_password_configured);
       setSecretValue("cfg_netease_cookie", config.netease?.cookie || "", config.netease?.cookie_configured);
       setSecretState("cfg_redis_password", config.redis?.password_configured);
-      setSecretValue("cfg_doubao_api_key", config.doubao_chat?.api_key || "", config.doubao_chat?.api_key_configured);
-      setSecretValue("cfg_doubao_img_api_key", config.doubao_image?.api_key || "", config.doubao_image?.api_key_configured);
       setSecretValue("cfg_qq_music_cookie", config.qq_music?.cookie || "", config.qq_music?.cookie_configured);
       setSecretValue("cfg_bilibili_cookie", config.bilibili_music?.cookie || "", config.bilibili_music?.cookie_configured);
       neteaseQr.setSaveEnabled(false);
@@ -783,9 +756,8 @@
         _buildField(updates, field);
       });
 
-      // 特殊字段：撤回排除命令为原始字符串（后端负责拆分）、关键词回复为键值对、
-      // OOPZ 登录密码始终随表单提交（不走「留空不修改」逻辑）。
-      _cfgSet(updates, "auto_recall.exclude_commands", val("cfg_auto_recall_exclude"));
+      // 特殊字段：关键词回复为键值对，OOPZ 登录密码始终随表单提交
+      // （不走「留空不修改」逻辑）。
       _cfgSet(updates, "chat.keyword_replies", window._kwCollect());
       _cfgSet(updates, "oopz.login_password", val("cfg_oopz_login_password"));
       _cfgSet(updates, "oopz.proxy", _buildProxyValue());
@@ -793,8 +765,6 @@
       const adminPassword = val("cfg_admin_password");
       const neteaseCookie = val("cfg_netease_cookie");
       const redisPassword = val("cfg_redis_password");
-      const doubaoApiKey = val("cfg_doubao_api_key");
-      const doubaoImageApiKey = val("cfg_doubao_img_api_key");
       const qqMusicCookie = val("cfg_qq_music_cookie");
       const bilibiliCookie = val("cfg_bilibili_cookie");
 
@@ -806,12 +776,6 @@
       }
       if (redisPassword) {
         updates.redis.password = redisPassword;
-      }
-      if (doubaoApiKey) {
-        updates.doubao_chat.api_key = doubaoApiKey;
-      }
-      if (doubaoImageApiKey) {
-        updates.doubao_image.api_key = doubaoImageApiKey;
       }
       if (qqMusicCookie) {
         updates.qq_music.cookie = qqMusicCookie;

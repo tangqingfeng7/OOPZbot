@@ -1,5 +1,5 @@
 from app.services.plugins.plugin_capability_formatter import format_plugin_command_summary
-from app.services.runtime import CommandRuntimeView, chat_of, plugins_of, sender_of
+from app.services.runtime import CommandRuntimeView, plugins_of, sender_of
 
 from .help_catalog import (
     ADMIN_ONLY_TOPICS,
@@ -17,7 +17,6 @@ class HelpService:
     def __init__(self, runtime: CommandRuntimeView):
         self._runtime = runtime
         self._sender = sender_of(runtime)
-        self._chat = chat_of(runtime)
         self._plugins = plugins_of(runtime)
 
     def resolve_topic(self, raw_topic: str) -> str | None:
@@ -42,7 +41,7 @@ class HelpService:
                     suggestions.append(slash)
         return suggestions[:limit]
 
-    def _overview_lines(self, is_admin: bool, ai_chat_available: bool, ai_image_available: bool) -> list[str]:
+    def _overview_lines(self, is_admin: bool) -> list[str]:
         role_label = "管理员" if is_admin else "普通用户"
         overview = HELP_TOPICS["overview"]
         topic_lines = overview_lines(is_admin)
@@ -53,13 +52,6 @@ class HelpService:
             overview.description,
             *topic_lines,
         ]
-
-        if ai_chat_available or ai_image_available:
-            lines += ["", "**AI 功能**"]
-            if ai_image_available:
-                lines.append("@bot 画<描述>  AI 生成图片")
-            if ai_chat_available:
-                lines.append("@bot <任意内容>  AI 智能聊天")
 
         lines += [
             "",
@@ -107,19 +99,6 @@ class HelpService:
         is_admin = self._runtime.services.routing.access.is_admin(user)
         plugin_caps = self._plugins.list_command_descriptors(public_only=not is_admin)
 
-        ai_chat_available = (
-            self._chat.ai_enabled
-            and bool(getattr(self._chat, "_ai_key", ""))
-            and bool(getattr(self._chat, "_ai_base", ""))
-            and bool(getattr(self._chat, "_ai_model", ""))
-        )
-        ai_image_available = (
-            self._chat.img_enabled
-            and bool(getattr(self._chat, "_img_key", ""))
-            and bool(getattr(self._chat, "_img_base", ""))
-            and bool(getattr(self._chat, "_img_model", ""))
-        )
-
         topic_key = self.resolve_topic(topic)
         if topic and not topic_key:
             suggested = self.suggest_topics(topic)
@@ -134,7 +113,7 @@ class HelpService:
         elif topic_key and topic_key != "overview":
             lines = self._topic_lines(topic_key, is_admin)
         else:
-            lines = self._overview_lines(is_admin, ai_chat_available, ai_image_available)
+            lines = self._overview_lines(is_admin)
 
         lines += [
             "",
@@ -152,7 +131,6 @@ class HelpService:
         lines += [
             "",
             "提示: 可用 `帮助 <主题>` 继续查看分层帮助",
-            "*发送脏话/违规内容将被自动禁言*",
         ]
 
         await self._sender.send_message(

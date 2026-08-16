@@ -45,7 +45,6 @@ class AreaConfig:
     admin_uids: tuple[str, ...] = ()
     plugins_enabled: tuple[str, ...] = ()
     plugins_disabled: tuple[str, ...] = ()
-    profanity_enabled: bool = True
     # None = 跟随全局 OOPZ_CONFIG.use_announcement_style；True/False = 域级强制
     use_announcement_style: bool | None = None
 
@@ -62,7 +61,6 @@ class AreaConfig:
             admin_uids=tuple(str(u) for u in (raw.get("admin_uids") or [])),
             plugins_enabled=tuple(str(p) for p in (raw.get("plugins_enabled") or [])),
             plugins_disabled=tuple(str(p) for p in (raw.get("plugins_disabled") or [])),
-            profanity_enabled=bool(raw.get("profanity_enabled", True)),
             use_announcement_style=_parse_optional_bool(raw.get("use_announcement_style")),
         )
 
@@ -173,7 +171,6 @@ class AreaConfigRegistry:
             "admin_uids": list(cfg.admin_uids),
             "plugins_enabled": list(cfg.plugins_enabled),
             "plugins_disabled": list(cfg.plugins_disabled),
-            "profanity_enabled": cfg.profanity_enabled,
             "use_announcement_style": cfg.use_announcement_style,
         }
 

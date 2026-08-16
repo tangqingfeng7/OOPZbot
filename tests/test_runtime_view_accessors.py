@@ -17,7 +17,6 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from app.services.runtime.command_runtime import (  # noqa: E402
-    chat_of,
     music_of,
     plugins_of,
     sender_of,
@@ -25,7 +24,6 @@ from app.services.runtime.command_runtime import (  # noqa: E402
 
 _ACCESSORS = (
     ("sender", sender_of),
-    ("chat", chat_of),
     ("music", music_of),
     ("plugins", plugins_of),
 )

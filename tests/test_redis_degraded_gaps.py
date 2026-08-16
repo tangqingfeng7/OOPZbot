@@ -25,7 +25,6 @@ class InMemoryRedisCapabilityTest(unittest.IsolatedAsyncioTestCase):
         self.r = _InMemoryRedis()
 
     async def test_delete_accepts_multiple_keys_and_returns_count(self) -> None:
-        # conversation_memory 用的是 delete(*keys) 并累加返回值
         await self.r.set("a", "1")
         await self.r.set("b", "2")
         await self.r.rpush("c", "x")
@@ -34,20 +33,20 @@ class InMemoryRedisCapabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.r.get("a"))
 
     async def test_scan_returns_matching_keys_and_terminates(self) -> None:
-        await self.r.set("ai:history:u1", "x")
-        await self.r.set("ai:history:u2", "y")
+        await self.r.set("cache:item:u1", "x")
+        await self.r.set("cache:item:u2", "y")
         await self.r.set("music:queue", "z")
 
-        cursor, keys = await self.r.scan(0, match="ai:history:*", count=100)
+        cursor, keys = await self.r.scan(0, match="cache:item:*", count=100)
 
         self.assertEqual(cursor, 0, "游标必须归零，否则调用方的 while 循环不退出")
-        self.assertEqual(sorted(keys), ["ai:history:u1", "ai:history:u2"])
+        self.assertEqual(sorted(keys), ["cache:item:u1", "cache:item:u2"])
 
     async def test_scan_then_delete_matches_the_real_call_site(self) -> None:
         for i in range(3):
-            await self.r.set(f"ai:history:{i}", "x")
+            await self.r.set(f"cache:item:{i}", "x")
 
-        _cursor, keys = await self.r.scan(0, match="ai:history:*", count=100)
+        _cursor, keys = await self.r.scan(0, match="cache:item:*", count=100)
         removed = await self.r.delete(*keys)
 
         self.assertEqual(removed, 3)
