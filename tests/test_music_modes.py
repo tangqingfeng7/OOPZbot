@@ -357,9 +357,10 @@ class MusicModeTest(unittest.IsolatedAsyncioTestCase):
         self.handler._is_playing = AsyncMock(return_value=True)
         self.handler.names = AsyncMock()
 
-        result = await self.handler._check_and_enter_voice_channel(
-            user="user-1", channel="text-1", area="area-1",
-        )
+        with patch.dict("music.music.OOPZ_CONFIG", {"person_uid": "bot-uid"}):
+            result = await self.handler._check_and_enter_voice_channel(
+                user="user-1", channel="text-1", area="area-1",
+            )
 
         self.assertTrue(result)
         self.handler._do_enter_voice.assert_not_called()
@@ -378,9 +379,10 @@ class MusicModeTest(unittest.IsolatedAsyncioTestCase):
         self.handler.names = Mock()
         self.handler.names.channel = Mock(return_value="语音频道")
 
-        result = await self.handler._check_and_enter_voice_channel(
-            user="user-1", channel="text-1", area="area-1",
-        )
+        with patch.dict("music.music.OOPZ_CONFIG", {"person_uid": "bot-uid"}):
+            result = await self.handler._check_and_enter_voice_channel(
+                user="user-1", channel="text-1", area="area-1",
+            )
 
         self.assertTrue(result)
         self.handler._do_enter_voice.assert_awaited_once()
