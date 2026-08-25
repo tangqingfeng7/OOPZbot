@@ -20,7 +20,7 @@ class DocumentationContractsTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(len(tables), 10)
+        self.assertEqual(len(tables), 11)
         missing = sorted(table for table in tables if f"`{table}`" not in architecture)
         self.assertEqual(missing, [])
 

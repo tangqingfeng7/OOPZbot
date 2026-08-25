@@ -1,7 +1,4 @@
 """基于 oopz-sdk 的项目异步网关。
-
-网关保留 Oopzbot 原有业务字段形状，使 Web、OneBot 和插件可以分阶段迁移，
-但所有会触发 I/O 的方法本身都是协程。
 """
 
 from __future__ import annotations
@@ -106,6 +103,7 @@ class AsyncOopzGateway:
         self,
         *,
         on_chat_message: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        on_private_message: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_other_event: Callable[[int, dict[str, Any]], Awaitable[None]] | None = None,
         on_raw_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
@@ -113,6 +111,7 @@ class AsyncOopzGateway:
         self.raw: OopzBot
         self.signer: Any
         self._on_chat_message = on_chat_message
+        self._on_private_message = on_private_message
         self._on_other_event = on_other_event
         self._on_raw_event = on_raw_event
         self._proxy_value: object = None
@@ -128,12 +127,14 @@ class AsyncOopzGateway:
         cls,
         *,
         on_chat_message: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        on_private_message: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_other_event: Callable[[int, dict[str, Any]], Awaitable[None]] | None = None,
         on_raw_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> AsyncOopzGateway:
         config, proxy, proxy_value = await build_sdk_config()
         gateway = cls(
             on_chat_message=on_chat_message,
+            on_private_message=on_private_message,
             on_other_event=on_other_event,
             on_raw_event=on_raw_event,
         )
@@ -143,6 +144,10 @@ class AsyncOopzGateway:
     async def _handle_sdk_message(self, message, _ctx) -> None:
         if self._on_chat_message is not None:
             await self._on_chat_message(to_legacy(message))
+
+    async def _handle_sdk_private_message(self, message, _ctx) -> None:
+        if self._on_private_message is not None:
+            await self._on_private_message(to_legacy(message))
 
     async def _handle_sdk_ready(self, _ctx) -> None:
         self._ready.set()
@@ -171,6 +176,7 @@ class AsyncOopzGateway:
             on_raw_event=self._handle_sdk_raw,
             on_error=self._handle_sdk_error,
         )
+        bot.on_private_message(self._handle_sdk_private_message)
         install_project_transports(bot, proxy, proxy_value)
         self.bot = bot
         self.raw = bot
@@ -561,6 +567,12 @@ class AsyncOopzGateway:
             if not quiet:
                 logger.error("获取已加入域失败: %s", exc)
             return []
+
+    async def get_area_invite_detail(self, code: str) -> dict[str, Any]:
+        try:
+            return to_legacy(await self.bot.areas.get_invite_detail(str(code).strip()))
+        except Exception as exc:
+            return {"error": str(exc)}
 
     async def get_area_info(self, area: str | None = None) -> dict[str, Any]:
         try:

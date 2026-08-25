@@ -7,6 +7,24 @@
               <option value="">加载中...</option>
             </select>
             <button class="btn btn-ghost" type="button" data-action="refresh-areas">刷新</button>
+            <button id="leaveAreaBtn" class="btn btn-danger" type="button" data-action="leave-current-area" disabled>退出当前域</button>
+          </div>
+        </article>
+
+        <!-- 私信域邀请审批 -->
+        <article class="table-card" id="areaInviteCard">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">待处理域邀请</h3>
+              <p class="a-invite-copy">Bot 从收到的私信中自动识别；只有管理员同意后才会加入域。</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" type="button" data-action="refresh-area-invites">刷新</button>
+          </div>
+          <div class="a-invite-body">
+            <div id="areaInviteList" class="a-invite-list">
+              <div class="empty-state">暂无待处理的私信域邀请</div>
+            </div>
+            <div id="areaInviteMsg" class="msg"></div>
           </div>
         </article>
 
@@ -203,6 +221,17 @@
             <button class="btn btn-primary" type="button" data-action="do-dispatch">调度</button>
           </footer>
         </div>
+
+        <!-- 邀请审批等操作共用的确认弹窗 -->
+        <div id="modalOverlay" class="m-modal-overlay" data-action="close-modal"></div>
+        <div id="modalDialog" class="m-modal">
+          <header class="m-modal__head">
+            <h3 id="modalTitle" class="m-modal__title">操作</h3>
+            <button class="m-modal__close" type="button" data-action="close-modal" aria-label="关闭">&times;</button>
+          </header>
+          <div id="modalBody" class="m-modal__body"></div>
+          <footer id="modalFooter" class="m-modal__foot"></footer>
+        </div>
       </section>
 
       <style>
@@ -218,6 +247,38 @@
           white-space: nowrap;
         }
         .a-voice-list { padding: 16px 20px; }
+        .a-invite-copy { margin: 4px 0 0; color: var(--ink-faint); font-size: 12px; }
+        .a-invite-body { padding: 16px 20px 20px; }
+        .a-invite-list { display: grid; gap: 12px; }
+        .a-invite-item {
+          display: grid;
+          grid-template-columns: minmax(220px, 320px) minmax(220px, 1fr);
+          gap: 16px;
+          padding: 14px;
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          background: var(--paper);
+        }
+        .a-invite-media { position: relative; min-height: 112px; }
+        .a-invite-banner { width: 100%; height: 112px; border-radius: 9px; object-fit: cover; background: var(--surface); }
+        .a-invite-avatar {
+          position: absolute;
+          left: 12px;
+          bottom: -8px;
+          width: 52px;
+          height: 52px;
+          border: 3px solid var(--paper-strong);
+          border-radius: 12px;
+          object-fit: cover;
+          background: var(--surface);
+        }
+        .a-invite-detail { display: flex; flex-direction: column; justify-content: center; gap: 7px; min-width: 0; }
+        .a-invite-detail strong { font-size: 17px; }
+        .a-invite-detail span { color: var(--ink-soft); font-size: 13px; overflow-wrap: anywhere; }
+        .a-invite-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+        @media (max-width: 720px) {
+          .a-invite-item { grid-template-columns: 1fr; }
+        }
         .a-voice-ch {
           padding: 12px 0;
           border-bottom: 1px solid var(--line);

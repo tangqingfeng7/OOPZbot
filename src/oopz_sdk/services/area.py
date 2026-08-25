@@ -153,6 +153,18 @@ class AreaService(BaseService):
         data = await self._request_data("GET", url_path, params=params)
         return models.AreaInfo.from_api(data)
 
+    async def get_invite_detail(self, code: str) -> models.AreaInviteDetail:
+        """根据公开邀请短码查询域与频道信息。"""
+        code = str(code or "").strip()
+        if not code:
+            raise ValueError("code is required for get_invite_detail")
+        data = await self._request_data(
+            "GET",
+            "/invite/v1/codeDetail",
+            params={"code": code},
+        )
+        return models.AreaInviteDetail.from_api(data)
+
     async def edit_area_name(self, area: str, name: str) -> models.OperationResult:
         if area.strip() == "":
             raise ValueError("area cannot be empty")
@@ -342,7 +354,7 @@ class AreaService(BaseService):
         data = await self._request_data(
             "DELETE",
             "/client/v1/area/v1/quit",
-            body={"area": area},
+            params={"area": area},
         )
         return models.OperationResult.from_api(data)
 

@@ -2,6 +2,7 @@
     let channelsData = [];
     let areaRolesData = [];
     let voiceChannelsData = [];
+    let pendingAreaInvites = [];
 
     function setState(text, variant) {
       AdminShell.setStatus(text, variant, "topStatus");
@@ -10,7 +11,7 @@
     }
 
     async function loadAreaManager() {
-      await loadAreas();
+      await Promise.all([loadAreas(), loadAreaInvites()]);
       if (currentArea) {
         await Promise.all([loadAreaRoles(), loadChannels(), loadVoiceChannels()]);
         await loadAreaConfig();
@@ -29,16 +30,119 @@
         picker.innerHTML = areas.length
           ? areas.map((a) => `<option value="${a.id}">${a.name || a.id}</option>`).join("")
           : '<option value="">无可用域</option>';
-        if (!currentArea && areas.length) {
-          currentArea = areas[0].id;
-        }
+        const currentStillJoined = areas.some((area) => area.id === currentArea);
+        if (!currentStillJoined) currentArea = areas.length ? areas[0].id : "";
         if (currentArea) {
           picker.value = currentArea;
         }
       } catch (e) {
+        currentArea = "";
         picker.innerHTML = '<option value="">加载失败</option>';
       }
+      AdminShell.byId("leaveAreaBtn").disabled = !currentArea;
       AdminShell.renderAreaTabs("areaPicker", "areaTabs");
+    }
+
+    // ---- Area invites ----
+
+    function safeInviteImageUrl(value) {
+      const url = String(value || "").trim();
+      return /^https?:\/\//i.test(url) ? url : "";
+    }
+
+    function renderAreaInvites(invites) {
+      pendingAreaInvites = invites || [];
+      const list = AdminShell.byId("areaInviteList");
+      if (!pendingAreaInvites.length) {
+        list.innerHTML = '<div class="empty-state">暂无待处理的私信域邀请</div>';
+        return;
+      }
+      list.innerHTML = pendingAreaInvites.map((invite) => {
+        const banner = safeInviteImageUrl(invite.banner);
+        const avatar = safeInviteImageUrl(invite.areaAvatar);
+        const sender = invite.senderName || invite.senderId || "未知用户";
+        const status = invite.reason || (invite.status === "INVITE_NORMAL" ? "邀请有效" : invite.status || "状态未知");
+        const acceptText = invite.joined ? "已经加入" : "同意并加入";
+        return `<article class="a-invite-item">
+          <div class="a-invite-media">
+            ${banner ? `<img class="a-invite-banner" src="${esc(banner)}" alt="域横幅" loading="lazy" />` : '<div class="a-invite-banner"></div>'}
+            ${avatar ? `<img class="a-invite-avatar" src="${esc(avatar)}" alt="域头像" loading="lazy" />` : ""}
+          </div>
+          <div class="a-invite-detail">
+            <strong>${esc(invite.areaName || "未命名域")}</strong>
+            <span>邀请频道：${esc(invite.channelName || invite.channel || "未提供")}</span>
+            <span>发送者：${esc(sender)}${invite.senderId ? `（${esc(invite.senderId)}）` : ""}</span>
+            <span>收到时间：${esc(invite.receivedAt || "未知")}</span>
+            <span>域 ID：<code>${esc(invite.area || "-")}</code></span>
+            <span class="micro-status ${invite.canAccept ? "is-success" : "is-warning"}">${esc(status)}</span>
+            <div class="a-invite-actions">
+              <button class="btn btn-primary btn-sm" type="button" data-action="accept-area-invite"
+                data-code="${esc(invite.code)}" ${invite.canAccept ? "" : "disabled"}>${acceptText}</button>
+              <button class="btn btn-ghost btn-sm" type="button" data-action="reject-area-invite"
+                data-code="${esc(invite.code)}">忽略</button>
+            </div>
+          </div>
+        </article>`;
+      }).join("");
+    }
+
+    async function loadAreaInvites() {
+      try {
+        const data = await AdminShell.req("/admin/api/area-invites");
+        renderAreaInvites(data.invites || []);
+        AdminShell.showMessage("areaInviteMsg", "");
+      } catch (e) {
+        renderAreaInvites([]);
+        AdminShell.showMessage("areaInviteMsg", "加载待处理邀请失败: " + e.message, true);
+      }
+    }
+
+    async function acceptAreaInvite(code) {
+      const invite = pendingAreaInvites.find((item) => item.code === code);
+      if (!invite || !invite.canAccept) return;
+      const label = invite.areaName || invite.area;
+      const confirmed = await AdminShell.confirm(
+        "接受域邀请",
+        `确认让 Bot 加入「<strong>${esc(label)}</strong>」？`,
+        { danger: false, okText: "接受邀请" },
+      );
+      if (!confirmed) return;
+
+      AdminShell.showMessage("areaInviteMsg", "Bot 正在接受邀请...");
+      try {
+        const data = await AdminShell.req("/admin/api/area-invites/accept", {
+          method: "POST",
+          body: JSON.stringify({ code: code }),
+        });
+        currentArea = data.invite && data.invite.area ? data.invite.area : currentArea;
+        await loadAreaManager();
+        AdminShell.showMessage("areaInviteMsg", data.message || "Bot 已加入该域");
+        setState("已加入新域", "success");
+      } catch (e) {
+        AdminShell.showMessage("areaInviteMsg", "接受邀请失败: " + e.message, true);
+      }
+    }
+
+    async function rejectAreaInvite(code) {
+      const invite = pendingAreaInvites.find((item) => item.code === code);
+      if (!invite) return;
+      const label = invite.areaName || invite.area;
+      const confirmed = await AdminShell.confirm(
+        "忽略域邀请",
+        `确认忽略「<strong>${esc(label)}</strong>」的邀请？`,
+        { danger: false, okText: "忽略" },
+      );
+      if (!confirmed) return;
+      try {
+        await AdminShell.req("/admin/api/area-invites/reject", {
+          method: "POST",
+          body: JSON.stringify({ code: code }),
+        });
+        await loadAreaInvites();
+        AdminShell.showMessage("areaInviteMsg", "已忽略该域邀请");
+      } catch (e) {
+        AdminShell.showMessage("areaInviteMsg", "忽略邀请失败: " + e.message, true);
+      }
     }
 
     function onAreaChange() {
@@ -49,6 +153,38 @@
         Promise.all([loadAreaRoles(), loadChannels(), loadVoiceChannels()]).then(loadAreaConfig);
       } else {
         resetAreaAssistantFields();
+      }
+    }
+
+    async function leaveCurrentArea() {
+      if (!currentArea) return;
+      const picker = AdminShell.byId("areaPicker");
+      const option = picker.options[picker.selectedIndex];
+      const areaName = option ? option.textContent : currentArea;
+      const confirmed = await AdminShell.confirm(
+        "退出当前域",
+        `确认让 Bot 退出「<strong>${esc(areaName)}</strong>」？退出后将无法继续读取该域消息。`,
+        { okText: "确认退出" },
+      );
+      if (!confirmed) return;
+
+      const leavingArea = currentArea;
+      const button = AdminShell.byId("leaveAreaBtn");
+      button.disabled = true;
+      button.textContent = "正在退出...";
+      try {
+        const data = await AdminShell.req("/admin/api/areas/leave", {
+          method: "POST",
+          body: JSON.stringify({ area: leavingArea }),
+        });
+        currentArea = "";
+        await loadAreaManager();
+        setState(data.message || "Bot 已退出该域", "success");
+      } catch (e) {
+        button.disabled = false;
+        setState("退出域失败: " + e.message, "error");
+      } finally {
+        button.textContent = "退出当前域";
       }
     }
 
@@ -568,6 +704,10 @@
 
     AdminShell.registerActions({
       "refresh-areas": () => loadAreaManager(),
+      "refresh-area-invites": () => loadAreaInvites(),
+      "accept-area-invite": (el) => acceptAreaInvite(el.dataset.code),
+      "reject-area-invite": (el) => rejectAreaInvite(el.dataset.code),
+      "leave-current-area": () => leaveCurrentArea(),
       "save-area-config": () => saveAreaConfig(),
       "delete-area-config": () => deleteAreaConfig(),
       "show-create-channel": () => showCreateChannel(),
