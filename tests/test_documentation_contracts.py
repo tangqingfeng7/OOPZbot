@@ -1,3 +1,4 @@
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -64,6 +65,8 @@ class DocumentationContractsTest(unittest.TestCase):
         commands = _read("docs/commands.md")
 
         self.assertIn("/client/v1/area/v1/operateLogs", api_reference)
+        self.assertIn("DELETE /client/v1/area/v1/quit?area={area}", api_reference)
+        self.assertIn("**请求体：** 无。", api_reference)
         self.assertIn("/w/{token}", commands)
         self.assertIn("GET /", commands)
         self.assertIn("HTTP 403", commands)
@@ -71,6 +74,60 @@ class DocumentationContractsTest(unittest.TestCase):
             "访问 `http://<服务器IP>:8080/` 即可打开 Web 播放器",
             commands,
         )
+
+    def test_api_reference_lists_every_service_endpoint(self) -> None:
+        api_reference = _read("docs/api-reference.md")
+        service_directory = REPO_ROOT / "src/oopz_sdk/services"
+        endpoint_paths: set[str] = set()
+
+        for source_path in service_directory.glob("*.py"):
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                    continue
+                value = node.value
+                if re.fullmatch(r"/[A-Za-z0-9_./-]+", value) and "/v" in value:
+                    endpoint_paths.add(value)
+
+        self.assertGreaterEqual(len(endpoint_paths), 50)
+        missing = sorted(path for path in endpoint_paths if path not in api_reference)
+        self.assertEqual(missing, [])
+
+    def test_api_reference_uses_current_paths_and_stays_implementation_free(self) -> None:
+        api_reference = _read("docs/api-reference.md")
+
+        for current_path in (
+            "/general/v3/settings",
+            "/uni/advertisement/v1/list",
+            "/uni/officialSticker/v2/list",
+            "/im/session/v2/sendGimMessage",
+            "/im/session/v2/sendImMessage",
+        ):
+            with self.subTest(current_path=current_path):
+                self.assertIn(current_path, api_reference)
+
+        for stale_path in (
+            "/general/v2/curTime",
+            "/general/v2/settings",
+            "/general/v2/switch",
+            "/task/v1/bounty/list",
+            "/advertisement/v2/list",
+            "/discovery/v3/home",
+            "/client/v1/sticker/v1/list",
+            "/client/v1/roaming/v1/emojis",
+        ):
+            with self.subTest(stale_path=stale_path):
+                self.assertNotIn(stale_path, api_reference)
+
+        for implementation_detail in (
+            "SDK",
+            "src/oopz",
+            "OopzApiMixin",
+            "_request_data",
+            "AsyncOopzGateway",
+        ):
+            with self.subTest(implementation_detail=implementation_detail):
+                self.assertNotIn(implementation_detail, api_reference)
 
     def test_scaffold_and_environment_documentation_matches_code(self) -> None:
         plugin_development = _read("docs/plugin-development.md")
