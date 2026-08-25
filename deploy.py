@@ -531,7 +531,8 @@ def setup_netease(install: bool) -> None:
     if start_netease_container():
         say("已用 Docker 启动网易云 API 容器")
         return
-    warn("点歌功能不可用。装个 Node 18+ 或 Docker 之后重跑本脚本即可补上。")
+    warn("网易云 API 的源码安装和 Docker 兜底都失败，点歌功能暂不可用")
+    warn("请根据上方 Git、npm 或 Docker 的错误处理后重跑本脚本")
 
 
 def install_netease_from_source(target: Path) -> bool:
@@ -547,7 +548,10 @@ def install_netease_from_source(target: Path) -> bool:
         return False
     say("安装网易云 API 依赖")
     npm = "npm.cmd" if IS_WINDOWS else "npm"
-    return run_ok([npm, "install", "--omit=dev"], cwd=target)
+    # 上游的 prepare 脚本会调用只放在 devDependencies 里的 husky。
+    # 生产安装省略 devDependencies 后再执行 prepare，必然报 husky: not found。
+    # API 的运行只需要 dependencies，因此生产部署不执行这些开发期生命周期脚本。
+    return run_ok([npm, "install", "--omit=dev", "--ignore-scripts"], cwd=target)
 
 
 def start_netease_container() -> bool:
@@ -555,10 +559,16 @@ def start_netease_container() -> bool:
         return False
     say("尝试用 Docker 启动网易云 API")
     quiet_ok(["docker", "rm", "-f", "oopzbot-netease"])
-    return quiet_ok([
+    if not run_ok([
         "docker", "run", "-d", "--name", "oopzbot-netease",
-        "-p", "3000:3000", NETEASE_DOCKER_IMAGE,
-    ])
+        "--restart", "unless-stopped", "-p", "3000:3000", NETEASE_DOCKER_IMAGE,
+    ]):
+        return False
+    if wait_for_port("127.0.0.1", 3000, 20):
+        return True
+    warn("Docker 容器已创建，但网易云 API 在 20 秒内没有监听 3000 端口")
+    run_ok(["docker", "logs", "--tail", "50", "oopzbot-netease"])
+    return False
 
 
 # --------------------------------------------------------------------------

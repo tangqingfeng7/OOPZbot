@@ -40,6 +40,10 @@ class NeteaseApiRuntime:
         if not path.strip():
             return
 
+        if await self._api_is_ready():
+            logger.info("网易云 API 已在运行，跳过重复启动。")
+            return
+
         api_dir = self._resolve_api_dir(path)
         if not (api_dir / "app.js").is_file():
             logger.info("网易云 API 目录不存在，跳过启动: %s", api_dir)
@@ -80,6 +84,20 @@ class NeteaseApiRuntime:
             return
 
         await self._wait_until_ready()
+
+    @staticmethod
+    async def _api_is_ready() -> bool:
+        """容器或外部 API 已就绪时，不再启动本地源码进程争抢端口。"""
+        base_url = str(
+            NETEASE_CLOUD.get("base_url", "http://localhost:3000")
+        ).rstrip("/")
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_HEALTH)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+                async with session.get(f"{base_url}/") as response:
+                    return response.status < 500
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return False
 
     async def stop(self, timeout: float = 5.0) -> None:
         self._stop_event.set()

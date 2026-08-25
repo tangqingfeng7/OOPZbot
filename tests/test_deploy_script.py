@@ -95,6 +95,49 @@ class NeteaseDirTest(unittest.TestCase):
             self.assertEqual(deploy.netease_dir(), Path("/opt/ncm"))
 
 
+class NeteaseInstallTest(unittest.TestCase):
+    """生产安装不能执行依赖 devDependencies 的上游 prepare 脚本。"""
+
+    def test_source_install_skips_development_lifecycle_scripts(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "NeteaseCloudMusicApi"
+
+            def fake_run_ok(cmd: list[str], **kwargs: Any) -> bool:
+                if cmd[:2] == ["git", "clone"]:
+                    target.mkdir()
+                    (target / "app.js").write_text("", encoding="utf-8")
+                return True
+
+            with (
+                patch.object(deploy, "IS_WINDOWS", False),
+                patch.object(deploy, "run_ok", side_effect=fake_run_ok) as run_ok,
+            ):
+                self.assertTrue(deploy.install_netease_from_source(target))
+
+            npm_call = run_ok.call_args_list[1]
+            self.assertEqual(
+                npm_call.args[0],
+                ["npm", "install", "--omit=dev", "--ignore-scripts"],
+            )
+            self.assertEqual(npm_call.kwargs["cwd"], target)
+
+    def test_docker_fallback_is_restartable_and_waits_until_ready(self) -> None:
+        with (
+            patch.object(deploy.shutil, "which", return_value="/usr/bin/docker"),
+            patch.object(deploy, "quiet_ok", return_value=True),
+            patch.object(deploy, "run_ok", return_value=True) as run_ok,
+            patch.object(deploy, "wait_for_port", return_value=True) as wait_for_port,
+        ):
+            self.assertTrue(deploy.start_netease_container())
+
+        docker_run = run_ok.call_args.args[0]
+        self.assertIn("--restart", docker_run)
+        self.assertIn("unless-stopped", docker_run)
+        wait_for_port.assert_called_once_with("127.0.0.1", 3000, 20)
+
+
 class ConfigWriteTest(unittest.TestCase):
     """写凭据不能破坏 config.py：它是会被 import 的 Python 源码。"""
 
