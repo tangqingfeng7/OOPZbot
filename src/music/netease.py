@@ -530,7 +530,8 @@ class NeteaseCloud:
         return {"code": "success", "message": msg, "data": song_info}
 
     async def get_lyrics(self, song_id: int) -> tuple[str | None, str | None]:
-        """获取歌曲 LRC 歌词和翻译歌词，一次请求同时返回 (lyric, tlyric)。"""
+        """获取歌曲 LRC 歌词和翻译歌词。
+        """
         data = await self._get("/lyric/new", params={"id": song_id})
         if not data or data.get("code") != 200:
             return None, None
@@ -538,7 +539,49 @@ class NeteaseCloud:
         tlrc_text = (data.get("tlyric") or {}).get("lyric", "")
         lyric = lrc_text if lrc_text and "[" in lrc_text else None
         tlyric = tlrc_text if tlrc_text and "[" in tlrc_text else None
+
+        if not self._is_placeholder_lyric(lyric):
+            return lyric, tlyric
+
+        cloud_lyric = await self.get_cloud_lyric(song_id)
+        if cloud_lyric:
+            return cloud_lyric, tlyric
         return lyric, tlyric
+
+    @staticmethod
+    def _is_placeholder_lyric(lyric: str | None) -> bool:
+        """识别网易云无歌词时返回的带时间戳占位文本。"""
+        if not lyric:
+            return True
+        text = lyric
+        while "[" in text and "]" in text:
+            start = text.find("[")
+            end = text.find("]", start)
+            if end < 0:
+                break
+            text = text[:start] + text[end + 1:]
+        normalized = "".join(text.split())
+        return normalized in {"", "暂无歌词", "纯音乐，请欣赏", "纯音乐,请欣赏"}
+
+    async def get_cloud_lyric(self, song_id: int) -> str | None:
+        """获取当前登录账号的云盘歌词。"""
+        if not self.cookie:
+            return None
+        uid = await self.get_user_id()
+        if uid is None:
+            return None
+        data = await self._post_with_cookie(
+            "/cloud/lyric/get",
+            params={"uid": uid, "sid": song_id},
+        )
+        if not isinstance(data, dict) or data.get("code") != 200:
+            return None
+        raw_lrc = data.get("lrc")
+        if isinstance(raw_lrc, dict):
+            raw_lrc = raw_lrc.get("lyric")
+        if not isinstance(raw_lrc, str) or "[" not in raw_lrc:
+            return None
+        return None if self._is_placeholder_lyric(raw_lrc) else raw_lrc
 
     async def get_lyric(self, song_id: int) -> str | None:
         """获取歌曲 LRC 歌词文本，无歌词返回 None。"""
