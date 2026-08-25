@@ -212,6 +212,26 @@ async def init_database() -> None:
                 UNIQUE(date, channel_id, area_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS area_invite_requests (
+                code TEXT PRIMARY KEY,
+                sender_id TEXT NOT NULL DEFAULT '',
+                sender_name TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL DEFAULT '',
+                message_timestamp TEXT NOT NULL DEFAULT '',
+                invite_status TEXT NOT NULL DEFAULT '',
+                area_id TEXT NOT NULL DEFAULT '',
+                area_name TEXT NOT NULL DEFAULT '',
+                area_avatar TEXT NOT NULL DEFAULT '',
+                banner TEXT NOT NULL DEFAULT '',
+                channel_id TEXT NOT NULL DEFAULT '',
+                channel_name TEXT NOT NULL DEFAULT '',
+                channel_type TEXT NOT NULL DEFAULT '',
+                is_area_invite INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'pending',
+                received_at TEXT NOT NULL,
+                processed_at TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_message_stats_date
                 ON message_stats (date);
             CREATE INDEX IF NOT EXISTS idx_message_stats_area_date
@@ -222,6 +242,8 @@ async def init_database() -> None:
                 ON play_history (user_id, played_at);
             CREATE INDEX IF NOT EXISTS idx_reminders_fire_at
                 ON reminders (fire_at, fired);
+            CREATE INDEX IF NOT EXISTS idx_area_invite_requests_state_received
+                ON area_invite_requests (state, received_at DESC);
             """
         )
     logger.info("数据库已初始化: %s", DB_PATH)
@@ -548,6 +570,99 @@ class Statistics:
             "cache_misses": misses,
             "cache_hit_rate": round(hits / max(total, 1) * 100, 1),
         }
+
+
+class AreaInviteRequestDB:
+    """私信中识别出的域邀请待审批记录。"""
+
+    @staticmethod
+    async def upsert_pending(
+        *,
+        code: str,
+        sender_id: str,
+        sender_name: str,
+        message_id: str,
+        message_timestamp: str,
+        detail: dict[str, Any],
+    ) -> None:
+        now = cn_now()
+        async with db_connection() as conn:
+            await conn.execute(
+                """INSERT INTO area_invite_requests (
+                       code, sender_id, sender_name, message_id, message_timestamp,
+                       invite_status, area_id, area_name, area_avatar, banner,
+                       channel_id, channel_name, channel_type, is_area_invite,
+                       state, received_at, processed_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '')
+                   ON CONFLICT(code) DO UPDATE SET
+                       sender_id=excluded.sender_id,
+                       sender_name=excluded.sender_name,
+                       message_id=excluded.message_id,
+                       message_timestamp=excluded.message_timestamp,
+                       invite_status=excluded.invite_status,
+                       area_id=excluded.area_id,
+                       area_name=excluded.area_name,
+                       area_avatar=excluded.area_avatar,
+                       banner=excluded.banner,
+                       channel_id=excluded.channel_id,
+                       channel_name=excluded.channel_name,
+                       channel_type=excluded.channel_type,
+                       is_area_invite=excluded.is_area_invite,
+                       state='pending',
+                       received_at=excluded.received_at,
+                       processed_at=''""",
+                (
+                    code,
+                    sender_id,
+                    sender_name,
+                    message_id,
+                    message_timestamp,
+                    str(detail.get("status") or ""),
+                    str(detail.get("area") or ""),
+                    str(detail.get("areaName") or ""),
+                    str(detail.get("areaAvatar") or ""),
+                    str(detail.get("banner") or ""),
+                    str(detail.get("channel") or ""),
+                    str(detail.get("channelName") or ""),
+                    str(detail.get("channelType") or ""),
+                    int(bool(detail.get("isAreaInvite"))),
+                    now,
+                ),
+            )
+
+    @staticmethod
+    async def list_pending() -> list[dict[str, Any]]:
+        async with db_connection() as conn:
+            rows = await _fetchall(
+                conn,
+                "SELECT * FROM area_invite_requests "
+                "WHERE state='pending' ORDER BY received_at DESC, code ASC",
+            )
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    async def get_pending(code: str) -> dict[str, Any] | None:
+        async with db_connection() as conn:
+            row = await _fetchone(
+                conn,
+                "SELECT * FROM area_invite_requests WHERE code=? AND state='pending'",
+                (code,),
+            )
+        return dict(row) if row else None
+
+    @staticmethod
+    async def mark_processed(code: str, state: str) -> bool:
+        if state not in {"accepted", "rejected"}:
+            raise ValueError("invalid area invite state")
+        async with db_connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE area_invite_requests SET state=?, processed_at=? "
+                "WHERE code=? AND state='pending'",
+                (state, cn_now(), code),
+            )
+            updated = cursor.rowcount > 0
+            await cursor.close()
+        return updated
 
 
 class ScheduledMessageDB:

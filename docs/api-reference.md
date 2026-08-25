@@ -1,6 +1,7 @@
 # Oopz 平台 API 参考
 
-本文档整理了 Bot 中已知并使用的所有 Oopz 平台 API。
+本文档整理 Oopz 平台当前可用的 HTTP API 与 WebSocket 协议。Oopz 未公开官方 API 契约，路径、字段和枚举可能随客户端升级变化。
+
 
 ## 基础信息
 
@@ -30,9 +31,13 @@
 **签名流程：**
 
 ```
-sign_data = MD5(url_path + body_json) + timestamp_ms
+sign_path = url_path + ("?" + urlencode(query) if query else "")
+body_json = compact_json(body) if body is not None else method_default_body
+sign_data = MD5(sign_path + body_json) + timestamp_ms
 signature = Base64(RSA_PKCS1v15_SHA256(sign_data, private_key))
 ```
+
+无显式 body 时，`method_default_body` 的规则为：`POST` / `PUT` / `PATCH` 使用 `{}`，`GET` / `DELETE` 使用空字符串。Query 参数参与签名，且顺序必须与实际 URL 一致。
 
 ---
 
@@ -48,10 +53,31 @@ URL: wss://ws.oopz.cn
 
 | event | 说明 |
 |-------|------|
-| `253` | 认证 |
-| `254` | 心跳 |
-| `1` | 服务端 serverId 确认 |
-| `9` | 聊天消息 |
+| `1` | 服务端 `serverId` 确认 |
+| `2` | 收到好友请求 |
+| `4` | 好友删除 |
+| `6` | 私信撤回 |
+| `7` | 私信消息 |
+| `8` | 频道消息撤回 |
+| `9` | 频道消息 |
+| `11` | 频道禁麦 |
+| `12` | 频道禁言 |
+| `13` | 频道删除 |
+| `18` | 频道设置变更 |
+| `19` | 用户退出语音频道 |
+| `20` | 用户进入语音频道 |
+| `21` | 鉴权校验结果；`body.checkRes=false` 表示凭据被拒绝 |
+| `25` | 公开频道创建 |
+| `26` | 用户信息变更 |
+| `27` | 用户登录状态变更 |
+| `28` | 域信息变更 |
+| `32` | 消息表情反应变更 |
+| `52` | 身份组变更 |
+| `56` | 私信编辑 |
+| `57` | 频道消息编辑 |
+| `249` | 客户端发送的域事件订阅帧 |
+| `253` | 客户端发送的认证帧 |
+| `254` | 心跳帧 |
 
 ### 认证（event=253）
 
@@ -67,7 +93,7 @@ URL: wss://ws.oopz.cn
 
 ### 心跳（event=254）
 
-收到 `serverId` 后发送首次心跳，之后每 10 秒发送一次。收到心跳响应中 `r=1` 时立即回复心跳。
+发送认证帧后应定期发送心跳，建议间隔为 10 秒。
 
 ```json
 {
@@ -76,6 +102,18 @@ URL: wss://ws.oopz.cn
   "event": 254
 }
 ```
+
+### 订阅域事件（event=249）
+
+```json
+{
+  "time": "毫秒时间戳",
+  "body": "{\"areas\":[\"域ID\"],\"type\":1,\"uid\":\"当前用户UID\"}",
+  "event": 249
+}
+```
+
+> `body` 仍是 JSON 字符串，不是嵌套对象。
 
 ### 聊天消息（event=9）
 
@@ -94,34 +132,46 @@ URL: wss://ws.oopz.cn
 
 ## 消息 API
 
-### 发送消息
+### 发送频道消息（当前默认 v2）
 
 ```
-POST /im/session/v1/sendGimMessage
+POST /im/session/v2/sendGimMessage
 ```
 
 **请求体：**
 
 ```json
 {
-  "area": "域ID",
-  "channel": "频道ID",
-  "target": "",
-  "clientMessageId": "15位客户端消息ID",
-  "timestamp": "微秒时间戳",
-  "isMentionAll": false,
-  "mentionList": [],
-  "styleTags": [],
-  "referenceMessageId": null,
-  "animated": false,
-  "displayName": "",
-  "duration": 0,
-  "text": "消息文本",
-  "attachments": []
+  "message": {
+    "area": "域ID",
+    "channel": "频道ID",
+    "target": "",
+    "clientMessageId": "15位客户端消息ID",
+    "timestamp": "微秒时间戳",
+    "isMentionAll": false,
+    "mentionList": [],
+    "styleTags": [],
+    "referenceMessageId": null,
+    "animated": false,
+    "displayName": "",
+    "duration": 0,
+    "content": "消息文本",
+    "attachments": []
+  }
 }
 ```
 
-**图片消息 text 格式：** `![IMAGEw{宽}h{高}]({fileKey})`
+v2 的正文字段为 `content`；需兼容旧版时，可在 `message` 内附带同值的 `text`。
+
+#### v1 兼容格式
+
+```http
+POST /im/session/v1/sendGimMessage
+```
+
+v1 不使用 `message` 包裹，字段直接放在根级，正文字段为 `text`。新集成应优先使用 v2。
+
+**图片消息正文格式：** `![IMAGEw{宽}h{高}]({fileKey})`
 
 **附件格式（图片）：**
 
@@ -160,13 +210,12 @@ POST /im/session/v1/sendGimMessage
 |------|-----|
 | 请求体字段 | `styleTags`，数组类型 |
 | 公告样式 | 传 `["IMPORTANT"]` 时，客户端会将该条消息以「重要/公告」气泡样式展示（与官方公告一致） |
-| 本 Bot 默认 | `AsyncOopzGateway.send_message` 未显式传 `styleTags` 时，按域配置决定：域级 `announcement_style` 优先，回落到全局 `OOPZ_CONFIG["use_announcement_style"]`（默认 `False`，即普通气泡） |
 | 强制指定 | 调用时显式传入 `styleTags=["IMPORTANT"]` 或 `styleTags=[]` 会跳过上述配置，直接生效 |
 | 正文排版 | 客户端支持 `**粗体**`、`*斜体*` 等 Markdown 式渲染（以实际展示为准） |
 
-**Web 端补充（带 @ 用户）：**
+**带 @ 用户：**
 
-Web 端还可见到 `v2` 包裹格式的频道消息请求：
+v2 包裹格式的 @ 用户请求示例：
 
 ```
 POST /im/session/v2/sendGimMessage
@@ -238,10 +287,10 @@ Web 端发送“回复某条消息”的频道消息时，仍然使用 `v2/sendG
 ### 撤回消息
 
 ```
-POST /im/session/v1/recallGim?area={area}&channel={channel}&messageId={messageId}&timestamp={timestamp}&target={target}
+POST /im/session/v1/recallGim
 ```
 
-> 参数同时放在 query string 和 JSON body 中。
+> 接口接受 JSON body。Web 客户端还会把同一组字段同时放入 query 和 body；使用该形状时，query 和 body 都必须参与签名。
 
 **请求体：**
 
@@ -260,6 +309,24 @@ POST /im/session/v1/recallGim?area={area}&channel={channel}&messageId={messageId
 ```json
 {"status": true, "data": true, "message": "", "error": "", "code": ""}
 ```
+
+#### 撤回私信
+
+```http
+POST /im/session/v1/recallIm
+```
+
+```json
+{
+  "area": "",
+  "channel": "私信会话channel",
+  "messageId": "消息ID",
+  "timestamp": "微秒时间戳",
+  "target": "对方UID"
+}
+```
+
+`recallGim` 用于频道消息，`recallIm` 用于私信消息，两者不可混用。
 
 ### 获取频道消息
 
@@ -289,6 +356,21 @@ GET /im/session/v2/messageBefore?area={area}&channel={channel}&size={size}
       "area": "域ID"
     }
   ]
+}
+```
+
+#### 置顶/取消置顶频道消息
+
+```http
+POST /im/session/v1/messageTop
+```
+
+```json
+{
+  "messageId": "消息ID",
+  "type": "TOP 或 CANCEL_TOP",
+  "area": "域ID",
+  "channel": "频道ID"
 }
 ```
 
@@ -356,7 +438,7 @@ POST /im/session/v1/gimReaction
 
 - 文本消息与“回复消息”的表情请求体一致，`anchor` 均为空字符串。
 - 图片消息、贴纸 / 动图消息的表情请求体中，`anchor` 可能为非空。
-- 本次 Web 抓包中未观察到 `target` 为非空的样本。
+- 频道消息的 `target` 通常为空字符串。
 
 #### 批量查询多条消息的表情反应
 
@@ -410,9 +492,23 @@ GET /im/session/v2/gimReactionPersons?messageId={messageId}&emoji={emoji}&channe
 }
 ```
 
+#### 私信表情反应
+
+私信使用与频道消息分离的 `im*` 接口：
+
+| 用途 | 方法 | 路径 |
+|------|------|------|
+| 新增/取消私信反应 | POST | `/im/session/v1/imReaction` |
+| 批量查询私信反应 | POST | `/im/session/v1/imReactions` |
+| 查询私信某表情的反应用户 | GET | `/im/session/v2/imReactionPersons?messageId={messageId}&emoji={emoji}&channel={channel}&page={page}&pageSize={pageSize}` |
+
+`imReaction` 请求体与 `gimReaction` 字段一致，但私信场景的 `area` 为空，`target` 和 `anchor` 都使用对方 UID。`imReactions` 请求体为对象数组，每项仅包含 `messageId`。
+
+> 当前 Web 包的取消反应枚举值为 `WITHDRAWN`。频道和私信使用相同枚举。
+
 ### 私信 API（IM）
 
-以下接口为「私信用户」流程所用，通过 Playwright 抓包自 Web 端（https://web.oopz.cn/）。请求签名与通用规则一致，需携带 Oopz 系列 Header。
+以下接口用于私信会话。请求签名与通用规则一致，需携带 Oopz 系列 Header。
 
 #### 打开/切换私信会话
 
@@ -430,7 +526,7 @@ PATCH /client/v1/chat/v1/to?target={目标用户UID}
 
 #### 发送私信消息
 
-发送一条私信。与房间消息不同：私信使用 `sendImMessage`（v2），房间消息使用 `sendGimMessage`（v1）；私信请求体为 **`message` 包裹**，正文字段为 **`content`**（与 Web 端 Playwright 抓包一致）。
+发送一条私信。v2 的 `sendImMessage` 与频道消息 `sendGimMessage` 都使用 **`message` 包裹**，正文字段为 **`content`**。v1 为兼容路径，使用根级请求体。
 
 ```
 POST /im/session/v2/sendImMessage
@@ -498,7 +594,7 @@ GET /im/session/v2/messageBefore?area&channel={channel}&size={size}
 
 #### 保存已读状态
 
-上报该私信会话的已读状态（Playwright 抓包）。
+上报该私信会话的已读状态。
 
 ```
 POST /im/session/v1/saveReadStatus
@@ -531,6 +627,25 @@ POST /im/session/v1/saveReadStatus
 | 发送私信 | POST | `/im/session/v2/sendImMessage` |
 | 拉取历史 | GET | `/im/session/v2/messageBefore?area&channel=<channel>&size=50` |
 | 已读状态 | POST | `/im/session/v1/saveReadStatus` |
+
+---
+
+### 发送语音频道互动
+
+```http
+POST /client/v1/interaction/v1/send
+```
+
+```json
+{
+  "area": "域ID",
+  "channel": "语音频道ID",
+  "interactionStickerIds": ["互动贴纸ID"],
+  "target": "目标用户UID"
+}
+```
+
+该路径用于发送语音频道互动。
 
 ---
 
@@ -590,10 +705,42 @@ GET /userSubscribeArea/v1/list
     "code": "域邀请码",
     "name": "域名称",
     "avatar": "头像URL",
-    "owner": "域主UID"
+    "banner": "横幅URL",
+    "level": 0,
+    "owner": "域主UID",
+    "groupID": "默认分组ID",
+    "groupName": "默认分组名称",
+    "subscript": 0
   }
 ]
 ```
+
+> 判断是否真正退域应以这个服务端列表和 Oopz 客户端状态为准。
+
+### 查询邀请详情
+
+```http
+GET /invite/v1/codeDetail?code={code}
+```
+
+`code` 是 `https://oopz.cn/i/{code}` 中的短码。响应 `data` 字段为：
+
+```json
+{
+  "status": "INVITE_NORMAL",
+  "inviteUid": "邀请者UID",
+  "area": "域ID",
+  "areaName": "域名称",
+  "areaAvatar": "域头像URL",
+  "banner": "域横幅URL",
+  "channel": "频道ID",
+  "channelName": "频道名称",
+  "channelType": "频道类型",
+  "isAreaInvite": true
+}
+```
+
+接受邀请前应通过该接口重新校验邀请状态，不应直接信任消息卡片中的展示内容。
 
 ### 获取域详情
 
@@ -657,7 +804,22 @@ GET /area/v3/info?area={area}
 
 **areaRoleInfos：** 当前用户在域内的权限信息。
 
-> 此接口返回的 `roleList` 可与 `/area/v3/members` 接口的 `role` 字段配合使用，将身份组 ID 映射为名称。旧版 `/area/v2/info` 仍可用但建议使用 v3。
+> 此接口返回的 `roleList` 可与 `/area/v3/members` 接口的 `role` 字段配合使用，将身份组 ID 映射为名称。`/area/v2/info` 是旧版兼容路径，新集成应使用 v3。
+
+### 修改域名称
+
+```http
+PUT /client/v1/area/v1/areaSettings/v1/editAreaName
+```
+
+```json
+{
+  "area": "域ID",
+  "name": "新域名称"
+}
+```
+
+这是需要域管理权限的写操作。
 
 ### 获取域频道列表
 
@@ -767,7 +929,7 @@ GET /area/v3/channel/setting/info?channel={channel}
 |------|------|
 | `channel` | 频道 ID |
 
-**说明：** Web 端抓包中仅要求 `channel`。返回频道当前设置（名称、权限、文字/语音控制、人数上限、密码等），用于编辑前拉取。响应 `data` 的字段与编辑接口请求体一致（含 `secret`、`accessControlEnabled`、`accessibleMembers` 等）。注意：部分字段可能在频道未配置时缺失，使用时应设置默认值。
+**说明：** query 仅需 `channel`。返回频道名称、类型、权限、文字/语音控制、人数上限和密码等设置。读取响应中的可见身份组字段通常为 `accessibleRoles`，编辑请求中则为 `accessible`。部分未配置字段可能被服务端省略。
 
 ### 编辑频道设置（频道权限）
 
@@ -815,38 +977,20 @@ POST /area/v3/channel/setting/edit
 | `textRoles` | int[] | 有文字发言权限的角色 ID 列表 |
 | `voiceRoles` | int[] | 有语音发言权限的角色 ID 列表 |
 | `accessControlEnabled` | bool | 是否启用访问控制（私密频道核心字段） |
-| `accessible` | array | 有访问权限的身份组 |
+| `accessible` | int[] | 有访问权限的身份组 ID；读取响应可能名为 `accessibleRoles` |
 | `accessibleMembers` | string[] | 有访问权限的成员 UID 列表 |
 | `secret` | bool | 频道是否标记为私密 |
 | `hasPassword` | bool | 是否启用频道密码 |
 | `password` | string | 频道密码（仅 `hasPassword` 为 true 时有效） |
 
-**说明：** 需域内管理员权限。所有字段均为必填（`accessible` 为必填字段，缺少会返回验证错误）。
+**说明：** 需域内管理员权限。这是“完整设置对象”接口：应先读取现有设置，覆盖要修改的字段，再发送全量请求体。`accessible` 必须使用编辑接口要求的字段名；不应把读取响应的 `accessibleRoles` 原样发回。
 
 > **重要：`secret` 与 `accessControlEnabled` 的关系**
 >
-> 经实测，`secret` 是由平台根据 `accessControlEnabled` 派生的只读字段。当 `accessControlEnabled` 为 `true` 时，平台会强制 `secret` 为 `true`，忽略请求中显式传入的 `secret: false`。因此：
+> `secret` 是由平台根据 `accessControlEnabled` 派生的只读字段。当 `accessControlEnabled` 为 `true` 时，平台会强制 `secret` 为 `true`，忽略请求中显式传入的 `secret: false`。因此：
 > - 要将频道设为私密：需设置 `accessControlEnabled: true`（`secret` 会自动变为 `true`）
 > - 要取消私密：需设置 `accessControlEnabled: false` 并清空 `accessible` / `accessibleMembers`
 > - 单独修改 `secret` 而不同步 `accessControlEnabled` 不会生效
-
-### 搜索可添加的私密成员
-
-```
-GET /area/v3/search/areaPrivateSettingMembers?area={area}&keyword={keyword}&page={page}
-```
-
-**参数：**
-
-| 参数 | 说明 |
-|------|------|
-| `area` | 域 ID |
-| `keyword` | 搜索关键词，可为空 |
-| `page` | 页码（如 `1`） |
-
-**说明：** Web 端频道权限页中用于搜索并添加「允许访问的成员」。
-
----
 
 ### 进入域
 
@@ -855,6 +999,28 @@ POST /client/v1/area/v1/enter?area={area}&recover={recover}
 ```
 
 进入指定域（进入语音频道前的必要步骤）。`recover` 为 `true`/`false`。
+
+请求同时携带 query 和同值 JSON body：
+
+```json
+{"area": "域ID", "recover": false}
+```
+
+### 退出域
+
+```
+DELETE /client/v1/area/v1/quit?area={area}
+```
+
+**Query 参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `area` | 要退出的域 ID |
+
+**请求体：** 无。
+
+**说明：** `area` 必须作为 query 参数发送；不要放入 JSON body。将 `{"area":"域ID"}` 放入 body 时，服务端可能返回成功形状的响应，但账号不会实际退出域。
 
 ### 进入频道
 
@@ -965,18 +1131,13 @@ GET /client/v1/area/v1/operateLogs?area={area}&offset={offset}&opTypes={opTypes}
 
 | 参数 | 说明 |
 |------|------|
-| `area` | 域 ID；`OopzApiMixin.get_area_operate_logs` 未显式传入时使用 `OOPZ_CONFIG["default_area"]` |
-| `offset` | 非负偏移量，Bot 默认传 `0` |
+| `area` | 域 ID |
+| `offset` | 非负偏移量，首页传 `0` |
 | `opTypes` | JSON 数组字符串；域成员通知轮询传 `["AREA_SUBSCRIBE","AREA_UNSUBSCRIBE"]` |
 
-Bot 从响应 `data.logs` 列表中读取域成员变更；当前解析器使用每项的 `optUid`
-（兼容 `uid` / `person`）、`content` 和 `createTime`（兼容 `time` / `timestamp`），且只将
-`content` 为 `加入域` 或 `退出域` 的记录识别为成员变更。
+响应 `data.logs` 为日志列表。成员变更记录的常见字段为 `optUid`（部分响应可为 `uid` / `person`）、`content` 和 `createTime`（部分响应可为 `time` / `timestamp`）。`content` 为 `加入域` 或 `退出域` 时表示成员变更。
 
-**Bot 中的用途与调用位置：**
-
-- `src/oopz/sdk_gateway.py` 的 `AsyncOopzGateway.get_area_operate_logs` 封装请求，并对 429 执行限流重试。
-- `src/services/area_join_notifier.py` 的 `fetch_operate_log_changes` 调用该封装；它是域成员加入/退出通知的默认数据源，解析结果也用于产生 OneBot v11 群成员增减事件。
+> 该接口需要有效登录态及相应域权限；无权访问可返回 HTTP 401。
 
 ### 获取域成员列表（含在线状态）
 
@@ -1042,17 +1203,10 @@ GET /area/v3/members?area={area}&offsetStart={start}&offsetEnd={end}
 ### 移出域（踢出用户）
 
 ```
-POST /area/v3/remove?area={area}&target={uid}
+POST /area/v3/remove
 ```
 
-**参数：**
-
-| 参数 | 说明 |
-|------|------|
-| `area` | 域 ID |
-| `target` | 被移出用户的 UID |
-
-**请求体（与 query 一致）：**
+**JSON 请求体：**
 
 ```json
 {
@@ -1061,7 +1215,7 @@ POST /area/v3/remove?area={area}&target={uid}
 }
 ```
 
-**说明：** 将指定用户从当前域移出（踢出域），需管理员权限。
+**说明：** 将指定用户从当前域移出（踢出域），需管理员权限。`area` / `target` 只放在 JSON body，不在 query 中重复。
 
 ### 封禁用户（加入域封禁列表）
 
@@ -1094,40 +1248,9 @@ GET /client/v1/area/v1/areaSettings/v1/blocks?area={area}&name={name}
 PATCH /client/v1/area/v1/unblock?area={area}&target={uid}
 ```
 
-**参数：** `area`、`target`（要解除封禁的用户 UID）。请求体与 query 一致。
+**参数：** `area`、`target`（要解除封禁的用户 UID）。只发送 query，无请求体。
 
 **说明：** 从域封禁列表中移除用户，允许其再次加入该域。可先通过「获取域封禁列表」查看当前封禁用户。
-
-### 搜索域成员
-
-```
-POST /area/v3/search/areaSettingMembers
-```
-
-**请求体：**
-
-```json
-{
-  "area": "域ID",
-  "name": "搜索关键词",
-  "offset": 0,
-  "limit": 50
-}
-```
-
-**响应 data：**
-
-```json
-{
-  "members": [
-    {
-      "uid": "用户UID",
-      "roleInfos": [{"name": "角色名", "roleID": 1}],
-      "enterTime": 1700000000000
-    }
-  ]
-}
-```
 
 ### 获取语音频道在线成员
 
@@ -1170,13 +1293,12 @@ GET /area/v3/userDetail?area={area}&target={uid}
   "list": [
     {"roleID": 1, "name": "管理员"}
   ],
-  "disableTextTo": 0,
-  "disableVoiceTo": 0,
-  "higherUid": ""
+  "higherUid": "",
+  "now": 1787594400000
 }
 ```
 
-> `disableTextTo` / `disableVoiceTo` 为禁言/禁麦到期时间（毫秒时间戳），`0` 表示未禁言。
+`list`、`higherUid` 和 `now` 为常见字段。如用户正在被限制，响应还可包含 `disableTextTo` / `disableVoiceTo`（禁言/禁麦到期毫秒时间戳）；未设置时服务端可直接省略，不应假定一定返回 `0`。
 
 ### 获取可分配角色列表
 
@@ -1228,6 +1350,21 @@ POST /area/v3/role/editUserRole
 | `targetRoleIDs` | 该用户在该域下应拥有的身份组 ID 列表（整型数组）。需先通过 `GET /area/v3/userDetail` 获取当前列表，再根据「添加」或「移除」操作增删后传入。 |
 
 **说明：** 与 Web 端行为一致。添加身份组时：先调 `userDetail` 取当前 `list` 的 `roleID` 列表，追加新 `roleID` 后作为 `targetRoleIDs` 提交；取消时则从列表中移除对应 `roleID` 后提交。
+
+### 批量获取用户域内昵称
+
+```http
+POST /area/v2/getUserAreaNicknames
+```
+
+```json
+{
+  "area": "域ID",
+  "uids": ["用户UID1", "用户UID2"]
+}
+```
+
+响应 `data.nicknames` 为 `UID -> 域内昵称` 的对象；没有设置域内昵称时可返回空对象。
 
 ---
 
@@ -1360,6 +1497,56 @@ GET /client/v1/person/v2/selfDetail?uid={uid}
 | `userLevel` | 用户等级 |
 | `greeting` | 加入平台天数提示 |
 
+### 修改自己的个人简介
+
+```http
+PUT /client/v1/person/v1/introduction
+```
+
+```json
+{"introduction": "新的个人简介"}
+```
+
+这是写操作，需要当前用户的有效登录态。
+
+### 好友与好友请求
+
+| 用途 | 方法 | 路径 | 请求数据 |
+|------|------|------|------|
+| 好友列表 | GET | `/client/v1/list/v1/friendship` | 无 |
+| 好友请求列表 | GET | `/client/v1/friendship/v1/requests` | 无 |
+| 同意/拒绝好友请求 | POST | `/client/v1/friendship/v1/response` | JSON body |
+
+好友请求响应的 `data.requests` 项包含 `friendRequestId`、`uid`、`createTime`。处理请求的 body：
+
+```json
+{
+  "agree": true,
+  "friendRequestId": 123,
+  "target": "对方UID"
+}
+```
+
+同意/拒绝好友请求是写操作，请求体中的 `friendRequestId` 必须与 `target` 对应。
+
+### 用户备注名
+
+```http
+GET /person/v1/remarkName/getUserRemarkNames?uid={uid}
+```
+
+响应 `data.userRemarkNames` 为 `[{"uid":"...","remarkName":"..."}]`。
+
+```http
+POST /person/v1/remarkName/setUserRemarkName
+```
+
+```json
+{"remarkUid": "目标UID", "remarkName": "备注名"}
+```
+
+设置空字符串可用于清除备注名。
+
 ### 获取用户等级信息
 
 ```
@@ -1371,14 +1558,18 @@ GET /user_points/v1/level_info
 ```json
 {
   "currentLevel": 5,
+  "currentLevelFullPoints": 500,
   "nextLevel": 6,
   "nextLevelDistance": 100,
-  "currentPoints": 500,
-  "totalPoints": 1200,
-  "currentExp": 800,
-  "totalExp": 2000
+  "payPoints": 0,
+  "signInPoints": 500,
+  "hasNotReceivePrize": false,
+  "authState": 0,
+  "authDesc": ""
 }
 ```
+
+旧版字段 `currentPoints`、`totalPoints`、`currentExp`、`totalExp` 已不在当前响应中。
 
 ---
 
@@ -1390,7 +1581,7 @@ GET /user_points/v1/level_info
 PATCH /client/v1/area/v1/member/v1/disableText?area={area}&target={uid}&intervalId={intervalId}
 ```
 
-> 参数同时放在 query string 和 JSON body 中。
+> 只发送 query，无请求体。
 
 **intervalId 映射（禁言）：**
 
@@ -1415,11 +1606,15 @@ PATCH /client/v1/area/v1/member/v1/disableText?area={area}&target={uid}&interval
 PATCH /client/v1/area/v1/member/v1/recoverText?area={area}&target={uid}
 ```
 
+> 只发送 query，无请求体。
+
 ### 禁麦用户
 
 ```
 PATCH /client/v1/area/v1/member/v1/disableVoice?area={area}&target={uid}&intervalId={intervalId}
 ```
+
+> 只发送 query，无请求体。
 
 **intervalId 映射（禁麦）：**
 
@@ -1437,6 +1632,8 @@ PATCH /client/v1/area/v1/member/v1/disableVoice?area={area}&target={uid}&interva
 ```
 PATCH /client/v1/area/v1/member/v1/recoverVoice?area={area}&target={uid}
 ```
+
+> 只发送 query，无请求体。
 
 ---
 
@@ -1461,7 +1658,7 @@ GET /general/v1/speech
 
 ## 通用响应格式
 
-所有 API 响应遵循统一格式：
+大多数 Gateway 业务 API 响应遵循以下 envelope（包裹）格式：
 
 ```json
 {
@@ -1481,125 +1678,124 @@ GET /general/v1/speech
 | `error` | 失败时的错误信息 |
 | `code` | 业务状态码 |
 
+不要把该格式当作全局强制契约：例如签名上传 URL 接口和部分登录接口可返回不同结构。
+
 ---
 
-## Web 端补充
+## 接口索引
 
-### 抓包接口索引
+以下路径默认相对于 `https://gateway.oopz.cn`。详细参数与请求体见前文对应章节。
 
-#### 通用 / 网关
+### 消息与会话
 
-| 方法 | 路径 | 说明 |
+| 方法 | 路径 | 用途 |
 |------|------|------|
-| GET | `https://gateway.oopz.cn/general/v2/curTime` | 当前时间 |
-| GET | `https://gateway.oopz.cn/general/v2/settings` | 通用设置 |
-| POST | `https://gateway.oopz.cn/general/v2/switch` | 开关配置 |
-| GET | `https://gateway.oopz.cn/health` | 健康检查 |
-| GET | `https://gateway.oopz.cn/general/v1/speech` | 语音相关 |
+| PATCH | `/client/v1/chat/v1/to` | 打开/切换私信会话 |
+| POST | `/im/session/v2/sendGimMessage` | 发送频道消息（首选） |
+| POST | `/im/session/v1/sendGimMessage` | 发送频道消息（兼容） |
+| POST | `/im/session/v2/sendImMessage` | 发送私信（首选） |
+| POST | `/im/session/v1/sendImMessage` | 发送私信（兼容） |
+| POST | `/im/session/v1/recallGim` | 撤回频道消息 |
+| POST | `/im/session/v1/recallIm` | 撤回私信 |
+| GET | `/im/session/v2/messageBefore` | 获取历史消息 |
+| POST | `/im/session/v1/messageTop` | 置顶/取消置顶频道消息 |
+| POST | `/im/session/v1/gimReaction` | 频道消息表情反应 |
+| POST | `/im/session/v1/gimReactions` | 批量查询频道消息反应 |
+| GET | `/im/session/v2/gimReactionPersons` | 查询频道消息反应用户 |
+| POST | `/im/session/v1/imReaction` | 私信表情反应 |
+| POST | `/im/session/v1/imReactions` | 批量查询私信反应 |
+| GET | `/im/session/v2/imReactionPersons` | 查询私信反应用户 |
+| POST | `/im/session/v1/saveReadStatus` | 保存会话已读状态 |
+| POST | `/client/v1/interaction/v1/send` | 发送语音频道互动 |
 
-#### 登录 / 用户
+### 域、频道与成员
 
-| 方法 | 路径 | 说明 |
+| 方法 | 路径 | 用途 |
 |------|------|------|
-| POST | `https://gateway.oopz.cn/client/v1/login/v2/login` | 登录（v2） |
-| POST | `https://gateway.oopz.cn/client/v1/login/v1/autoLogin` | 自动登录 |
-| GET | `https://gateway.oopz.cn/login/v1/loginCheck` | 登录校验 |
-| GET | `https://gateway.oopz.cn/client/v1/person/v2/selfDetail?uid=...` | 当前用户详情 |
-| GET | `https://gateway.oopz.cn/client/v1/person/v1/personDetail?uid=...` | 用户详情 |
-| POST | `https://gateway.oopz.cn/client/v1/person/v1/personInfos` | 批量用户信息（含在线状态） |
-| GET | `https://gateway.oopz.cn/client/v1/person/v1/noviceGuide` | 新手引导 |
-| GET | `https://gateway.oopz.cn/person/v1/userNoticeSetting/noticeSetting` | 通知设置 |
-| GET | `https://gateway.oopz.cn/person/v1/remarkName/getUserRemarkNames?uid=...` | 备注名 |
-| GET | `https://gateway.oopz.cn/person/v1/blockCheck?targetUid=...` | 拉黑检查 |
-| GET | `https://gateway.oopz.cn/client/v1/person/v1/privacy/v1/query` | 隐私设置查询 |
-| GET | `https://gateway.oopz.cn/client/v1/person/v1/notification/v1/query` | 通知查询 |
-| GET | `https://gateway.oopz.cn/client/v1/person/v2/realNameAuth` | 实名认证状态 |
-| GET | `https://gateway.oopz.cn/client/v1/list/v1/friendship` | 好友列表 |
-| GET | `https://gateway.oopz.cn/client/v1/list/v1/blocked` | 黑名单列表 |
-| GET | `https://gateway.oopz.cn/client/v1/friendship/v1/requests` | 好友请求 |
-| GET | `https://gateway.oopz.cn/user_points/v1/level_info` | 用户等级 |
-| GET | `https://gateway.oopz.cn/diamond/v1/remain` | 钻石余额 |
-| GET | `https://gateway.oopz.cn/client/v1/settings/v1/mixer` | 混音器设置 |
+| GET | `/userSubscribeArea/v1/list` | 已加入域列表 |
+| GET | `/invite/v1/codeDetail` | 邀请短码详情 |
+| GET | `/area/v3/info` | 域详情 |
+| GET | `/area/v3/members` | 域成员列表 |
+| GET | `/client/v1/area/v1/detail/v1/channels` | 域频道列表 |
+| PUT | `/client/v1/area/v1/areaSettings/v1/editAreaName` | 修改域名称 |
+| POST | `/client/v1/area/v1/enter` | 进入域 |
+| DELETE | `/client/v1/area/v1/quit` | 退出域 |
+| POST | `/client/v1/area/v1/channel/v1/create` | 创建频道 |
+| DELETE | `/client/v1/area/v1/channel/v1/delete` | 删除频道 |
+| POST | `/area/v1/channel/v1/copy` | 复制频道 |
+| GET | `/area/v3/channel/setting/info` | 获取频道设置 |
+| POST | `/area/v3/channel/setting/edit` | 编辑频道设置 |
+| POST | `/area/v2/channel/enter` | 进入频道 |
+| DELETE | `/client/v1/area/v1/member/v1/removeFromChannel` | 退出/移出语音频道 |
+| POST | `/area/v3/channel/membersByChannels` | 按频道获取语音成员 |
+| PUT | `/client/v1/area/v1/member/v1/dragInto` | 调度成员到语音频道 |
+| GET | `/client/v1/area/v1/operateLogs` | 域管理日志 |
+| GET | `/area/v3/userDetail` | 用户域内详情 |
+| GET | `/area/v3/role/canGiveList` | 可分配身份组 |
+| POST | `/area/v3/role/editUserRole` | 编辑用户身份组 |
+| POST | `/area/v2/getUserAreaNicknames` | 批量获取域内昵称 |
+| POST | `/area/v3/remove` | 将成员移出域 |
+| DELETE | `/client/v1/area/v1/block` | 封禁域成员 |
+| GET | `/client/v1/area/v1/areaSettings/v1/blocks` | 域封禁列表 |
+| PATCH | `/client/v1/area/v1/unblock` | 解除域封禁 |
+| PATCH | `/client/v1/area/v1/member/v1/disableText` | 禁言 |
+| PATCH | `/client/v1/area/v1/member/v1/recoverText` | 解除禁言 |
+| PATCH | `/client/v1/area/v1/member/v1/disableVoice` | 禁麦 |
+| PATCH | `/client/v1/area/v1/member/v1/recoverVoice` | 解除禁麦 |
 
-#### 会话 / IM
+### 用户与好友
 
-| 方法 | 路径 | 说明 |
+| 方法 | 路径 | 用途 |
 |------|------|------|
-| POST | `https://gateway.oopz.cn/im/session/v1/sessions` | 会话列表 |
-| POST | `https://gateway.oopz.cn/im/session/v2/sendGimMessage` | 频道消息（Web 抓包，含 @ 用户） |
-| GET | `https://gateway.oopz.cn/im/session/v2/messageBefore?area=...&channel=...&size=50` | 历史消息 |
-| GET | `https://gateway.oopz.cn/im/session/v2/topMessages?area=...&channel=...` | 置顶消息 |
-| POST | `https://gateway.oopz.cn/im/session/v1/areasUnread` | 区域未读数 |
-| POST | `https://gateway.oopz.cn/im/session/v1/areasMentionUnread` | @ 未读 |
-| POST | `https://gateway.oopz.cn/im/session/v1/saveReadStatus` | 保存已读状态 |
-| POST | `https://gateway.oopz.cn/im/session/v1/gimReaction` | 新增 / 取消消息表情 |
-| POST | `https://gateway.oopz.cn/im/session/v1/gimReactions` | 批量查询消息表情 |
-| GET | `https://gateway.oopz.cn/im/session/v2/gimReactionPersons?messageId=...&emoji=...&channel=...&page=1&pageSize=4` | 查询某个表情的反应用户 |
-| POST | `https://gateway.oopz.cn/im/session/v1/gimMessageDetails` | 消息详情 |
-| GET | `https://gateway.oopz.cn/im/systemMessage/v1/unreadCount` | 系统消息未读数 |
-| GET | `https://gateway.oopz.cn/im/systemMessage/v1/messageList?offsetTime` | 系统消息列表 |
+| POST | `/client/v1/person/v1/personInfos` | 批量获取用户信息 |
+| GET | `/client/v1/person/v1/personDetail` | 获取用户详细资料 |
+| GET | `/client/v1/person/v2/selfDetail` | 获取当前用户详细资料 |
+| PUT | `/client/v1/person/v1/introduction` | 修改个人简介 |
+| GET | `/client/v1/list/v1/friendship` | 好友列表 |
+| GET | `/client/v1/friendship/v1/requests` | 好友请求列表 |
+| POST | `/client/v1/friendship/v1/response` | 同意/拒绝好友请求 |
+| GET | `/person/v1/remarkName/getUserRemarkNames` | 查询用户备注名 |
+| POST | `/person/v1/remarkName/setUserRemarkName` | 设置用户备注名 |
+| GET | `/user_points/v1/level_info` | 当前用户等级与积分 |
 
-#### 区域 / 频道（权限页相关）
+### 通用与媒体
 
-| 方法 | 路径 | 说明 |
+| 方法 | 路径 | 用途 |
 |------|------|------|
-| POST | `https://gateway.oopz.cn/client/v1/area/v1/enter?area=...&recover=false` | 进入区域 |
-| GET | `https://gateway.oopz.cn/area/v3/info?area=...` | 区域信息 |
-| GET | `https://gateway.oopz.cn/area/v3/members?area=...&offsetStart=0&offsetEnd=49` | 区域成员列表 |
-| GET | `https://gateway.oopz.cn/client/v1/area/v1/operateLogs?area=...&offset=0&opTypes=...` | 域管理日志 |
-| GET | `https://gateway.oopz.cn/client/v1/area/v1/detail/v1/channels?area=...` | 频道列表 |
-| POST | `https://gateway.oopz.cn/area/v2/channel/enter` | 进入频道 |
-| GET | `https://gateway.oopz.cn/area/v3/channel/setting/info?channel=...` | 频道设置信息 |
-| POST | `https://gateway.oopz.cn/area/v3/channel/setting/edit` | 编辑频道设置 |
-| GET | `https://gateway.oopz.cn/area/v3/search/areaPrivateSettingMembers?area=...&keyword&page=1` | 搜索私密成员 |
-| POST | `https://gateway.oopz.cn/client/v1/area/v1/channel/v1/create` | 创建频道 |
-| DELETE | `https://gateway.oopz.cn/client/v1/area/v1/channel/v1/delete?channel=...&area=...` | 删除频道 |
-| POST | `https://gateway.oopz.cn/area/v2/getUserAreaNicknames` | 获取区域昵称 |
-| POST | `https://gateway.oopz.cn/area/v3/channel/membersByChannels` | 频道在线成员（按频道分组） |
-| GET | `https://gateway.oopz.cn/area/v3/userDetail?area=...&target=...` | 区域内用户详情 |
-| GET | `https://gateway.oopz.cn/area/v3/role/canGiveList?area=...&target=...` | 可授予身份组列表 |
-| POST | `https://gateway.oopz.cn/area/v3/role/editUserRole` | 编辑用户身份组 |
-| GET | `https://gateway.oopz.cn/client/v1/area/v1/areaSettings/v1/blocks?area=...` | 域封禁列表 |
-| PATCH | `https://gateway.oopz.cn/client/v1/area/v1/unblock?area=...&target=...` | 解除域封禁 |
-| POST | `https://gateway.oopz.cn/area/v3/remove?area=...&target=...` | 移出域 |
+| GET | `/general/v1/speech` | 每日一句 |
+| PUT | `/rtc/v1/cos/v1/signedUploadUrl` | 获取对象存储签名上传 URL |
 
-#### 其他
+### Web 客户端补充路径
 
-| 方法 | 路径 | 说明 |
+下列路径存在于当前 Web 客户端，但本文档暂未给出完整请求/响应字段：
+
+| 方法 | 路径 | 用途 |
 |------|------|------|
-| GET | `https://gateway.oopz.cn/userSubscribeArea/v1/list` | 已加入域列表 |
-| POST | `https://tracking.oopz.cn/events/push` | 埋点事件上报 |
-| GET | `https://gateway.oopz.cn/task/v1/bounty/list` | 赏金任务列表 |
-| GET | `https://gateway.oopz.cn/advertisement/v2/list` | 广告列表 |
-| GET | `https://gateway.oopz.cn/discovery/v3/home?needTop=1&areaCount=20` | 发现页首页 |
-| GET | `https://gateway.oopz.cn/shop/v1/preview?previewType=DIAMOND` | 商店预览 |
-| GET | `https://gateway.oopz.cn/client/v1/interaction/v1/list` | 互动列表 |
-| GET | `https://gateway.oopz.cn/client/v1/sticker/v1/list` | 贴纸列表 |
-| GET | `https://gateway.oopz.cn/client/v1/roaming/v1/emojis` | 漫游表情 |
-| GET | `https://gateway.oopz.cn/im/systemMessage/v1/unreadCount` | 系统消息未读数 |
-| GET | `https://gateway.oopz.cn/diamond/v1/remain` | 钻石余额 |
+| GET | `/health` | Gateway 健康检查 |
+| GET | `/general/v3/settings` | 通用设置 |
+| POST | `/im/session/v1/sessions` | 会话列表 |
+| POST | `/im/session/v1/areasUnread` | 域未读数 |
+| POST | `/im/session/v1/areasMentionUnread` | 域 @ 未读数 |
+| GET | `/diamond/v1/remain` | 钻石余额 |
+| GET | `/shop/v1/preview` | 商店预览 |
+| GET | `/uni/advertisement/v1/list` | 广告列表 |
+| GET | `/uni/officialSticker/v2/list` | 官方贴纸列表 |
 
-### Web 端请求头样例
-
-所有抓包接口都需要标准 Oopz 头；下表记录了 Web 端常见值，便于复现：
+### Web 请求头样例
 
 | Header | 说明 | 示例值 |
 |--------|------|--------|
-| `content-type` | 固定 | `application/json;charset=utf-8` |
-| `origin` | 固定 | `https://web.oopz.cn` |
-| `oopz-app-version-number` | 应用版本号 | `73817` |
+| `content-type` | JSON 类型 | `application/json;charset=utf-8` |
+| `origin` | Web 来源 | `https://web.oopz.cn` |
+| `oopz-app-version-number` | 当前客户端版本号 | `<client-version>` |
 | `oopz-channel` | 渠道 | `Web` |
-| `oopz-device-id` | 设备 ID（UUID） | `b2b0ecba-1838-4df0-a63f-e761b43b97af` |
+| `oopz-device-id` | 设备 ID | `<device-uuid>` |
 | `oopz-platform` | 平台 | `windows` |
-| `oopz-request-id` | 请求唯一 ID | 每次请求不同 |
-| `oopz-sign` | 请求签名 | Base64 长字符串 |
-| `oopz-time` | 毫秒时间戳 | `1772429988449` |
+| `oopz-request-id` | 每次请求唯一的 UUID | `<request-uuid>` |
+| `oopz-sign` | 请求签名 | `<base64-signature>` |
+| `oopz-time` | 毫秒时间戳 | `<timestamp-ms>` |
 | `oopz-web` | 是否 Web | `true` |
-| `oopz-person` | 当前用户 UID | 登录后必带 |
-| `oopz-signature` | JWT | 登录后必带 |
+| `oopz-person` | 当前用户 UID | `<person-uid>` |
+| `oopz-signature` | 登录 JWT | `<jwt>` |
 
-### 备注
-
-- `client/v1/login/v1/autoLogin` 的 `code` 字段即登录 JWT，后续请求放到 `oopz-signature`。
-- `im/session/v2/sendGimMessage` 为 Web 端可见的频道消息包裹格式；本 Bot 当前常用实现仍是 `v1/sendGimMessage`。
-- `area/v3/channel/setting/info` 的 Web 抓包查询参数仅包含 `channel`，未见必须传 `area`。
+`oopz-app-version-number` 应跟随当前客户端，不应固定为历史版本号。`area/v3/channel/setting/info` 的 query 只需 `channel`，不需要 `area`。

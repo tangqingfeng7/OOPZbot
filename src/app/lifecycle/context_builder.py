@@ -11,6 +11,7 @@ from onebot_v11.sdk_integration import OneBotV11Supplement, find_sdk_onebot_v11
 from oopz.errors import SensitiveContentError
 from oopz.name_resolver import get_resolver
 from oopz.sdk_gateway import AsyncOopzGateway
+from services.area_invite_inbox import capture_private_area_invites
 from services.area_join_notifier import AreaJoinNotifier, start_area_join_notifier
 
 logger = get_logger("AppContext")
@@ -44,6 +45,18 @@ class AppContextBuilder:
 
             dispatcher.submit(key, handle)
 
+        async def dispatch_private_message(message: dict) -> None:
+            current = gateway
+            if current is None:
+                logger.warning("SDK 网关尚未就绪，忽略一条启动期私信")
+                return
+
+            async def handle() -> None:
+                await capture_private_area_invites(current, message)
+
+            sender_id = str(message.get("person") or "")
+            dispatcher.submit(f"__private_invite__:{sender_id}", handle)
+
         async def dispatch_other_event(event: int, data: dict) -> None:
             current = notifier
             if current is not None:
@@ -52,6 +65,7 @@ class AppContextBuilder:
         try:
             gateway = await AsyncOopzGateway.create(
                 on_chat_message=dispatch_chat,
+                on_private_message=dispatch_private_message,
                 on_other_event=dispatch_other_event,
             )
             voice = SdkVoiceController(

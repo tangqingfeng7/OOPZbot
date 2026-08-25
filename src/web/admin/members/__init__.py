@@ -6,9 +6,25 @@
 
 from fastapi import APIRouter
 
-from . import _area_configs, _bot_admins, _channels, _members, _messaging
+from . import (
+    _area_configs,
+    _area_invites,
+    _area_membership,
+    _bot_admins,
+    _channels,
+    _members,
+    _messaging,
+)
 
-_SUBMODULES = (_members, _bot_admins, _channels, _messaging, _area_configs)
+_SUBMODULES = (
+    _members,
+    _bot_admins,
+    _channels,
+    _messaging,
+    _area_configs,
+    _area_invites,
+    _area_membership,
+)
 
 router = APIRouter()
 for _module in _SUBMODULES:

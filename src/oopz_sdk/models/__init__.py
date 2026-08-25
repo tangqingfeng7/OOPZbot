@@ -1,4 +1,4 @@
-from .area import (JoinedAreaInfo, AreaInfo, ChannelGroupInfo, AreaMembersPage,
+from .area import (JoinedAreaInfo, AreaInviteDetail, AreaInfo, ChannelGroupInfo, AreaMembersPage,
                    AreaUserDetail, RoleInfo, AreaMemberInfo, AreaOperateLogEntry,
                     NamePopulationResult)
 from .attachment import (
@@ -25,6 +25,7 @@ JsonList = list[object]
 
 __all__ = [
     "JoinedAreaInfo",
+    "AreaInviteDetail",
     "AreaInfo",
     "Attachment",
     "AudioAttachment",

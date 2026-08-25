@@ -255,9 +255,9 @@ NeteaseCloud API (:3000)
 
 ## 数据库表结构
 
-下表是 `src/core/database.py::init_database()` 在应用启动时创建的 10 张核心表。
+下表是 `src/core/database.py::init_database()` 在应用启动时创建的 11 张核心表。
 Steam 插件按需创建自己的表，OneBot v11 的 ID 与消息映射由 SDK 存在独立的
-`data/onebot_v11.sqlite3`，两者都不计入这 10 张。
+`data/onebot_v11.sqlite3`，两者都不计入这 11 张。
 
 | 表名 | 用途 | 关键字段 |
 |------|------|----------|
@@ -271,6 +271,7 @@ Steam 插件按需创建自己的表，OneBot v11 的 ID 与消息映射由 SDK 
 | `scheduled_messages` | Admin 配置的定时频道消息 | name, cron_hour, cron_minute, weekdays, channel_id, area_id, enabled |
 | `reminders` | 用户定时提醒及执行状态 | user_id, channel_id, area_id, message_text, fire_at, fired |
 | `message_stats` | 按日期、频道、域和用户聚合的消息计数 | date, channel_id, area_id, user_id, message_count |
+| `area_invite_requests` | Bot 私信中识别出的待管理员审批域邀请 | code, sender_id, area_id, state, received_at, processed_at |
 
 ## Web 播放器
 

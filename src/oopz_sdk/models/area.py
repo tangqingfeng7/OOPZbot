@@ -38,6 +38,25 @@ class JoinedAreaInfo(BaseModel):
         return cls.model_validate(data)
 
 
+class AreaInviteDetail(BaseModel):
+    invite_status: str = Field(default="", alias="status")
+    invite_uid: str = Field(default="", alias="inviteUid")
+    area_id: str = Field(default="", alias="area")
+    area_name: str = Field(default="", alias="areaName")
+    area_avatar: str = Field(default="", alias="areaAvatar")
+    channel_id: str = Field(default="", alias="channel")
+    channel_type: str = Field(default="", alias="channelType")
+    channel_name: str = Field(default="", alias="channelName")
+    banner: str = ""
+    is_area_invite: bool = Field(default=False, alias="isAreaInvite")
+
+    @classmethod
+    def from_api(cls, data: Mapping[str, Any]) -> "AreaInviteDetail":
+        if not isinstance(data, Mapping):
+            raise OopzApiError("invalid area invite payload: expected object", payload=data)
+        return cls.model_validate(data)
+
+
 class AreaRoleInfo(BaseModel):
     category_keys: list[str] = Field(default_factory=list, alias="categoryKeys")
     is_owner: bool = Field(default=False, alias="isOwner")

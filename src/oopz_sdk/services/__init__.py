@@ -49,8 +49,15 @@ class BaseService:
             *,
             params: Mapping[str, Any] | None = None,
             body: Mapping[str, Any] | list | None = None,
+            retry_auth: bool = True,
     ) -> Any:
-        return await self.transport.request_data(method, path, params=params, body=body)
+        return await self.transport.request_data(
+            method,
+            path,
+            params=params,
+            body=body,
+            retry_auth=retry_auth,
+        )
 
     async def _request_data_with_retry(
             self,

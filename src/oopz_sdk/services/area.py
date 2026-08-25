@@ -134,6 +134,10 @@ class AreaService(BaseService):
                 "offset": str(max(0, int(offset))),
                 "opTypes": json.dumps(op_types or [], ensure_ascii=False, separators=(",", ":")),
             },
+            # 该接口会在账号没有域管理权限时返回 401。若按普通鉴权失效处理，
+            # 每轮轮询都会强制重登并轮换 token，连带使正在播放的语音成员状态
+            # 失效。这里只上抛 401，由 AreaJoinNotifier 判定并停掉无权限域。
+            retry_auth=False,
         )
         logs = data.get("logs", {})
         if not isinstance(logs, list):
@@ -152,6 +156,18 @@ class AreaService(BaseService):
         params = {"area": area}
         data = await self._request_data("GET", url_path, params=params)
         return models.AreaInfo.from_api(data)
+
+    async def get_invite_detail(self, code: str) -> models.AreaInviteDetail:
+        """根据公开邀请短码查询域与频道信息。"""
+        code = str(code or "").strip()
+        if not code:
+            raise ValueError("code is required for get_invite_detail")
+        data = await self._request_data(
+            "GET",
+            "/invite/v1/codeDetail",
+            params={"code": code},
+        )
+        return models.AreaInviteDetail.from_api(data)
 
     async def edit_area_name(self, area: str, name: str) -> models.OperationResult:
         if area.strip() == "":
@@ -342,7 +358,7 @@ class AreaService(BaseService):
         data = await self._request_data(
             "DELETE",
             "/client/v1/area/v1/quit",
-            body={"area": area},
+            params={"area": area},
         )
         return models.OperationResult.from_api(data)
 

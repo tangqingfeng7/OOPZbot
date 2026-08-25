@@ -50,6 +50,47 @@ class DeadCodeCleanupContractsTest(unittest.TestCase):
             "Python 调用了语音页未导出的方法",
         )
 
+    def test_agora_page_reapplies_saved_volume_to_every_new_track(self) -> None:
+        """音量恢复发生在首条音轨创建前，且每首歌都会新建音轨。
+
+        页面必须在无 track 时也记住音量，并在新 track 开始前应用，
+        否则实际音量会一直是 Agora 默认值，直到用户再拖一次滑块。
+        """
+        page = _read("src/oopz_sdk/assets/voice/agora_player.html")
+        publish_start = page.index("async function publishTrackAsPlayback")
+        publish_end = page.index("window.agoraPlayAudio", publish_start)
+        publish_body = page[publish_start:publish_end]
+        set_volume_start = page.index("window.agoraSetVolume")
+        set_volume_end = page.index("window.agoraGetCurrentTime", set_volume_start)
+        set_volume_body = page[set_volume_start:set_volume_end]
+
+        self.assertIn("let _currentVolume = 100;", page)
+        self.assertIn("localTrack.setVolume(_currentVolume);", publish_body)
+        self.assertLess(
+            publish_body.index("localTrack.setVolume(_currentVolume);"),
+            publish_body.index("localTrack.startProcessAudioBuffer"),
+        )
+        self.assertIn("_currentVolume = Math.max(0, Math.min(100, parsed));", set_volume_body)
+        self.assertIn("return { ok: true, pending: true, volume: _currentVolume };", set_volume_body)
+
+    def test_agora_identity_uses_sdk_data_stream_before_raw_websocket(self) -> None:
+        """身份心跳必须走 Agora SDK 的 data stream 请求。
+
+        直接 ``ws.send`` 只说明浏览器把字节写进了 socket，不能证明 Agora
+        网关接受了身份包。服务端随后会把 bot 从语音成员列表移除，表现为仍能
+        听到音乐但频道里看不到 bot。旧 SDK 的裸 WebSocket 仅保留为兼容回退。
+        """
+        page = _read("src/oopz_sdk/assets/voice/agora_player.html")
+        send_start = page.index("async function sendVoiceStateRaw")
+        send_end = page.index("async function sendCurrentVoiceState", send_start)
+        send_body = page[send_start:send_end]
+
+        native_send = send_body.index("client.sendStreamMessage")
+        raw_fallback = send_body.index("ws.send")
+        self.assertLess(native_send, raw_fallback)
+        self.assertIn('transport: "agora-client"', send_body)
+        self.assertIn('transport: "raw-websocket-fallback"', send_body)
+
     def test_plugin_runtime_accessor_comes_from_shared_runtime_module(self) -> None:
         source = _read("src/web/admin/plugins.py")
 

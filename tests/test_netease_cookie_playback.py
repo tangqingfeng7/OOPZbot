@@ -176,6 +176,56 @@ class NeteaseCookiePlaybackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(liked_ids, [])
         self.assertEqual(http.simple_calls, [("POST", "http://netease.example/likelist")])
 
+    async def test_cloud_song_placeholder_falls_back_to_authenticated_cloud_lyric(self) -> None:
+        cloud_lrc = "[00:01.00]故事的小黄花\n[00:05.00]从出生那年就飘着"
+
+        def responder(method, url, payload):
+            if url.endswith("/lyric/new"):
+                return {"code": 200, "lrc": {"lyric": "[00:00.00]暂无歌词"}}
+            if url.endswith("/login/status"):
+                return {"data": {"profile": {"userId": 399919346}}}
+            if url.endswith("/cloud/lyric/get"):
+                return {"code": 200, "lrc": cloud_lrc}
+            return {"code": 404}
+
+        client, http = self._client(responder)
+
+        lyric, tlyric = await client.get_lyrics(555816758)
+
+        self.assertEqual(lyric, cloud_lrc)
+        self.assertIsNone(tlyric)
+        self.assertEqual(
+            http.simple_calls,
+            [
+                ("GET", "http://netease.example/lyric/new"),
+                ("POST", "http://netease.example/login/status"),
+                ("POST", "http://netease.example/cloud/lyric/get"),
+            ],
+        )
+        _method, _url, cloud_payload, cloud_headers = http.calls[-1]
+        self.assertEqual(cloud_payload["uid"], 399919346)
+        self.assertEqual(cloud_payload["sid"], 555816758)
+        self.assertEqual(cloud_payload["cookie"], "MUSIC_U=abc")
+        self.assertEqual(cloud_headers["Cookie"], "MUSIC_U=abc")
+
+    async def test_regular_lyric_does_not_call_cloud_endpoints(self) -> None:
+        normal_lrc = "[00:01.00]一首普通歌曲的歌词"
+
+        def responder(method, url, payload):
+            return {
+                "code": 200,
+                "lrc": {"lyric": normal_lrc},
+                "tlyric": {"lyric": "[00:01.00]translated"},
+            }
+
+        client, http = self._client(responder)
+
+        lyric, tlyric = await client.get_lyrics(186016)
+
+        self.assertEqual(lyric, normal_lrc)
+        self.assertEqual(tlyric, "[00:01.00]translated")
+        self.assertEqual(http.simple_calls, [("GET", "http://netease.example/lyric/new")])
+
     async def test_get_song_url_rejects_free_trial_audio(self) -> None:
         def responder(method, url, payload):
             if method == "POST":

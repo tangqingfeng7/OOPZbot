@@ -575,10 +575,14 @@ async def _run_join_poll_loop(
             for area in areas:
                 if stop_event.is_set():
                     return
-                if source == EVENT_SOURCE_OPERATE_LOGS and area in operate_log_disabled_areas:
-                    continue
                 area_id, channel = await resolve_area_channel(area)
                 if not area_id or not channel:
+                    continue
+                # ``area`` may only be the configured lookup key. When no explicit
+                # default channel exists, ``resolve_area_channel`` can map it to the
+                # account's actual default area. Permission failures are recorded by
+                # that resolved id, so the disabled check must use the same id too.
+                if source == EVENT_SOURCE_OPERATE_LOGS and area_id in operate_log_disabled_areas:
                     continue
                 area_cfg = registry.get(area_id)
                 if source == EVENT_SOURCE_MEMBER_SNAPSHOT:
