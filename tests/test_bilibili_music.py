@@ -1,14 +1,19 @@
+import asyncio
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+
+from domain.playback import AreaId, PlaybackSessionSnapshot  # noqa: E402
+from music.music import MusicHandler  # noqa: E402
+
 
 class _FakeResponse:
     """模拟 aiohttp 响应：既能被 async with 使用，也支持 release/raise_for_status。"""
@@ -107,6 +112,49 @@ class BilibiliMusicTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(url, "https://high.example/audio.m4s")
         self.assertEqual(calls[0][0], self.module._API_VIDEO_VIEW)
         self.assertEqual(calls[1][0], self.module._API_VIDEO_PLAYURL)
+
+    def test_stream_headers_use_matching_bilibili_page(self) -> None:
+        bili = self.module.BilibiliMusic()
+
+        video_headers = bili.get_stream_headers("BV1test")
+        audio_headers = bili.get_stream_headers("au123")
+
+        self.assertEqual(video_headers["Referer"], "https://www.bilibili.com/video/BV1test")
+        self.assertEqual(audio_headers["Referer"], "https://www.bilibili.com/audio/au123")
+        self.assertEqual(video_headers["User-Agent"], self.module.USER_AGENT)
+
+    async def test_stream_headers_reach_voice_download(self) -> None:
+        bili = self.module.BilibiliMusic()
+        handler = MusicHandler.__new__(MusicHandler)
+        handler._playback_lock = asyncio.Lock()
+        handler._voice_channel_area = "area-A"
+        handler._voice_channel_id = "voice-A"
+        handler._playback_generation = 1
+        handler._play_start_time = 0
+        handler._play_duration = 120
+
+        queue = Mock()
+        queue.clear_current = AsyncMock()
+        queue.clear_play_state = AsyncMock()
+        handler._get_queue = Mock(return_value=queue)
+
+        voice = Mock(available=True)
+        voice.play_audio = AsyncMock(return_value={"ok": True})
+        handler.voice = voice
+        handler.platforms = Mock()
+        handler.platforms.get.return_value = bili
+
+        await handler._stream_to_voice_channel(
+            "https://cdn.example/audio.m4s",
+            "song",
+            PlaybackSessionSnapshot(AreaId("area-A"), "voice-A", 1),
+            "BV1test",
+            "bilibili",
+        )
+
+        headers = voice.play_audio.await_args.kwargs["headers"]
+        self.assertEqual(headers["Referer"], "https://www.bilibili.com/video/BV1test")
+        self.assertEqual(headers["User-Agent"], self.module.USER_AGENT)
 
     async def test_get_retries_once_after_412(self) -> None:
         bili = self.module.BilibiliMusic()

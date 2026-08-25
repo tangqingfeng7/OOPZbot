@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from typing import Any
 
 from core.http_constants import HTTP_TIMEOUT_DOWNLOAD
@@ -104,11 +105,11 @@ class SdkVoiceController:
         self._cancel_playback_watch()
         await self._voice.leave()
 
-    def preload_audio(self, url: str) -> None:
+    def preload_audio(self, url: str, *, headers: Mapping[str, str] | None = None) -> None:
         url = str(url or "").strip()
         if not url or url in self._preloaded or url in self._preload_tasks:
             return
-        coroutine = self._preload(url)
+        coroutine = self._preload(url, headers=headers)
         task = (
             self._supervisor.create(coroutine, name="voice-audio-preload")
             if self._supervisor is not None
@@ -117,13 +118,14 @@ class SdkVoiceController:
         self._preload_tasks[url] = task
         task.add_done_callback(lambda _task, key=url: self._preload_tasks.pop(key, None))
 
-    async def _preload(self, url: str) -> None:
+    async def _preload(self, url: str, *, headers: Mapping[str, str] | None = None) -> None:
         try:
             payload = await asyncio.to_thread(
                 self._fetcher.fetch,
                 url,
                 max_bytes=MAX_AUDIO_BYTES,
                 timeout=(10, HTTP_TIMEOUT_DOWNLOAD),
+                headers=headers,
             )
         except Exception as exc:
             logger.debug("语音预加载失败: %s", exc)
@@ -133,7 +135,13 @@ class SdkVoiceController:
         while len(self._preloaded) > 3:
             self._preloaded.popitem(last=False)
 
-    async def play_audio(self, url: str, on_started=None) -> dict[str, Any]:
+    async def play_audio(
+        self,
+        url: str,
+        on_started=None,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         url = str(url or "").strip()
         if not url:
             raise ValueError("音频 URL 不能为空")
@@ -149,6 +157,7 @@ class SdkVoiceController:
                 url,
                 max_bytes=MAX_AUDIO_BYTES,
                 timeout=(10, HTTP_TIMEOUT_DOWNLOAD),
+                headers=headers,
             )
             logger.debug("音频未命中预加载，现下载耗时 %.1fs", time.monotonic() - started)
         data, mime_type = cached

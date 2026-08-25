@@ -60,6 +60,22 @@ class SdkVoiceControllerTest(unittest.IsolatedAsyncioTestCase):
         self.voice.play_bytes.assert_awaited_once_with(b"audio", mime_type="audio/mpeg")
         self.assertTrue(self.controller.is_playing)
 
+    async def test_stream_headers_are_used_for_preload_and_direct_download(self) -> None:
+        headers = {
+            "User-Agent": "browser",
+            "Referer": "https://www.bilibili.com/video/BV1test",
+        }
+        self.controller._fetcher.fetch = Mock(return_value=(b"audio", "audio/mp4"))
+
+        self.controller.preload_audio("https://cdn.example/preloaded.m4s", headers=headers)
+        await asyncio.gather(*self.controller._preload_tasks.values())
+        await self.controller.play_audio("https://cdn.example/preloaded.m4s", headers=headers)
+        await self.controller.play_audio("https://cdn.example/direct.m4s", headers=headers)
+
+        self.assertEqual(self.controller._fetcher.fetch.call_count, 2)
+        for call in self.controller._fetcher.fetch.call_args_list:
+            self.assertEqual(call.kwargs["headers"], headers)
+
     async def test_playback_awaits_async_started_callback(self) -> None:
         self.controller._fetcher.fetch = Mock(return_value=(b"audio", "audio/ogg"))
         callback = AsyncMock()
