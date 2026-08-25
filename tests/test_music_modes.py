@@ -18,6 +18,7 @@ from music.music import (  # noqa: E402
     PLAY_MODE_LIST,
     PLAY_MODE_SHUFFLE,
     PLAY_MODE_SINGLE,
+    PLAY_MODE_STOP,
     MusicHandler,
 )
 
@@ -81,6 +82,34 @@ class MusicModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next_song["name"], "shuffle-song")
         self.queue.pop_random.assert_called_once_with()
         self.queue.play_next.assert_not_called()
+
+    async def test_stop_mode_stops_after_current_song_finishes(self) -> None:
+        self.queue.get_play_mode.return_value = PLAY_MODE_STOP
+
+        next_song, source = await self.handler._dequeue_next_song(
+            natural_end=True,
+            current_song={"name": "current"},
+        )
+
+        self.assertIsNone(next_song)
+        self.assertEqual(source, PLAY_MODE_STOP)
+        self.queue.clear_queue.assert_awaited_once_with()
+        self.queue.play_next.assert_not_called()
+        self.handler.netease.get_user_id.assert_not_called()
+
+    async def test_stop_mode_still_allows_manual_next(self) -> None:
+        self.queue.get_play_mode.return_value = PLAY_MODE_STOP
+        self.queue.play_next.return_value = {"name": "next"}
+
+        next_song, source = await self.handler._dequeue_next_song(
+            natural_end=True,
+            current_song=None,
+        )
+
+        self.assertEqual(next_song, {"name": "next"})
+        self.assertEqual(source, "queue")
+        self.queue.clear_queue.assert_not_called()
+        self.queue.play_next.assert_awaited_once_with()
 
     async def test_autoplay_mode_falls_back_to_liked_song(self) -> None:
         self.queue.get_play_mode.return_value = PLAY_MODE_AUTOPLAY

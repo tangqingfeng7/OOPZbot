@@ -93,7 +93,13 @@ liked_ids_cache: list = []
 PLAY_MODE_LIST = "list"
 PLAY_MODE_SINGLE = "single"
 PLAY_MODE_SHUFFLE = "shuffle"
-_VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE}
+PLAY_MODE_STOP = "stop"
+_VALID_PLAY_MODES = {
+    PLAY_MODE_LIST,
+    PLAY_MODE_SINGLE,
+    PLAY_MODE_SHUFFLE,
+    PLAY_MODE_STOP,
+}
 
 
 async def _read_play_mode(redis_client: RedisDataStore, area: str = "") -> str:
@@ -448,6 +454,7 @@ async def api_status(area: str = Query("", description="域 ID，用于多域隔
             "paused": paused,
             "loading": loading,
             "id": song_id,
+            "platform": current.get("platform") or "netease",
             "name": current.get("name", ""),
             "artists": current.get("artists", ""),
             "album": current.get("album", ""),
@@ -516,6 +523,7 @@ async def api_queue(area: str = Query("", description="域 ID，用于多域隔�
                     dur_text = raw_dur
             queue.append({
                 "id": song.get("song_id") or song.get("id"),
+                "platform": song.get("platform") or "netease",
                 "name": song.get("name", ""),
                 "artists": song.get("artists", ""),
                 "cover": song.get("cover", ""),
