@@ -134,6 +134,10 @@ class AreaService(BaseService):
                 "offset": str(max(0, int(offset))),
                 "opTypes": json.dumps(op_types or [], ensure_ascii=False, separators=(",", ":")),
             },
+            # 该接口会在账号没有域管理权限时返回 401。若按普通鉴权失效处理，
+            # 每轮轮询都会强制重登并轮换 token，连带使正在播放的语音成员状态
+            # 失效。这里只上抛 401，由 AreaJoinNotifier 判定并停掉无权限域。
+            retry_auth=False,
         )
         logs = data.get("logs", {})
         if not isinstance(logs, list):

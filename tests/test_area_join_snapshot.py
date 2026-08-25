@@ -1,7 +1,8 @@
 import sys
+import asyncio
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -11,11 +12,13 @@ if str(SRC_ROOT) not in sys.path:
 from services.area_join_notifier import (  # noqa: E402
     OPERATE_LOG_MEMBER_OP_TYPES,
     AreaOperateLogCursor,
+    _run_join_poll_loop,
     fetch_member_uid_snapshot,
     fetch_operate_log_changes,
     is_operate_log_permission_denied,
     parse_area_operate_log_changes,
 )
+from oopz_sdk.services.area import AreaService  # noqa: E402
 
 
 def _members(start: int, count: int) -> list[dict]:
@@ -162,6 +165,69 @@ class AreaOperateLogChangeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(changes)
         self.assertFalse(rate_limited)
         self.assertTrue(is_operate_log_permission_denied(error))
+
+
+class AreaOperateLogServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_permission_scoped_401_does_not_enable_global_auth_retry(self) -> None:
+        transport = Mock()
+        transport.request_data = AsyncMock(return_value={"logs": []})
+        service = AreaService(Mock(), Mock(), transport, Mock(), Mock())
+
+        logs = await service.get_area_operate_logs(
+            "area-1",
+            offset=0,
+            op_types=["AREA_SUBSCRIBE", "AREA_UNSUBSCRIBE"],
+        )
+
+        self.assertEqual(logs, [])
+        kwargs = transport.request_data.await_args.kwargs
+        self.assertFalse(kwargs["retry_auth"])
+        self.assertEqual(kwargs["params"]["area"], "area-1")
+
+
+class AreaOperateLogPollingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_disabled_check_uses_resolved_area_id(self) -> None:
+        """配置键被解析到实际域后，连续 401 只请求到禁用阈值。"""
+        sender = Mock()
+        registry = Mock()
+        registry.get_all_area_ids.return_value = ["configured-alias"]
+        registry.get_default_channel.return_value = ""
+        registry.get.return_value = Mock()
+        stop_event = asyncio.Event()
+        wait_count = 0
+
+        async def wait_six_rounds(event: asyncio.Event, _seconds: float) -> None:
+            nonlocal wait_count
+            wait_count += 1
+            if wait_count >= 6:
+                event.set()
+
+        with (
+            patch("core.area_config.get_area_registry", return_value=registry),
+            patch(
+                "services.area_join_notifier._get_default_area_channel",
+                AsyncMock(return_value=("resolved-area", "text-channel")),
+            ),
+            patch(
+                "services.area_join_notifier.fetch_operate_log_changes",
+                AsyncMock(return_value=(None, False, "HTTP 401")),
+            ) as fetch_logs,
+            patch(
+                "services.area_join_notifier._wait_or_stop",
+                side_effect=wait_six_rounds,
+            ),
+        ):
+            await _run_join_poll_loop(
+                sender,
+                "welcome {name}",
+                2,
+                "bot-uid",
+                event_source="operate_logs",
+                stop_event=stop_event,
+            )
+
+        self.assertEqual(fetch_logs.await_count, 5)
+        fetch_logs.assert_awaited_with(sender, "resolved-area")
 
 
 if __name__ == "__main__":

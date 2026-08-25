@@ -134,6 +134,7 @@ async function decodeBase64ToAudioBuffer(base64Data) {
 let client = null;
 let _state = "idle";
 let _playGen = 0;
+let _currentVolume = 100;
 
 let currentAgoraUid = null;
 let currentOopzUid = null;
@@ -176,12 +177,6 @@ function buildVoiceStatePayload(oopzUid, agoraUid, micMuted, speakerMuted) {
 }
 
 async function sendVoiceStateRaw(oopzUid, agoraUid, micMuted, speakerMuted, repeat = 2) {
-  const ws = await waitForAgoraSignalWs(3000);
-
-  if (!ws) {
-    return { ok: false, error: "no open agora ws" };
-  }
-
   if (!oopzUid) {
     return { ok: false, error: "oopzUid is required" };
   }
@@ -197,6 +192,36 @@ async function sendVoiceStateRaw(oopzUid, agoraUid, micMuted, speakerMuted, repe
       micMuted,
       speakerMuted
     );
+
+    // AgoraRTC_N.js exposes sendStreamMessage on the live client. Use it so
+    // the SDK assigns the correct signaling request id/timestamp and waits for
+    // the gateway acknowledgement. Writing JSON straight to the captured
+    // WebSocket can appear successful locally while Oopz never receives the
+    // identity, which leaves audio audible but removes the bot from the voice
+    // member list shortly afterwards.
+    if (client && typeof client.sendStreamMessage === "function") {
+      const message = JSON.stringify(statePayload);
+      for (let i = 0; i < repeat; i++) {
+        await client.sendStreamMessage({
+          payload: message,
+          syncWithAudio: false,
+        });
+      }
+      console.log("[voice state]", statePayload, "transport=agora-client");
+      return {
+        ok: true,
+        transport: "agora-client",
+        payload: statePayload,
+      };
+    }
+
+    // Compatibility fallback for older SDK builds that do not expose the
+    // client method. A failed native send must not fall through here: its
+    // exception is returned to Python so Voice.join can roll the join back.
+    const ws = await waitForAgoraSignalWs(3000);
+    if (!ws) {
+      return { ok: false, error: "no native data stream API or open agora ws" };
+    }
 
     const payload = btoa(JSON.stringify(statePayload));
     const sendTs = Math.floor(performance.now());
@@ -219,6 +244,7 @@ async function sendVoiceStateRaw(oopzUid, agoraUid, micMuted, speakerMuted, repe
 
     return {
       ok: true,
+      transport: "raw-websocket-fallback",
       ws: ws.url,
       payload: statePayload,
     };
@@ -456,6 +482,9 @@ async function publishTrackAsPlayback(localTrack, gen) {
   activePlayback = playback;
   bindPlaybackEvents(playback);
 
+  // Every song uses a newly-created Agora track. Apply the persisted volume
+  // before audio starts so the first samples do not play at the SDK default.
+  localTrack.setVolume(_currentVolume);
   localTrack.startProcessAudioBuffer({ loop: false });
   await client.publish([localTrack]);
 
@@ -617,14 +646,22 @@ window.agoraSeek = (time) => {
 };
 
 window.agoraSetVolume = (vol) => {
+  const parsed = Number(vol);
+  if (!Number.isFinite(parsed)) {
+    return { ok: false, error: "invalid volume" };
+  }
+
+  _currentVolume = Math.max(0, Math.min(100, parsed));
   const track = getCurrentTrack();
   if (!track) {
-    return { ok: false, error: "no track" };
+    // Joining the voice channel happens before the first audio track exists.
+    // Keep the value so publishTrackAsPlayback can apply it to that track.
+    return { ok: true, pending: true, volume: _currentVolume };
   }
 
   try {
-    track.setVolume(Math.max(0, Math.min(100, Number(vol))));
-    return { ok: true };
+    track.setVolume(_currentVolume);
+    return { ok: true, volume: _currentVolume };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   }
@@ -664,6 +701,7 @@ window.agoraGetStatus = () => {
     currentAgoraUid,
     currentMicMuted,
     currentSpeakerMuted,
+    currentVolume: _currentVolume,
     hasTrack: !!track,
     currentTime,
     duration,

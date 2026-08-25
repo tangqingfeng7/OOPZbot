@@ -203,6 +203,7 @@ class HttpTransport(BaseTransport):
         *,
         params: Mapping[str, Any] | None = None,
         body: Mapping[str, Any] | list | None = None,
+        retry_auth: bool = True,
     ) -> Any:
         # 在签发请求前快照 token 版本：若请求在途期间凭据被后台续期轮换，则失效重试
         # 时直接用当前（已更新的）token，无需再次重登。
@@ -238,7 +239,7 @@ class HttpTransport(BaseTransport):
                     response=resp,
                 )
                 # 鉴权失效时，若 AuthManager 能续期则重登并重试一次；不可恢复则上报。
-                if auth_manager is not None and not auth_retry_used:
+                if retry_auth and auth_manager is not None and not auth_retry_used:
                     auth_retry_used = True
                     if await auth_manager.handle_auth_error(
                         auth_error, observed_token_version=observed_token_version
@@ -293,8 +294,15 @@ class HttpTransport(BaseTransport):
         *,
         params: Mapping[str, Any] | None = None,
         body: Mapping[str, Any] | list | None = None,
+        retry_auth: bool = True,
     ) -> Any:
-        json_data = await self.request_json(method, path, params=params, body=body)
+        json_data = await self.request_json(
+            method,
+            path,
+            params=params,
+            body=body,
+            retry_auth=retry_auth,
+        )
         if "data" not in json_data:
             raise OopzApiError(
                 "response JSON does not contain 'data' field",
