@@ -1,5 +1,5 @@
-import sys
 import asyncio
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,6 +9,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from oopz_sdk.services.area import AreaService  # noqa: E402
 from services.area_join_notifier import (  # noqa: E402
     OPERATE_LOG_MEMBER_OP_TYPES,
     AreaOperateLogCursor,
@@ -18,7 +19,6 @@ from services.area_join_notifier import (  # noqa: E402
     is_operate_log_permission_denied,
     parse_area_operate_log_changes,
 )
-from oopz_sdk.services.area import AreaService  # noqa: E402
 
 
 def _members(start: int, count: int) -> list[dict]:

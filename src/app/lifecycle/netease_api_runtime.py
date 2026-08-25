@@ -93,9 +93,11 @@ class NeteaseApiRuntime:
         ).rstrip("/")
         timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_HEALTH)
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-                async with session.get(f"{base_url}/") as response:
-                    return response.status < 500
+            async with (
+                aiohttp.ClientSession(timeout=timeout, trust_env=False) as session,
+                session.get(f"{base_url}/") as response,
+            ):
+                return response.status < 500
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return False
 
