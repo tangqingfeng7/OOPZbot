@@ -114,6 +114,12 @@ class _FakeRedis:
                 removed += 1
         return removed
 
+    async def lrange(self, key, start, end):
+        values = list(self.store.get(key, []))
+        if end == -1:
+            return values[start:]
+        return values[start:end + 1]
+
     def pipeline(self, transaction=False):
         return _FakeRedisPipeline(self)
 
@@ -383,6 +389,52 @@ class WebPlayerAdminTest(unittest.IsolatedAsyncioTestCase):
         data = response.json()
         self.assertTrue(data["playing"])
         self.assertEqual(data["name"], "稻香")
+
+    def test_status_and_queue_keep_song_platform(self) -> None:
+        r = _FakeRedis()
+        r.seed("music:web_access_token", "token-1")
+        r.seed("music:web_active_area", "area-2")
+        r.seed(
+            self.module._area_key(self.module.KEY_CURRENT, "area-2"),
+            json.dumps(
+                {"song_id": "BV1test", "name": "晴天", "platform": "bilibili"},
+                ensure_ascii=False,
+            ),
+        )
+        r.seed(
+            self.module._area_key(self.module.KEY_QUEUE, "area-2"),
+            [
+                json.dumps(
+                    {"song_id": "2", "name": "稻香", "platform": "qq"},
+                    ensure_ascii=False,
+                )
+            ],
+        )
+
+        self.client.cookies.set("web_token", "token-1")
+        with patch.object(self.module, "get_redis", AsyncMock(return_value=r)):
+            status = self.client.get("/api/status")
+            queue = self.client.get("/api/queue")
+
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["platform"], "bilibili")
+        self.assertEqual(queue.status_code, 200)
+        self.assertEqual(queue.json()["queue"][0]["platform"], "qq")
+
+    def test_player_page_protects_cover_requests_and_uses_song_platform(self) -> None:
+        r = _FakeRedis().seed("music:web_access_token", "token-1")
+
+        with patch.object(self.module, "get_redis", AsyncMock(return_value=r)):
+            response = self.client.get("/w/token-1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('<meta name="referrer" content="no-referrer">', response.text)
+        self.assertNotIn('id="btnStop"', response.text)
+        self.assertIn("id:'stop'", response.text)
+        self.assertIn("label:'停止播放'", response.text)
+        self.assertIn("body:JSON.stringify({action:'mode',value:next.id})", response.text)
+        self.assertIn("fetchLyric(d.id,platform);", response.text)
+        self.assertIn("platform:normalizePlatform(platform)", response.text)
 
     async def test_public_playback_endpoints_return_exact_409_without_area(self) -> None:
         from core.queue_manager import _InMemoryRedis

@@ -56,9 +56,15 @@ _PLATFORM_NETEASE = "netease"
 PLAY_MODE_LIST = "list"
 PLAY_MODE_SINGLE = "single"
 PLAY_MODE_SHUFFLE = "shuffle"
+PLAY_MODE_STOP = "stop"
 # autoplay 不再作为可选播放模式，仅作为「队列播完按配置自动续播」时的来源标识。
 PLAY_MODE_AUTOPLAY = "autoplay"
-_VALID_PLAY_MODES = {PLAY_MODE_LIST, PLAY_MODE_SINGLE, PLAY_MODE_SHUFFLE}
+_VALID_PLAY_MODES = {
+    PLAY_MODE_LIST,
+    PLAY_MODE_SINGLE,
+    PLAY_MODE_SHUFFLE,
+    PLAY_MODE_STOP,
+}
 
 
 class _NeteaseSongUrlProvider(Protocol):
@@ -1090,6 +1096,9 @@ class MusicHandler(PlaybackMixin):
         """根据播放模式决定下一首歌。"""
         q = queue or self.queue
         mode = await self.get_play_mode(queue=q)
+        if natural_end and mode == PLAY_MODE_STOP and current_song is not None:
+            await q.clear_queue()
+            return None, PLAY_MODE_STOP
         if natural_end and mode == PLAY_MODE_SINGLE and current_song:
             return copy.deepcopy(current_song), PLAY_MODE_SINGLE
         if mode == PLAY_MODE_SHUFFLE and hasattr(q, "pop_random"):

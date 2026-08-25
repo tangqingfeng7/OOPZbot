@@ -316,6 +316,7 @@ class ProducerCarriesAreaTest(unittest.IsolatedAsyncioTestCase):
     class _Recorder:
         def __init__(self):
             self.pushed: list[str | bytes] = []
+            self.values: dict[str, object] = {}
 
         async def rpush(self, key: str, *values: object) -> int:
             for value in values:
@@ -335,6 +336,7 @@ class ProducerCarriesAreaTest(unittest.IsolatedAsyncioTestCase):
             px: int | None = None,
             **kwargs: object,
         ) -> None:
+            self.values[key] = value
             return None
 
         def pipeline(self, transaction: bool = False) -> RedisPipeline:
@@ -375,6 +377,21 @@ class ProducerCarriesAreaTest(unittest.IsolatedAsyncioTestCase):
 
         command = decode_web_command(r.pushed[-1])
         self.assertEqual(command, GlobalWebCommand("volume", {"value": 50}))
+
+    async def test_stop_after_current_is_a_persisted_play_mode(self) -> None:
+        from web.web_player import execute_control_action
+
+        r = self._Recorder()
+        result = await execute_control_action(
+            "mode",
+            {"value": "stop"},
+            r,
+            area="area-A",
+        )
+
+        self.assertEqual(result, {"ok": True, "mode": "stop"})
+        self.assertIn("stop", r.values.values())
+        self.assertEqual(r.pushed, [])
 
     async def test_track_control_without_area_is_rejected(self) -> None:
         from web.web_player import execute_control_action

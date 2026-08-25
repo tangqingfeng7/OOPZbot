@@ -361,9 +361,26 @@ class PlaybackMixin:
         try:
             next_item = await (queue or self.queue).peek_next()
             if next_item and next_item.get("url"):
-                self.voice.preload_audio(next_item["url"])
+                self.voice.preload_audio(
+                    next_item["url"],
+                    headers=self._stream_request_headers(
+                        str(next_item.get("platform") or "netease"),
+                        str(next_item.get("song_id") or ""),
+                    ),
+                )
         except Exception as e:
             logger.debug(f"预加载下一首失败（忽略）: {e}")
+
+    def _stream_request_headers(self, platform_name: str, song_id: str) -> dict[str, str] | None:
+        """获取平台音频直链所需的非敏感请求头。"""
+        platform = self.platforms.get(platform_name) if hasattr(self, "platforms") else None
+        provider = getattr(platform, "get_stream_headers", None)
+        if not callable(provider):
+            return None
+        headers = provider(song_id)
+        if not isinstance(headers, dict):
+            return None
+        return {str(name): str(value) for name, value in headers.items() if value is not None}
 
     def _start_stream_task(
         self,
@@ -430,11 +447,16 @@ class PlaybackMixin:
                 except Exception as e:
                     logger.debug(f"校准 start_time 写入 Redis 失败: {e}")
 
+        stream_headers = self._stream_request_headers(platform_name, song_id)
         try:
             async with self._playback_lock:
                 if not self._playback_snapshot_is_current_locked(session):
                     return
-            await voice.play_audio(url, on_started=_on_audio_started)
+            await voice.play_audio(
+                url,
+                on_started=_on_audio_started,
+                headers=stream_headers,
+            )
             logger.info(f"已提交 Agora 推流任务: {name}")
             return
         except Exception as e:
@@ -452,7 +474,11 @@ class PlaybackMixin:
                         async with self._playback_lock:
                             if not self._playback_snapshot_is_current_locked(session):
                                 return
-                        await voice.play_audio(new_url, on_started=_on_audio_started)
+                        await voice.play_audio(
+                            new_url,
+                            on_started=_on_audio_started,
+                            headers=stream_headers,
+                        )
                         logger.info(f"重新获取URL后推流成功: {name}")
                         return
                 except Exception as inner_e:

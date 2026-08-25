@@ -161,6 +161,20 @@ class BilibiliMusic:
     def _set_last_error(self, message: str) -> None:
         self.last_song_url_error = message
 
+    def get_stream_headers(self, song_id) -> dict[str, str]:
+        """B 站 CDN 音频直链需要的防盗链请求头。"""
+        sid = str(song_id or "").strip()
+        if sid.lower().startswith("bv"):
+            referer = _bilibili_referer_for_video(sid)
+        elif sid.lower().startswith("au"):
+            referer = f"https://www.bilibili.com/audio/{sid}"
+        else:
+            referer = _BILIBILI_HOME
+        return {
+            "User-Agent": USER_AGENT,
+            "Referer": referer,
+        }
+
     async def search(self, keyword: str, limit: int = 1) -> dict | None:
         results = await self._search_audio(keyword, limit)
         if results:

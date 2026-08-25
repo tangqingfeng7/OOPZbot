@@ -36,7 +36,7 @@ from .area_resolution import PlaybackAreaUnavailable
 
 _AREA_COMMAND_ACTIONS = frozenset({"next", "stop", "pause", "resume", "seek"})
 _AREA_DIRECT_ACTIONS = frozenset({"clear", "mode"})
-_VALID_PLAY_MODES = frozenset({"list", "single", "shuffle"})
+_VALID_PLAY_MODES = frozenset({"list", "single", "shuffle", "stop"})
 
 
 def playback_area_unavailable_result() -> dict[str, object]:

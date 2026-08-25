@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
 <title>Oopz Music Player</title>
 <link rel="icon" href="https://raw.githubusercontent.com/lige47/QuanX-icon-rule/main/icon/03CNSoft/wyy.png" type="image/png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -846,6 +847,7 @@ body::after{
   }
 
   let currentId = null;
+  let currentPlatform = 'netease';
   let lyrics = [];
   let tLyrics = [];
   let activeLine = -1;
@@ -868,6 +870,21 @@ body::after{
     if(!sec||sec<0) sec=0;
     const m=Math.floor(sec/60), s=Math.floor(sec%60);
     return m+':'+(s<10?'0':'')+s;
+  }
+
+  const PLATFORM_LABELS = {
+    netease: 'NETEASE',
+    qq: 'QQ MUSIC',
+    bilibili: 'BILIBILI',
+  };
+
+  function normalizePlatform(value){
+    return String(value||'netease').trim().toLowerCase()||'netease';
+  }
+
+  function renderPlatform(platform){
+    const normalized=normalizePlatform(platform);
+    $('platformTag').textContent=PLATFORM_LABELS[normalized]||normalized.toUpperCase();
   }
 
   function toast(msg, dur){
@@ -1000,7 +1017,7 @@ body::after{
 
       if(!d.playing){
         if(currentId!==null){
-          currentId=null;lyrics=[];tLyrics=[];activeLine=-1;
+          currentId=null;currentPlatform='netease';lyrics=[];tLyrics=[];activeLine=-1;
           $('playerActive').style.display='none';
           $('playerIdle').style.display='';
           $('ambientImg').src='';
@@ -1013,8 +1030,10 @@ body::after{
         return;
       }
 
-      if(d.id!==currentId){
+      const platform=normalizePlatform(d.platform);
+      if(d.id!==currentId||platform!==currentPlatform){
         currentId=d.id;
+        currentPlatform=platform;
         $('playerActive').style.display='';
         $('playerIdle').style.display='none';
         $('songName').textContent=d.name||'';
@@ -1024,10 +1043,11 @@ body::after{
         $('cover').src=d.cover||'';
         $('ambientImg').src=d.cover||'';
         $('timeTotal').textContent=d.durationText||fmtTime(d.duration);
+        renderPlatform(platform);
         $('lyricsControls').style.display='flex';
         activeLine=-1;
         triggerSongChangeAnimation();
-        fetchLyric(d.id);
+        fetchLyric(d.id,platform);
       }
 
       currentDuration=d.duration||0;
@@ -1065,9 +1085,10 @@ body::after{
     }
   }
 
-  async function fetchLyric(id){
+  async function fetchLyric(id,platform){
     try{
-      const r=await fetch(_api('/api/lyric?id='+id));
+      const query=new URLSearchParams({id:String(id),platform:normalizePlatform(platform)});
+      const r=await fetch(_api('/api/lyric?'+query.toString()));
       const d=await r.json();
       lyrics=parseLRC(d.lyric);
       tLyrics=parseLRC(d.tlyric);
@@ -1091,13 +1112,16 @@ body::after{
       if(_lastStatus && _lastStatus.playing){
         fullQueue.push({
           id:_lastStatus.id,name:_lastStatus.name,artists:_lastStatus.artists,
-          cover:_lastStatus.cover,durationText:_lastStatus.durationText,_current:true
+          cover:_lastStatus.cover,durationText:_lastStatus.durationText,
+          platform:_lastStatus.platform,_current:true
         });
       }
       for(const s of waitQueue) fullQueue.push(s);
 
       /* 生成当前队列的“指纹”，无变化则不再重绘 */
-      const queueKey = fullQueue.length + '-' + fullQueue.map(s=>s.id).join(',');
+      const queueKey=JSON.stringify(fullQueue.map(s=>[
+        normalizePlatform(s.platform),s.id,s.cover||'',s.durationText||''
+      ]));
       if(queueKey === _lastQueueKey){
         $('queueCount').textContent=fullQueue.length+' 首';
         return;
@@ -1170,6 +1194,11 @@ body::after{
       label:'随机播放',
       icon:'<path d="M16 3h5v5"/><path d="M21 16v5h-5"/><path d="m21 3-7.5 7.5"/><path d="m21 21-7.5-7.5"/><path d="M3 4h2.5L8 6.5"/><path d="M3 20h2.5L21 4"/>',
     },
+    {
+      id:'stop',
+      label:'停止播放',
+      icon:'<rect x="5" y="5" width="14" height="14" rx="1"/>',
+    },
   ];
   let currentPlayMode = 'list';
   function applyPlayMode(mode){
@@ -1186,20 +1215,23 @@ body::after{
   window.cyclePlayMode = async function(){
     const idx = PLAY_MODES.findIndex(x=>x.id===currentPlayMode);
     const next = PLAY_MODES[(idx+1) % PLAY_MODES.length];
+    const previousMode = currentPlayMode;
     applyPlayMode(next.id);
     try{
       const r = await fetch(_api('/api/control'),{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'mode', value:next.id}),
+        body:JSON.stringify({action:'mode',value:next.id}),
       });
       const d = await r.json();
       if(!d.ok){
+        applyPlayMode(previousMode);
         toast(d.error || '切换失败');
       } else {
         toast('已切换到：' + next.label);
       }
     }catch(e){
+      applyPlayMode(previousMode);
       toast('切换失败：网络错误');
     }
   };

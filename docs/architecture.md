@@ -313,7 +313,7 @@ Agora RTC (语音频道)
 | `music:<area>:current` | String (JSON) | 域隔离 | 指定域当前播放歌曲 |
 | `music:<area>:default_channel` | String | 域隔离 | 指定域的默认播放频道 |
 | `music:<area>:play_state` | String (JSON) | 域隔离 | 指定域的进度、时长与暂停状态 |
-| `music:<area>:play_mode` | String | 域隔离 | 指定域的 `list` / `single` / `shuffle` 播放模式 |
+| `music:<area>:play_mode` | String | 域隔离 | 指定域的 `list` / `single` / `shuffle` / `stop` 播放模式；`stop` 表示当前歌曲自然播完后停止并清空待播队列 |
 | `music:volume` | String | 全局 | 当前音量（0–100） |
 | `music:web_commands` | List (JSON) | 全局 | 严格 JSON v1 Web 控制命令队列，由 `BLPOP` 实时消费；域命令在载荷中携带 `area` |
 | `music:web_access_token` | String | 全局 | `/w/{token}` 播放器访问令牌，可配置 TTL |
