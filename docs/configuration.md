@@ -176,6 +176,20 @@ Copy-Item private_key.example.py private_key.py
 > **注意**：长期配置只认 `config.py`。管理后台 `/admin` -> 配置页面保存时会写回 `config.py`，并同步更新当前进程，不需要重启。
 > `trust_proxy_header` 不再兼容；检测到该旧项时启动会失败，并提示迁移到 `trusted_proxy_cidrs`。
 
+### 网页屏幕共享 (`SCREEN_SHARE_CONFIG`)
+
+| 配置项 | 说明 |
+|--------|------|
+| `enabled` | 是否启用网页屏幕共享（默认 `False`） |
+| `agora_app_id` | 自有声网项目的 32 位 App ID，不复用 Oopz 语音配置 |
+| `agora_app_certificate` | 声网 App Certificate；后台按 write-only 敏感字段处理 |
+| `presenter_link_ttl_seconds` | 私信发起链接的有效期（默认 `600` 秒） |
+| `session_max_seconds` | 单次共享最长时长（默认 `14400` 秒） |
+| `rtc_token_ttl_seconds` | RTC Token 有效期；网页会在过期前自动续期 |
+| `default_quality` | `2k` 最高画质、`1080p` 清晰优先或 `720p` 流畅优先 |
+
+此功能必须使用真实 Redis；Redis 降级为内存队列时会拒绝创建共享。对外 `WEB_PLAYER_CONFIG["url"]` 必须是 HTTPS 地址（本机开发可用 localhost）。声网控制台还必须开启“连麦鉴权”，才能在服务端强制观看者只读。运行参数位于“配置 → 音乐与平台 → 网页屏幕共享”，域级角色权限位于“域管理 → 域配置”。同一文字频道支持多人同时共享，每个用户同时最多一个会话；独立的“屏幕共享”后台页可观看、复制链接或结束指定会话。完整部署和权限说明见[屏幕共享](screen-share.md)。
+
 ### OneBot v11 旁路服务 (`ONEBOT_V11_CONFIG`)
 
 OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照常运行，同时额外提供 OneBot v11 HTTP / WebSocket 接口，适合接 NoneBot、AstrBot、Hoshino 等外部程序。
@@ -273,6 +287,7 @@ OneBot v11 旁路服务默认关闭。启用后，当前 Oopz Bot 会继续照�
 | `auto_assign_role_id` / `auto_assign_role_name` | 新人自动分配的身份组 ID / 名称 |
 | `admin_uids` | 该域独立管理员，空则继承全局 `ADMIN_UIDS` |
 | `plugins_enabled` / `plugins_disabled` | 该域启用 / 禁用的插件名列表（`plugins_enabled` 为空=全部启用） |
+| `screen_share_role_ids` | 允许发起和管理屏幕共享的域身份组 `roleID` 列表；角色改名不受影响 |
 
 ### 权限控制 (`ADMIN_UIDS`)
 
