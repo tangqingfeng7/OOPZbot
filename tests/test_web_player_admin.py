@@ -885,6 +885,15 @@ class WebPlayerAdminTest(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('id="mobileNav"', response.text)
                     self.assertIn('id="topStatus"', response.text)
 
+    def test_screen_share_page_includes_confirmation_modal(self) -> None:
+        with patch.object(self.module, "_admin_enabled", return_value=True):
+            response = self.client.get("/admin/screen-share")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="modalDialog"', response.text)
+        self.assertIn('id="modalBody"', response.text)
+        self.assertIn('id="modalFooter"', response.text)
+
     def test_setup_diagnostics_api_returns_report_when_logged_in(self) -> None:
         fake_report = {
             "status": "warn",

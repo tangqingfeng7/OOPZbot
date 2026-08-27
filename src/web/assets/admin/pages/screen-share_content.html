@@ -27,6 +27,16 @@
         </article>
       </section>
 
+      <div id="modalOverlay" class="m-modal-overlay" data-action="close-modal"></div>
+      <div id="modalDialog" class="m-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <header class="m-modal__head">
+          <h3 id="modalTitle" class="m-modal__title">操作</h3>
+          <button class="btn btn-sm btn-ghost" type="button" data-action="close-modal">关闭</button>
+        </header>
+        <div id="modalBody" class="m-modal__body"></div>
+        <footer id="modalFooter" class="m-modal__foot"></footer>
+      </div>
+
       <style>
         .ss-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
         .ss-link-policy { font-size:24px; }
