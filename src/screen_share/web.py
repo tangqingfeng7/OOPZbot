@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from core.paths import PROJECT_ROOT
 
 from .labels import presenter_label
+from .messages import recall_viewer_link, sent_message_reference
 from .service import ScreenShareError, get_screen_share_service
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ async def presenter_ready(request: Request):
                 f"{display_web_base_url().rstrip('/')}/screen-share/w#"
                 f"{result['viewer_token']}"
             )
+            reference_session: dict | None = None
             try:
                 presenter_name = await presenter_label(session)
                 sent = await sender.send_message(
@@ -149,18 +151,42 @@ async def presenter_ready(request: Request):
                     channel=str(session["channel"]),
                     area=str(session["area"]),
                     auto_recall=False,
-                    styleTags=[],
                 )
+                message_id, timestamp = sent_message_reference(sent)
+                if not message_id:
+                    raise ScreenShareError(
+                        "观看链接发送结果缺少消息标识",
+                        code="message_reference_missing",
+                        status_code=502,
+                    )
+                reference_session = {
+                    **session,
+                    "viewer_message_id": message_id,
+                    "viewer_message_timestamp": timestamp,
+                }
+                recorded = await service.record_viewer_message(
+                    str(session["id"]),
+                    message_id=message_id,
+                    timestamp=timestamp,
+                )
+                if not recorded:
+                    raise ScreenShareError(
+                        "屏幕共享已结束",
+                        code="session_ended",
+                        status_code=410,
+                    )
             except Exception as exc:
-                await service.stop(session, reason="viewer_link_send_failed")
+                if reference_session is not None:
+                    await recall_viewer_link(sender, reference_session)
+                with suppress(Exception):
+                    await service.stop(session, reason="viewer_link_send_failed")
+                if isinstance(exc, ScreenShareError):
+                    raise exc
                 raise ScreenShareError(
                     "观看链接发送失败，共享已停止",
                     code="send_failed",
                     status_code=502,
                 ) from exc
-            if isinstance(sent, dict) and sent.get("error"):
-                await service.stop(session, reason="viewer_link_send_failed")
-                raise ScreenShareError("观看链接发送失败，共享已停止", code="send_failed", status_code=502)
         return JSONResponse({"ok": True, "viewer_url": viewer_url})
     except ScreenShareError as exc:
         return _error(exc)
@@ -198,13 +224,13 @@ async def announce_ended(session: dict) -> None:
     if sender is None:
         return
     try:
+        await recall_viewer_link(sender, session)
         presenter_name = await presenter_label(session)
         await sender.send_message(
             f"{presenter_name} 的屏幕共享已结束",
             channel=str(session["channel"]),
             area=str(session["area"]),
             auto_recall=False,
-            styleTags=[],
         )
     except Exception:
         logger.warning("发送屏幕共享结束通知失败", exc_info=True)

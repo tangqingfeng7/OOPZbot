@@ -5,6 +5,7 @@ from contextlib import suppress
 from app.services.runtime import CommandRuntimeView, sender_of
 from screen_share import ScreenShareError, get_screen_share_service
 from screen_share.labels import presenter_label
+from screen_share.messages import recall_viewer_link
 
 
 class ScreenShareCommandService:
@@ -107,6 +108,8 @@ class ScreenShareCommandService:
                 area=area,
             )
             return
+        for stopped_session in stopped:
+            await recall_viewer_link(self._sender, stopped_session)
         if len(stopped) > 1:
             await self._sender.send_message(
                 f"已结束当前频道的 {len(stopped)} 个屏幕共享",

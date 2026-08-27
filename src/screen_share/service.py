@@ -88,6 +88,19 @@ data['last_heartbeat'] = tonumber(ARGV[1])
 redis.call('set', KEYS[1], cjson.encode(data), 'EX', ttl + tonumber(ARGV[4]))
 return cjson.encode(data)
 """
+_RECORD_VIEWER_MESSAGE_LUA = """
+-- RECORD_VIEWER_MESSAGE
+local payload = redis.call('get', KEYS[1])
+if not payload then return 'INVALID' end
+local data = cjson.decode(payload)
+if data['status'] ~= 'active' then return 'INVALID' end
+local ttl = tonumber(data['expires_at']) - tonumber(ARGV[3])
+if ttl <= 0 then return 'EXPIRED' end
+data['viewer_message_id'] = ARGV[1]
+data['viewer_message_timestamp'] = ARGV[2]
+redis.call('set', KEYS[1], cjson.encode(data), 'EX', ttl + tonumber(ARGV[4]))
+return 'OK'
+"""
 _STOP_LUA = """
 local payload = redis.call('get', KEYS[1])
 if not payload then return '' end
@@ -274,6 +287,8 @@ class ScreenShareService:
             "presenter_token_hash": presenter_hash,
             "viewer_token_hash": "",
             "presenter_auth_hash": "",
+            "viewer_message_id": "",
+            "viewer_message_timestamp": "",
             "agora_channel": f"oopz-share-{session_id}",
             "publisher_uid": publisher_uid,
             "created_at": now,
@@ -461,6 +476,46 @@ class ScreenShareService:
         if not first_ready:
             viewer_token = ""
         return {"session": session, "first_ready": first_ready, "viewer_token": viewer_token}
+
+    async def record_viewer_message(
+        self,
+        session_id: str,
+        *,
+        message_id: str,
+        timestamp: str = "",
+    ) -> bool:
+        """把频道观看链接的消息引用保存到会话，供结束时精准撤回。"""
+        normalized_id = str(message_id or "").strip()
+        if not normalized_id:
+            raise ScreenShareError(
+                "观看链接消息缺少可撤回标识",
+                code="message_reference_missing",
+                status_code=502,
+            )
+        redis = await self._redis()
+        try:
+            result = await redis.eval(
+                _RECORD_VIEWER_MESSAGE_LUA,
+                1,
+                _session_key(str(session_id)),
+                normalized_id,
+                str(timestamp or ""),
+                int(time.time()),
+                _SESSION_STORAGE_GRACE_SECONDS,
+            )
+        except Exception as exc:
+            raise ScreenShareError(
+                "Redis 当前不可用，无法保存观看链接消息",
+                code="redis_required",
+                status_code=503,
+            ) from exc
+        result_text = redis_optional_text(
+            result,
+            field="screen share viewer message result",
+        ) or ""
+        if result_text == "EXPIRED":
+            return False
+        return result_text == "OK"
 
     async def heartbeat(self, auth_token: str) -> dict[str, Any]:
         session = await self._session_from_auth(auth_token)

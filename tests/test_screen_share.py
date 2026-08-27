@@ -198,6 +198,21 @@ class FakeRedis:
             self.data[keys[0]] = json.dumps(session)
             self.expires[keys[0]] = self.clock + ttl + int(args[3])
             return json.dumps(session)
+        if "RECORD_VIEWER_MESSAGE" in script:
+            payload = self.data.get(keys[0])
+            if not payload:
+                return "INVALID"
+            session = json.loads(payload)
+            if session["status"] != "active":
+                return "INVALID"
+            ttl = int(session["expires_at"]) - int(args[2])
+            if ttl <= 0:
+                return "EXPIRED"
+            session["viewer_message_id"] = str(args[0])
+            session["viewer_message_timestamp"] = str(args[1])
+            self.data[keys[0]] = json.dumps(session)
+            self.expires[keys[0]] = self.clock + ttl + int(args[3])
+            return "OK"
         if "redis.call('del', KEYS[1], KEYS[2]" in script:
             payload = self.data.get(keys[0], "")
             session_id = str(json.loads(payload).get("id") or "") if payload else ""
@@ -287,7 +302,16 @@ class ScreenShareServiceTest(unittest.IsolatedAsyncioTestCase):
                 viewer_instance="viewer-tab-1",
             )
             self.assertEqual(viewer["channel"], credentials["channel"])
-            await self.service.stop(ready["session"])
+            self.assertTrue(
+                await self.service.record_viewer_message(
+                    ready["session"]["id"],
+                    message_id="message-1",
+                    timestamp="timestamp-1",
+                )
+            )
+            stopped = await self.service.stop(ready["session"])
+            self.assertEqual(stopped["viewer_message_id"], "message-1")
+            self.assertEqual(stopped["viewer_message_timestamp"], "timestamp-1")
             with self.assertRaises(ScreenShareError):
                 await self.service.viewer_credentials(
                     ready["viewer_token"],
@@ -583,14 +607,25 @@ class ScreenShareCommandTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("redis details", message)
 
     async def test_stop_command_only_stops_presenters_own_share(self) -> None:
-        sender = SimpleNamespace(send_message=AsyncMock(return_value={"ok": True}))
+        sender = SimpleNamespace(
+            send_message=AsyncMock(return_value={"ok": True}),
+            recall_message=AsyncMock(return_value={"status": True}),
+        )
         runtime = SimpleNamespace(
             sender=sender,
             services=SimpleNamespace(
                 routing=SimpleNamespace(access=SimpleNamespace(is_admin=Mock(return_value=False)))
             ),
         )
-        own = {"id": "own", "presenter_uid": "user", "status": "active"}
+        own = {
+            "id": "own",
+            "presenter_uid": "user",
+            "status": "active",
+            "area": "area",
+            "channel": "channel",
+            "viewer_message_id": "viewer-message",
+            "viewer_message_timestamp": "viewer-timestamp",
+        }
         other = {"id": "other", "presenter_uid": "other-user", "status": "active"}
         service = SimpleNamespace(
             list_by_channel=AsyncMock(return_value=[other, own]),
@@ -608,6 +643,12 @@ class ScreenShareCommandTest(unittest.IsolatedAsyncioTestCase):
             await command.stop("channel", "area", "user")
         service.stop.assert_awaited_once_with(own, reason="command_stop_self")
         service.authorize.assert_not_awaited()
+        sender.recall_message.assert_awaited_once_with(
+            "viewer-message",
+            area="area",
+            channel="channel",
+            timestamp="viewer-timestamp",
+        )
         self.assertEqual(
             sender.send_message.await_args.args[0],
             "当前用户 的屏幕共享已结束",
@@ -802,18 +843,31 @@ class ScreenShareAssetContractTest(unittest.TestCase):
 
     def test_channel_announcements_include_presenter_name(self) -> None:
         session = {
+            "id": "session-1",
             "status": "active",
             "area": "area-1",
             "channel": "channel-1",
             "presenter_uid": "user-1",
+            "viewer_message_id": "viewer-message",
+            "viewer_message_timestamp": "viewer-timestamp",
         }
-        sender = SimpleNamespace(send_message=AsyncMock(return_value={"ok": True}))
+        sender = SimpleNamespace(
+            send_message=AsyncMock(return_value={
+                "status": True,
+                "data": {
+                    "messageId": "viewer-message",
+                    "timestamp": "viewer-timestamp",
+                },
+            }),
+            recall_message=AsyncMock(return_value={"status": True}),
+        )
         service = SimpleNamespace(
             mark_ready=AsyncMock(return_value={
                 "session": session,
                 "first_ready": True,
                 "viewer_token": "viewer-token",
             }),
+            record_viewer_message=AsyncMock(return_value=True),
         )
         request = SimpleNamespace(cookies={screen_share_web.PRESENTER_COOKIE_NAME: "auth"})
 
@@ -833,6 +887,20 @@ class ScreenShareAssetContractTest(unittest.TestCase):
         messages = [call.args[0] for call in sender.send_message.await_args_list]
         self.assertEqual(messages[0], "小明 的屏幕共享已开始，点击观看：https://example.test/screen-share/w#viewer-token")
         self.assertEqual(messages[1], "小明 的屏幕共享已结束")
+        service.record_viewer_message.assert_awaited_once_with(
+            "session-1",
+            message_id="viewer-message",
+            timestamp="viewer-timestamp",
+        )
+        for call in sender.send_message.await_args_list:
+            self.assertNotIn("styleTags", call.kwargs)
+            self.assertFalse(call.kwargs["auto_recall"])
+        sender.recall_message.assert_awaited_once_with(
+            "viewer-message",
+            area="area-1",
+            channel="channel-1",
+            timestamp="viewer-timestamp",
+        )
 
     def test_browser_source_covers_capture_mix_renew_and_stop(self) -> None:
         source = (
