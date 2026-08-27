@@ -31,6 +31,20 @@ def _parse_optional_bool(raw: object) -> bool | None:
     return None
 
 
+def _parse_role_ids(raw: object) -> tuple[int, ...]:
+    if not isinstance(raw, (list, tuple, set)):
+        return ()
+    values: set[int] = set()
+    for item in raw:
+        try:
+            role_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if role_id > 0:
+            values.add(role_id)
+    return tuple(sorted(values))
+
+
 @dataclass(frozen=True)
 class AreaConfig:
     """单个域的配置快照。"""
@@ -45,6 +59,7 @@ class AreaConfig:
     admin_uids: tuple[str, ...] = ()
     plugins_enabled: tuple[str, ...] = ()
     plugins_disabled: tuple[str, ...] = ()
+    screen_share_role_ids: tuple[int, ...] = ()
     # None = 跟随全局 OOPZ_CONFIG.use_announcement_style；True/False = 域级强制
     use_announcement_style: bool | None = None
 
@@ -61,6 +76,7 @@ class AreaConfig:
             admin_uids=tuple(str(u) for u in (raw.get("admin_uids") or [])),
             plugins_enabled=tuple(str(p) for p in (raw.get("plugins_enabled") or [])),
             plugins_disabled=tuple(str(p) for p in (raw.get("plugins_disabled") or [])),
+            screen_share_role_ids=_parse_role_ids(raw.get("screen_share_role_ids")),
             use_announcement_style=_parse_optional_bool(raw.get("use_announcement_style")),
         )
 
@@ -171,6 +187,7 @@ class AreaConfigRegistry:
             "admin_uids": list(cfg.admin_uids),
             "plugins_enabled": list(cfg.plugins_enabled),
             "plugins_disabled": list(cfg.plugins_disabled),
+            "screen_share_role_ids": list(cfg.screen_share_role_ids),
             "use_announcement_style": cfg.use_announcement_style,
         }
 
